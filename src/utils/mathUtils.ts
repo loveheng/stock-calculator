@@ -285,7 +285,7 @@ export function calcTTrade(params: TTradeParams, feeConfig: FeeConfig): TTradeRe
     breakevenPrice: null,
     capitalReleased: null,
     buybackPrice: null,
-    status: '未平仓',
+    status: 'UNCLOSED',
   };
 
   // 总摩擦成本
@@ -308,7 +308,7 @@ export function calcTTrade(params: TTradeParams, feeConfig: FeeConfig): TTradeRe
       netProfit.div(totalInvest).mul(100).toNumber(),
       2
     );
-    result.status = '已平仓';
+    result.status = 'CLOSED';
   }
 
   if (mode === 'long' && hasBuy) {

@@ -19,8 +19,8 @@ export default function Home() {
 
   const totalTrades = tRecords.length;
   const totalFee = tRecords.reduce((sum, r) => sum + r.totalFee, 0);
-  const totalProfit = tRecords.reduce((sum, r) => sum + r.netProfit, 0);
-  const winTrades = tRecords.filter((r) => r.netProfit > 0).length;
+  const totalProfit = tRecords.reduce((sum, r) => sum + (r.netProfit ?? 0), 0);
+  const winTrades = tRecords.filter((r) => r.netProfit !== null && r.netProfit > 0).length;
   const winRate = totalTrades > 0 ? roundTo((winTrades / totalTrades) * 100, 1).toFixed(1) : '0.0';
 
   const quickCards = [

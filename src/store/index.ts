@@ -16,8 +16,9 @@ export interface TRecord {
   sellPrice: number;
   sellAmount: number;
   totalFee: number;
-  netProfit: number;
-  profitRate: number;
+  netProfit: number | null;
+  profitRate: number | null;
+  status: string;
 }
 
 // ---- 建仓批次 ----
@@ -212,7 +213,7 @@ export const useAppStore = create<AppStore>()(
 
       exportCSV: () => {
         const records = get().tRecords;
-        const headers = ['日期', '股票名称', '模式', '买入价', '买入数量', '卖出价', '卖出数量', '摩擦成本', '净利润', '收益率'];
+        const headers = ['日期', '股票名称', '模式', '买入价', '买入数量', '卖出价', '卖出数量', '摩擦成本', '净利润', '收益率', '状态'];
         const rows = records.map((r) => [
           new Date(r.timestamp).toLocaleDateString(),
           r.stockName,
@@ -222,8 +223,9 @@ export const useAppStore = create<AppStore>()(
           String(r.sellPrice),
           String(r.sellAmount),
           String(r.totalFee),
-          String(r.netProfit),
-          String(r.profitRate),
+          r.netProfit !== null ? String(r.netProfit) : '--',
+          r.profitRate !== null ? String(r.profitRate) : '--',
+          r.status === 'CLOSED' ? '已平仓' : '未平仓',
         ]);
         return [headers.join(','), ...rows.map((row) => row.map((cell) => `"${cell}"`).join(','))].join('\n');
       },

@@ -31,9 +31,9 @@ export default function Statistics() {
       const key = r.stockName || '未命名';
       const item = map.get(key) || { total: 0, wins: 0, fee: 0, profit: 0 };
       item.total++;
-      if (r.netProfit > 0) item.wins++;
+      if (r.netProfit !== null && r.netProfit > 0) item.wins++;
       item.fee += r.totalFee;
-      item.profit += r.netProfit;
+      if (r.netProfit !== null) item.profit += r.netProfit;
       map.set(key, item);
     });
     return Array.from(map.entries()).sort((a, b) => b[1].profit - a[1].profit);
@@ -145,41 +145,54 @@ export default function Statistics() {
                       {/* 展开明细 */}
                       {expandedStocks.has(stock) && (
                         <div className="mt-1 space-y-1 pl-4">
-                          {filteredRecords
-                            .filter((r) => (r.stockName || '未命名') === stock)
-                            .map((r) => (
-                              <div
-                                key={r.id}
-                                className="flex items-center justify-between p-2.5 bg-slate-900/50 rounded-lg text-xs"
-                              >
-                                <div className="flex items-center gap-3">
-                                  <span className="text-slate-500">
-                                    {new Date(r.timestamp).toLocaleDateString()}
-                                  </span>
-                                  <span className={`px-1.5 py-0.5 rounded ${
-                                    r.mode === 'long'
-                                      ? 'bg-red-500/20 text-red-400'
-                                      : 'bg-green-500/20 text-green-400'
-                                  }`}>
-                                    {r.mode === 'long' ? '正T' : '倒T'}
-                                  </span>
-                                  <span className="text-slate-400">
-                                    ¥{r.buyPrice.toFixed(2)} → ¥{r.sellPrice.toFixed(2)}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                  <span className={r.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}>
-                                    {r.netProfit >= 0 ? '+' : ''}¥{r.netProfit.toFixed(2)}
-                                  </span>
-                                  <button
-                                    onClick={() => setDeleteConfirmId(r.id)}
-                                    className="p-1 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                              {filteredRecords
+                                .filter((r) => (r.stockName || '未命名') === stock)
+                                .map((r) => (
+                                  <div
+                                    key={r.id}
+                                    className="flex items-center justify-between p-2.5 bg-slate-900/50 rounded-lg text-xs"
                                   >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
+                                    <div className="flex items-center gap-3">
+                                      <span className="text-slate-500">
+                                        {new Date(r.timestamp).toLocaleDateString()}
+                                      </span>
+                                      <span className={`px-1.5 py-0.5 rounded ${
+                                        r.mode === 'long'
+                                          ? 'bg-red-500/20 text-red-400'
+                                          : 'bg-green-500/20 text-green-400'
+                                      }`}>
+                                        {r.mode === 'long' ? '正T' : '倒T'}
+                                      </span>
+                                      <span className="text-slate-400">
+                                        ¥{r.buyPrice.toFixed(2)} → ¥{r.sellPrice.toFixed(2)}
+                                      </span>
+                                      <span className={`px-1.5 py-0.5 rounded-full text-xs ${
+                                        r.status === 'CLOSED'
+                                          ? r.netProfit !== null && r.netProfit >= 0
+                                            ? 'bg-red-500/20 text-red-400'
+                                            : 'bg-green-500/20 text-green-400'
+                                          : 'bg-amber-100 text-amber-800 border border-amber-300'
+                                      }`}>
+                                        {r.status === 'CLOSED' ? '已平仓' : '未平仓'}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                      {r.netProfit !== null ? (
+                                        <span className={r.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                          {r.netProfit >= 0 ? '+' : ''}¥{r.netProfit.toFixed(2)}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-500">--</span>
+                                      )}
+                                      <button
+                                        onClick={() => setDeleteConfirmId(r.id)}
+                                        className="p-1 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
                         </div>
                       )}
                     </div>

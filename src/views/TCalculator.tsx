@@ -38,7 +38,7 @@ export default function TCalculator() {
   };
 
   const handleSave = () => {
-    if (!result || !result.isClosed) return;
+    if (!result) return;
     if (!stockName.trim()) return;
 
     addTRecord({
@@ -51,8 +51,9 @@ export default function TCalculator() {
       sellPrice: Number(sellPrice),
       sellAmount: Number(sellAmount),
       totalFee: result.totalFee || 0,
-      netProfit: result.netProfit || 0,
-      profitRate: result.profitRate || 0,
+      netProfit: result.isClosed ? result.netProfit : null,
+      profitRate: result.isClosed ? result.profitRate : null,
+      status: result.status,
     });
 
     // 重置表单
@@ -186,9 +187,13 @@ export default function TCalculator() {
         <div className="card">
           <h3>
             {result.isClosed ? '交易结果' : '当前估算'}
-            {result.isClosed && (
+            {result.isClosed ? (
               <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">
                 已平仓
+              </span>
+            ) : (
+              <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                未平仓
               </span>
             )}
           </h3>
@@ -282,33 +287,35 @@ export default function TCalculator() {
               </>
             )}
 
-            {/* 净利润（已平仓） */}
-            {result.isClosed && result.netProfit !== null && (
-              <div className="p-4 bg-slate-900 rounded-lg flex justify-between items-center">
-                <span className="text-sm font-medium text-slate-300">净利润</span>
-                <div className="text-right">
-                  <p className={`text-xl font-bold ${result.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {result.netProfit >= 0 ? '+' : ''}¥{result.netProfit.toFixed(2)}
-                  </p>
-                  <p className={`text-xs ${result.netProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {result.profitRate !== null ? `${result.profitRate >= 0 ? '+' : ''}${result.profitRate.toFixed(2)}%` : ''}
-                  </p>
-                </div>
+            {/* 净利润 */}
+            <div className="p-4 bg-slate-900 rounded-lg flex justify-between items-center">
+              <span className="text-sm font-medium text-slate-300">净利润</span>
+              <div className="text-right">
+                {result.isClosed && result.netProfit !== null ? (
+                  <>
+                    <p className={`text-xl font-bold ${result.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {result.netProfit >= 0 ? '+' : ''}¥{result.netProfit.toFixed(2)}
+                    </p>
+                    <p className={`text-xs ${result.netProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {result.profitRate !== null ? `${result.profitRate >= 0 ? '+' : ''}${result.profitRate.toFixed(2)}%` : ''}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-xl font-bold text-slate-400">--</p>
+                )}
               </div>
-            )}
+            </div>
           </div>
 
           {/* 保存按钮 */}
-          {result.isClosed && (
-            <button
-              onClick={handleSave}
-              disabled={!stockName.trim()}
-              className="btn btn-primary btn-block mt-4"
-            >
-              <Save className="w-4 h-4" />
-              保存记录
-            </button>
-          )}
+          <button
+            onClick={handleSave}
+            disabled={!stockName.trim()}
+            className="btn btn-primary btn-block mt-4"
+          >
+            <Save className="w-4 h-4" />
+            保存记录
+          </button>
         </div>
       )}
     </div>

@@ -316,3 +316,40 @@ src/
 * 实现时间筛选、做T卡片归集与明细展开。
 * 实现建仓履历时间轴展示。
 * 为所有删除/清空/覆盖操作增加二次弹窗确认 (Confirm Modal)。 
+
+
+---
+# 🤖 Task Update: Decouple TCalculator & CostAveraging + Unclosed T-Trade Orange Status
+
+请对项目中的做T计算器 (`TCalculator`) 与成本摊薄 (`CostAveraging`) 模块进行重构解耦，并更新 UI 状态显示。请严格按照以下两条规范执行：
+
+---
+
+### 1. 成本摊薄与做T账本彻底解耦
+* **规范要求**：
+  * **成本摊薄页面 (`CostAveraging.tsx`)**：仅读取和维护`PositionLedgerStore`（实盘建仓账本）。**绝对严禁**读取、展示或自动计算 `TLedgerStore`（做T历史账本）中的任何数据。
+  * **做T历史账本 (`Statistics.tsx` 中的做T Tab)**：仅展示历史做T流水，不触发对持仓成本的改写。
+
+---
+
+### 2. 做T计算器支持单向未平仓 & 橘色高亮 UI (`TCalculator.tsx` & `Statistics.tsx`)
+* **逻辑要求**：
+  * 做T不强制要求一次性完成买卖双向对冲（即允许只录入买入单或只录入卖出单）。
+  * 当一条做T记录处于**未平仓**状态时（即只有买入价/量或只有卖出价/量）：
+    1. 平仓状态字段标记为 `'UNCLOSED'` / `'未平仓'`。
+    2. 做T实现净利润显示为 `--`，净收益率显示为 `--`。
+    3. 依然计算并展示已产生的买入/卖出**摩擦成本（规费总和）**。
+* **UI 状态样式要求**：
+  * **已平仓（闭环）**：根据盈亏显示红色（盈利）或绿色（亏损）标签。
+  * **未平仓（未闭环）**：状态标签（Badge）必须使用**橘色/橙色高亮**提示（例如 Tailwind 样式：`bg-amber-100 text-amber-800 border border-amber-300` 或 `bg-orange-100 text-orange-800`），直观提醒用户该笔做T尚未完成对冲。
+
+---
+
+### 🛠️ 执行步骤 (Execution Checklist for Cline)
+
+- [ ] **Step 1**: 检查 `src/store/` 结构，确保 `useTLedgerStore` 和 `usePositionStore` 互相隔离，不存在交叉引用。
+- [ ] **Step 2**: 修改 `CostAveraging.tsx`，移除所有涉及 `TLedger` 的计算或数据展示，确保 Tab 1（多批次实盘账本）与 Tab 2（目标成本推算）纯净独立。
+- [ ] **Step 3**: 修改 `TCalculator.tsx` 和 `Statistics.tsx` 中的做T记录卡片与列表：
+  * 当状态为 `UNCLOSED` 时，渲染橘色 Badge 标签（`未平仓`）。
+  * 净利润渲染为 `--`。
+- [ ] **Step 4**: 检查并确保运行正常，无 TypeScript 类型报错。

@@ -212,7 +212,11 @@ export default function TCalculator() {
           <h3>
             {result.isClosed ? '交易结果' : '当前估算'}
             {result.isClosed ? (
-              <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">
+              <span className={`ml-2 text-xs px-2 py-0.5 rounded-full ${
+                result.netProfit !== null && result.netProfit >= 0
+                  ? 'bg-red-500/20 text-red-400'
+                  : 'bg-green-500/20 text-green-400'
+              }`}>
                 已平仓
               </span>
             ) : (

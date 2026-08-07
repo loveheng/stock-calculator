@@ -31,6 +31,8 @@ export interface PositionBatch {
   costAfter: number;
   amountAfter: number;
   note?: string;
+  /** 该笔操作的总规费（买入规费之和 or 卖出规费之和） */
+  fee?: number;
 }
 
 // ---- 持仓标的 ----
@@ -43,6 +45,10 @@ export interface Position {
   isClosed: boolean;
   createdAt: string;
   closedAt?: string;
+  /** 累计已实现盈亏（从减仓中累积） */
+  realizedPnL?: number;
+  /** 累计投入总资金（含规费，用于准确成本计算） */
+  totalInvested?: number;
 }
 
 // ---- 全局 Store 类型 ----
@@ -215,6 +221,8 @@ export const useAppStore = create<AppStore>()(
                 currentAmount: 0,
                 isClosed: false,
                 closedAt: undefined,
+                realizedPnL: 0,
+                totalInvested: 0,
               };
             }
 
@@ -223,27 +231,36 @@ export const useAppStore = create<AppStore>()(
               (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
             );
 
-            let cost = 0;
+            let totalInvested = 0;
             let amount = 0;
+            let realizedPnL = 0;
 
             for (const batch of remainingSorted) {
               const qty = Math.abs(batch.amount);
+              const batchFee = batch.fee || 0;
               if (batch.amount > 0) {
-                if (amount === 0) {
-                  cost = batch.price;
-                  amount = qty;
-                } else {
-                  cost = (cost * amount + batch.price * qty) / (amount + qty);
-                  amount += qty;
-                }
+                // 买入：投入资金
+                const cost = batch.price * qty + batchFee;
+                totalInvested += cost;
+                amount += qty;
               } else {
+                // 卖出：抽回资金
+                if (amount > 0) {
+                  const costBasisPerShare = totalInvested / amount;
+                  const costBasisOfSold = costBasisPerShare * qty;
+                  const netProceeds = batch.price * qty - batchFee;
+                  realizedPnL += netProceeds - costBasisOfSold;
+                  totalInvested -= costBasisOfSold;
+                }
                 amount -= qty;
                 if (amount <= 0) {
-                  cost = 0;
+                  totalInvested = 0;
                   amount = 0;
                 }
               }
             }
+
+            const cost = amount > 0 ? totalInvested / amount : 0;
 
             return {
               ...p,
@@ -252,6 +269,8 @@ export const useAppStore = create<AppStore>()(
               currentAmount: amount,
               isClosed: amount === 0 ? true : p.isClosed,
               closedAt: amount === 0 ? new Date().toISOString() : p.closedAt,
+              realizedPnL,
+              totalInvested,
             };
           });
           return { positions };

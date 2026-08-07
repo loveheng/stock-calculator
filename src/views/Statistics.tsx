@@ -23,6 +23,7 @@ export default function Statistics() {
   // 建仓删除确认
   const [deleteBatchConfirm, setDeleteBatchConfirm] = useState<{ positionId: string; batchId: string } | null>(null);
   const [deleteTickerConfirm, setDeleteTickerConfirm] = useState<string | null>(null);
+  const [positionFilter, setPositionFilter] = useState<'all' | 'open' | 'closed'>('all');
 
   // 未平仓记录按模式分组
   const unclosedLong = useMemo(
@@ -335,31 +336,69 @@ export default function Statistics() {
         </div>
       ) : (
         <div className="space-y-3">
-          {/* 进行中 */}
+          {/* 筛选器 */}
           <div className="card">
-            <h3>进行中建仓</h3>
-            {positions.filter((p) => !p.isClosed).length === 0 ? (
-              <p className="text-center text-slate-500 py-6 text-sm">暂无进行中的建仓</p>
-            ) : (
-              positions.filter((p) => !p.isClosed).map((pos) => (
-                <div key={pos.id} className="p-3 bg-slate-900 rounded-lg mb-2">
+            <div className="flex gap-2">
+              {[
+                { value: 'all' as const, label: '全部' },
+                { value: 'open' as const, label: '进行中' },
+                { value: 'closed' as const, label: '已结案' },
+              ].map((f) => (
+                <button
+                  key={f.value}
+                  onClick={() => setPositionFilter(f.value)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                    positionFilter === f.value
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 标的列表 */}
+          <div className="card">
+            <h3>建仓履历</h3>
+            {(() => {
+              const filtered = positions.filter((p) => {
+                if (positionFilter === 'open') return !p.isClosed;
+                if (positionFilter === 'closed') return p.isClosed;
+                return true;
+              });
+              if (filtered.length === 0) {
+                return (
+                  <p className="text-center text-slate-500 py-6 text-sm">暂无建仓记录</p>
+                );
+              }
+              return filtered.map((pos) => (
+                <div key={pos.id} className={`p-3 rounded-lg mb-2 ${pos.isClosed ? 'bg-slate-900/50' : 'bg-slate-900'}`}>
                   <div className="flex items-center justify-between mb-2">
-                    <span className="font-medium text-slate-200">{pos.stockName}</span>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
-                      <button
-                        onClick={() => setDeleteTickerConfirm(pos.id)}
-                        className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
-                        title="删除标的"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <span className={`font-medium ${pos.isClosed ? 'text-slate-400' : 'text-slate-200'}`}>{pos.stockName}</span>
+                      {pos.isClosed ? (
+                        <span className="text-xs text-slate-500 bg-slate-700/60 px-2 py-0.5 rounded-full">已结案</span>
+                      ) : (
+                        <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
+                      )}
                     </div>
+                    <button
+                      onClick={() => setDeleteTickerConfirm(pos.id)}
+                      className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                      title="删除整个标的"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                   <div className="flex items-center gap-4 text-sm text-slate-400">
                     <span>成本 ¥{pos.currentCost.toFixed(3)}</span>
                     <span>{pos.currentAmount.toLocaleString()}股</span>
                     <span>共{pos.batches.length}次操作</span>
+                    {pos.isClosed && pos.closedAt && (
+                      <span className="text-xs text-slate-500">结案：{new Date(pos.closedAt).toLocaleDateString()}</span>
+                    )}
                   </div>
                   {/* 操作时间轴 */}
                   <div className="mt-3 space-y-1.5">
@@ -367,7 +406,6 @@ export default function Statistics() {
                       const sortedBatches = [...pos.batches].sort(
                         (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
                       );
-                      const isFirstBatch = (batchId: string) => sortedBatches.length > 1 && sortedBatches[0].id === batchId;
                       return sortedBatches.map((batch) => (
                         <div key={batch.id} className="flex items-center gap-3 text-xs text-slate-500">
                           <div className="w-1.5 h-1.5 rounded-full bg-slate-600 flex-shrink-0" />
@@ -379,114 +417,20 @@ export default function Statistics() {
                             {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : '减仓'}
                           </span>
                           <span>¥{batch.price.toFixed(3)} × {Math.abs(batch.amount)}股</span>
+                          {batch.fee !== undefined && batch.fee > 0 && (
+                            <span className="text-slate-600">费¥{batch.fee.toFixed(2)}</span>
+                          )}
+                          {batch.note && (
+                            <span className="text-slate-600 italic">「{batch.note}」</span>
+                          )}
                           <span className="ml-auto">{new Date(batch.timestamp).toLocaleDateString()}</span>
-                          <div className="relative group">
-                            <button
-                              onClick={() => {
-                                if (isFirstBatch(batch.id)) return;
-                                setDeleteBatchConfirm({ positionId: pos.id, batchId: batch.id });
-                              }}
-                              disabled={isFirstBatch(batch.id)}
-                              className={`p-1 rounded ${
-                                isFirstBatch(batch.id)
-                                  ? 'text-slate-700 cursor-not-allowed'
-                                  : 'hover:bg-slate-800 text-slate-600 hover:text-red-400'
-                              }`}
-                              title={isFirstBatch(batch.id) ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】' : '删除该笔操作记录'}
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                            {isFirstBatch(batch.id) && (
-                              <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-60 bg-slate-800 text-slate-200 text-xs rounded-lg p-2 shadow-lg z-10">
-                                已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】
-                              </div>
-                            )}
-                          </div>
                         </div>
                       ));
                     })()}
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-
-          {/* 已结案 */}
-          <div className="card">
-            <h3>已结案建仓</h3>
-            {positions.filter((p) => p.isClosed).length === 0 ? (
-              <p className="text-center text-slate-500 py-6 text-sm">暂无已结案的建仓</p>
-            ) : (
-              positions.filter((p) => p.isClosed).map((pos) => (
-                <div key={pos.id} className="p-3 bg-slate-900/50 rounded-lg mb-2">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-sm text-slate-400">{pos.stockName}</span>
-                      <span className="ml-2 text-xs text-slate-600">
-                        ¥{pos.currentCost.toFixed(3)} × {pos.currentAmount.toLocaleString()}股
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-500">
-                        {pos.closedAt ? new Date(pos.closedAt).toLocaleDateString() : ''}
-                      </span>
-                      <button
-                        onClick={() => setDeleteTickerConfirm(pos.id)}
-                        className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
-                        title="删除标的"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  {/* 操作时间轴 */}
-                  <div className="mt-2 space-y-1">
-                    {(() => {
-                      const sortedBatches = [...pos.batches].sort(
-                        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-                      );
-                      const isFirstBatch = (batchId: string) => sortedBatches.length > 1 && sortedBatches[0].id === batchId;
-                      return sortedBatches.map((batch) => (
-                        <div key={batch.id} className="flex items-center gap-3 text-xs text-slate-500">
-                          <div className="w-1.5 h-1.5 rounded-full bg-slate-600 flex-shrink-0" />
-                          <span className={`px-1.5 py-0.5 rounded ${
-                            batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
-                            batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
-                            'bg-red-500/20 text-red-400'
-                          }`}>
-                            {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : '减仓'}
-                          </span>
-                          <span>¥{batch.price.toFixed(3)} × {Math.abs(batch.amount)}股</span>
-                          <span className="ml-auto">{new Date(batch.timestamp).toLocaleDateString()}</span>
-                          <div className="relative group">
-                            <button
-                              onClick={() => {
-                                if (isFirstBatch(batch.id)) return;
-                                setDeleteBatchConfirm({ positionId: pos.id, batchId: batch.id });
-                              }}
-                              disabled={isFirstBatch(batch.id)}
-                              className={`p-1 rounded ${
-                                isFirstBatch(batch.id)
-                                  ? 'text-slate-700 cursor-not-allowed'
-                                  : 'hover:bg-slate-800 text-slate-600 hover:text-red-400'
-                              }`}
-                              title={isFirstBatch(batch.id) ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】' : '删除该笔操作记录'}
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                            {isFirstBatch(batch.id) && (
-                              <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-60 bg-slate-800 text-slate-200 text-xs rounded-lg p-2 shadow-lg z-10">
-                                已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                </div>
-              ))
-            )}
+              ));
+            })()}
           </div>
         </div>
       )}
@@ -538,8 +482,8 @@ export default function Statistics() {
       {/* 删除整个标的确认 */}
       <ConfirmModal
         open={deleteTickerConfirm !== null}
-        title="删除标的账本"
-        message="确定要删除该标的的所有建仓记录吗？此操作不可恢复！"
+        title="警告：删除标的账本"
+        message="警告：确定要彻底删除该标的及其所有历史建仓履历吗？此操作无法撤销。"
         confirmText="确认删除"
         danger
         onConfirm={handleDeleteTicker}

@@ -142,7 +142,70 @@ body {
   @apply bg-slate-600;
 }
 
-/* 响应式布局 */
+/* 移动端优化：触摸目标、字体大小、间距 */
+@media (max-width: 767px) {
+  /* 增大触摸目标 */
+  .btn {
+    @apply min-h-[44px] px-4 py-3;
+  }
+  .btn-sm {
+    @apply min-h-[36px] px-3 py-2;
+  }
+
+  /* 表单输入框触摸优化 */
+  .form-group input,
+  .form-group select {
+    @apply min-h-[44px] text-base px-3 py-3;
+  }
+
+  .form-group label {
+    @apply text-xs mb-1;
+  }
+
+  /* 卡片内边距优化 */
+  .card {
+    @apply p-4;
+  }
+
+  /* 手机端网格自适应 */
+  .form-row {
+    @apply grid-cols-1 gap-2;
+  }
+
+  /* 多列布局在移动端变单列 */
+  .grid-cols-2 {
+    @apply grid-cols-1;
+  }
+
+  .grid-cols-3 {
+    @apply grid-cols-2;
+  }
+
+  .grid-cols-4 {
+    @apply grid-cols-2;
+  }
+
+  .grid-cols-5 {
+    @apply grid-cols-2;
+  }
+
+  /* 做T记录卡片手机端自适应 */
+  .flex-wrap-mobile {
+    @apply flex-wrap;
+  }
+
+  /* 手机端tab按钮文字大小 */
+  .tab-btn {
+    @apply text-xs py-2.5 px-2;
+  }
+
+  /* 数值输入保留较大字体便于阅读 */
+  input[type="number"] {
+    @apply text-base;
+  }
+}
+
+/* 平板及以上布局 */
 @media (min-width: 768px) {
   .sidebar {
     transform: translateX(0) !important;
@@ -159,5 +222,17 @@ body {
 
   .menu-btn {
     display: none;
+  }
+
+  /* 平板及以上保持多列 */
+  .form-row {
+    @apply grid-cols-2 gap-3;
+  }
+}
+
+/* 移动端安全区域适配 */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .main-area {
+    padding-bottom: env(safe-area-inset-bottom);
   }
 }

@@ -10,6 +10,7 @@ import {
   Menu,
   X,
 } from 'lucide-react';
+import InstallPrompt from './components/ui/InstallPrompt';
 
 // --- Lazy loaded views ---
 import HomePage from './views/Home';
@@ -104,6 +105,9 @@ function AppLayout() {
       >
         <Sidebar onNavigate={() => setSidebarOpen(false)} />
       </aside>
+
+      {/* 安装引导 */}
+      <InstallPrompt />
 
       {/* 主内容区 */}
       <main className="main-area flex-1 min-h-screen w-full">

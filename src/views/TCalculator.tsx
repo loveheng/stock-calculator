@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { RefreshCw, Save, RotateCcw, ArrowUpDown, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { calcTTrade } from '../utils/mathUtils';

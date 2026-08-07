@@ -530,7 +530,10 @@ src/
 - [ ] **Step 3**: 保留【删除整个标的】按钮及其二次确认 Modal 弹窗逻辑。
 - [ ] **Step 4**: 测试将某个标的标记为“已结案”后，UI 是否正确锁死，是否无法再添加或改动任何记录。
 
+
+
 # 🤖 Task Update: Separate Active Positions View & Restrict Statistics Operations
+
 
 请对成本摊薄 (`CostAveraging.tsx`) 与数据统计 (`Statistics.tsx`) 两个模块进行页面渲染过滤与操作权限约束重构。请严格按照以下规范执行：
 
@@ -560,3 +563,94 @@ src/
 - [ ] **Step 2**: 在 `Statistics.tsx` 的建仓 Tab 中，渲染所有标的数据（`OPEN` + `CLOSED`），并支持分类切换。
 - [ ] **Step 3**: 在 `Statistics.tsx` 的标的履历明细中，隐藏单笔批次的删除按钮，仅保留卡片层级的【删除整个标的】按钮及其二次 Confirm Modal。
 - [ ] **Step 4**: 测试在成本摊薄页将某个标的“结案”后，该标的是否自动从成本摊薄页消失，并在数据统计页正确归档显示。
+
+
+🤖 Task Update: Vercel Deployment, Mobile Responsiveness & PWA Support
+请对项目进行 Vercel 部署适配、移动端 UI 响应式优化 以及 PWA 原生安装能力 的全套集成。请严格按照以下规范与执行步骤逐一完成配置：
+
+1. Vercel 部署与 SPA 路由适配 (vercel.json & vite.config.ts)
+在项目根目录下创建 vercel.json，配置路由重写（Rewrites）以支持 SPA 路径刷新的 Fallback 机制：
+
+JSON
+{
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    }
+  ]
+}
+检查 vite.config.ts：
+
+设置 base: '/'。
+
+确保构建输出目录为 dist（Vercel 默认读取目录）。
+
+2. PWA 原生可安装性配置 (manifest.json & vite-plugin-pwa)
+public/manifest.json 配置：
+
+name: 股票做T账本与成本计算器
+
+short_name: 做T账本
+
+start_url: /
+
+display: standalone（隐藏浏览器地址栏，实现 App 体验）
+
+theme_color: #1677ff
+
+background_color: #ffffff
+
+icons: 补全 192x192 和 512x512 标准图标（包含 purpose: "any maskable"）。
+
+HTML Head 元标签补全 (index.html)：
+
+HTML
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="做T账本" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+一键安装引导组件 (<PWAInstallPrompt/>)：
+
+监听浏览器的 beforeinstallprompt 事件，在首页（Home）或顶部/侧边栏提供 【安装至桌面 App】 引导按钮。
+
+针对 iOS Safari 环境，若无法触发原生事件，弹出 Modal 提示指引：“点击 Safari 分享按钮 -> 添加到主屏幕”。
+
+3. 移动端 UI 响应式适配规范 (Tailwind CSS)
+触摸手感：所有按键、Tab 和操作图标可点击区域不小于 44px × 44px。
+
+键盘唤起优化：所有数值输入框（价格、股数等）设置 inputmode="decimal"，点击时自动唤起数字键盘，且字号不小于 16px（防止 iOS 输入时页面自动拉近放大）。
+
+布局弹性自适应：
+
+汉堡菜单 (Hamburger Drawer)：移动端下默认折叠为顶部汉堡按钮，点击弹出侧滑抽屉。
+
+表单与卡片重置：桌面端的多列网格（grid-cols-2 / grid-cols-4）在移动端下重置为单列堆叠（grid-cols-1）；大型表格自动支持 overflow-x-auto 横向平滑滚动。
+
+安全区域 (Safe Area Insets)：
+
+CSS
+padding-top: env(safe-area-inset-top);
+padding-bottom: env(safe-area-inset-bottom);
+🛠️ 执行步骤 (Execution Checklist for Cline)
+[ ] Step 1: 在项目根目录下创建 vercel.json，写入正确的 SPA 路由重写与缓存配置。
+
+[ ] Step 2: 检查并补全 public/manifest.json 与 index.html 中的 PWA 元标签及 Viewport 配置。
+
+[ ] Step 3: 在 vite.config.ts 中配置 vite-plugin-pwa，设置 registerType: 'autoUpdate'。
+
+[ ] Step 4: 编写 <PWAInstallPrompt/> 组件并接入首页，实现桌面安装引导。
+
+[ ] Step 5: 优化全站移动端 UI：为输入框增加 inputmode="decimal"、调整字体与点击区域大小、优化移动端汉堡菜单抽屉。

@@ -654,3 +654,95 @@ padding-bottom: env(safe-area-inset-bottom);
 [ ] Step 4: 编写 <PWAInstallPrompt/> 组件并接入首页，实现桌面安装引导。
 
 [ ] Step 5: 优化全站移动端 UI：为输入框增加 inputmode="decimal"、调整字体与点击区域大小、优化移动端汉堡菜单抽屉。
+
+
+# 🤖 Task Update: Integrated Stock Auto-complete Search API (EastMoney) for TCalculator & CostAveraging
+
+请对项目中的做T计算器 (`TCalculator.tsx`) 与成本摊薄/多批次建仓 (`CostAveraging.tsx`) 模块进行重构，将“股票名称/代码”字段升级为**股票联想搜索下拉选择组件 (Stock Search Autocomplete)**。请严格按照以下 API 规范、数据结构与交互规范执行：
+
+---
+
+### 1. 股票搜索联想 API 接入规范 (`src/services/stockService.ts`)
+
+在 `src/services/` 中新建或扩展 `stockService.ts`，封装东财股票模糊匹配接口：
+
+* **接口地址建议**：建议配置代理或调用跨域可访问的搜索 Endpoint（例如东方财富 Suggest 接口）：
+  `https://searchapi.eastmoney.com/api/suggest/get` 或项目配置的 API Proxy 路径。
+* **请求方式**：`GET`
+* **请求头**：`Accept: application/json`
+* **Query 参数**：
+  * `input`: 搜索关键词（支持股票代码/中文名称/拼音首字母，如 `600519` / `贵州茅台` / `GZMT`）。
+  * `type`: `14`（综合类/股票优先）。
+  * `count`: `10`（控制返回最多 10 条匹配结果）。
+* **防抖 (Debounce) 处理**：前端搜索输入框必须加入 **300ms - 500ms 防抖** 机制，避免频繁敲击键盘时触发大量无用 HTTP 请求。
+
+#### 核心 TypeScript 数据结构类型定义 (`src/types/stock.ts`)：
+```typescript
+export interface StockSearchItem {
+  Code: string;              // 股票纯代码（如 "600519"）
+  Name: string;              // 股票中文名称（如 "贵州茅台"）
+  PinYin: string;            // 拼音首字母（如 "GZMT"）
+  SecurityTypeName: string;  // 市场板块标签（如 "沪 A"、"深 A"、"港股"）
+  SecurityType: string;
+  MktNum: string;            // 市场代码标识
+  MarketType: string;
+  Classify: string;          // 资产大类 (Stock, Fund 等)
+  Type: string;
+  UnifiedCode: string;
+  QuoteID: string;           // 东方财富唯一行情 ID（如 "1.600519"）- 作为项目的唯一标识 Key
+  ShortName: string;
+  InnerCode?: string;
+}
+
+export interface StockSearchResponse {
+  QuotationCodeTable: {
+    Data: StockSearchItem[];
+    Status: number;
+    Message: string;
+    TotalCount: number;
+  };
+}
+2. 交互与选择逻辑重构 (Autocomplete Component)
+必须做表单强校验：在做T计算器与多批次建仓表单中，股票名称/代码为必填项（若未选择有效股票，点击保存/提交时阻断并给出 Toast 提示：“请搜索并选择有效的股票标的”）。
+
+下拉选择器交互 (Combobox/Autocomplete UI)：
+
+用户在输入框键入代码、名称或拼音（如 gzmt 或 600）时，弹出下拉候选列表。
+
+下拉列表项样式：左侧高亮显示 Name (Code)，右侧以 Badge 标签渲染 SecurityTypeName（例如：贵州茅台 (600519) [沪 A]）。
+
+点击选择某只股票后：
+
+输入框自动锁定填入 Name（或 Name (Code)）。
+
+系统使用 QuoteID（如 1.600519）替代原有的自增/随机 ID，作为该交易记录或建仓标的在系统内的唯一 Key/主键。
+
+完整数据持久化：将接口返回的整条 Data 对象（含 QuoteID, Code, Name, SecurityTypeName, MktNum 等）随同交易记录一起存入 Store (IndexedDB / LocalStorage)。
+
+3. 应用场景覆盖规范
+做T计算器 (TCalculator.tsx)：
+
+在正T/倒T面板中，股票搜索框设为必选项。
+
+保存做T记录时，数据结构新增存储 selectedStock: StockSearchItem 和 quoteId: item.QuoteID。
+
+成本摊薄 - 多批次建仓 (CostAveraging.tsx)：
+
+首次发起新建仓时，通过股票搜索下拉框选择股票。
+
+使用 QuoteID 作为该持仓标的的核心索引 ID（例如 positionStore.getTicker(quoteId)）。
+
+界面顶栏展示标的名称时，同步渲染 SecurityTypeName 标签（如：贵州茅台 (600519) [沪 A]）。
+
+🛠️ 执行步骤 (Execution Checklist for Cline)
+[ ] Step 1: 在 src/types/ 中添加 StockSearchItem 数据结构定义。
+
+[ ] Step 2: 在 src/services/stockService.ts 中实现带防抖与异常处理的 searchStocks(input: string) API 请求函数。
+
+[ ] Step 3: 封装可复用的 <StockAutocomplete /> 下拉组件，支持搜索高亮、加载中状态 (Loading) 以及清空选择功能。
+
+[ ] Step 4: 将 <StockAutocomplete /> 接入 TCalculator.tsx，将股票名称设为必填，保存时持久化 QuoteID 与完整 Data 对象。
+
+[ ] Step 5: 将 <StockAutocomplete /> 接入 CostAveraging.tsx 的首次建仓表单，使用 QuoteID 作为标的唯一 ID 并持久化 Data 数据。
+
+[ ] Step 6: 检查所有表单必填校验与本地持久化 Store 的 TypeScript 类型，确保无类型报错且流程顺畅。

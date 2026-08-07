@@ -1,9 +1,11 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { RefreshCw, Save, RotateCcw, ArrowUpDown, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { calcTTrade } from '../utils/mathUtils';
 import type { TTradeResult } from '../utils/mathUtils';
+import type { StockSearchItem } from '../types/stock';
 import CompleteTModal from '../components/ui/CompleteTModal';
+import StockAutocomplete from '../components/ui/StockAutocomplete';
 
 export default function TCalculator() {
   const { feeConfig, addTRecord, tRecords, updateTRecord, removeTRecord } = useAppStore();
@@ -11,6 +13,7 @@ export default function TCalculator() {
   // 模式：'long' = 正T（先买后卖），'short' = 倒T（先卖后买）
   const [mode, setMode] = useState<'long' | 'short'>('long');
   const [stockName, setStockName] = useState('');
+  const [selectedStock, setSelectedStock] = useState<StockSearchItem | null>(null);
   const [buyPrice, setBuyPrice] = useState('');
   const [buyAmount, setBuyAmount] = useState('');
   const [sellPrice, setSellPrice] = useState('');
@@ -137,12 +140,14 @@ export default function TCalculator() {
         {/* 表单 */}
         <div className="space-y-3">
           <div className="form-group">
-            <label>股票名称（可选）</label>
-            <input
-              type="text"
-              placeholder="如：贵州茅台"
-              value={stockName}
-              onChange={(e) => setStockName(e.target.value)}
+            <label>股票名称</label>
+            <StockAutocomplete
+              value={selectedStock}
+              onChange={(item) => {
+                setSelectedStock(item);
+                setStockName(item ? item.Name : '');
+              }}
+              placeholder="搜索股票代码/名称/拼音"
             />
           </div>
 

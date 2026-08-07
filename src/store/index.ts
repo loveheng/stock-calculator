@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { type FeeConfig } from '../utils/mathUtils';
+import type { StockSearchItem } from '../types/stock';
 
 // ---- 做T记录 ----
 export interface TRecord {
@@ -19,6 +20,10 @@ export interface TRecord {
   netProfit: number | null;
   profitRate: number | null;
   status: string;
+  /** 东财 QuoteID，作为唯一标识  */
+  quoteId?: string;
+  /** 搜索时选择的完整股票数据 */
+  selectedStock?: StockSearchItem;
 }
 
 // ---- 建仓批次 ----

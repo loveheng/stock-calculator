@@ -3,7 +3,9 @@ import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'l
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees } from '../utils/mathUtils';
 import type { Position, PositionBatch } from '../store';
+import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
+import StockAutocomplete from '../components/ui/StockAutocomplete';
 
 // ---- 加/减仓表单弹窗 ----
 function BatchFormModal({
@@ -152,6 +154,7 @@ function ClearPositionModal({
 function PositionLedger() {
   const { positions, addPosition, addBatch, closePosition, updatePosition, deletePositionBatch, removePosition, feeConfig } = useAppStore();
 
+  const [selectedStock, setSelectedStock] = useState<StockSearchItem | null>(null);
   const [stockName, setStockName] = useState('');
   const [openPrice, setOpenPrice] = useState('');
   const [openAmount, setOpenAmount] = useState('');
@@ -452,12 +455,13 @@ function PositionLedger() {
         <div className="form-row">
           <div className="form-group">
             <label>股票名称</label>
-            <input
-              id="new-position-input"
-              type="text"
-              placeholder="如：贵州茅台"
-              value={stockName}
-              onChange={(e) => setStockName(e.target.value)}
+            <StockAutocomplete
+              value={selectedStock}
+              onChange={(item) => {
+                setSelectedStock(item);
+                setStockName(item ? item.Name : '');
+              }}
+              placeholder="搜索股票代码/名称/拼音"
             />
           </div>
           <div className="form-group">

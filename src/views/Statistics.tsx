@@ -1,17 +1,34 @@
 import React, { useState, useMemo } from 'react';
-import { TrendingUp, TrendingDown, Trash2, AlertTriangle, ChevronDown, ChevronUp, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, Trash2, AlertTriangle, ChevronDown, ChevronUp, Clock, CheckCircle } from 'lucide-react';
 import { useAppStore } from '../store';
 import ConfirmModal from '../components/ui/ConfirmModal';
+import CompleteTModal from '../components/ui/CompleteTModal';
 
 type TimeFilter = 'all' | '7d' | '30d';
 
 export default function Statistics() {
-  const { tRecords, clearTRecords, removeTRecord, positions } = useAppStore();
+  const { tRecords, clearTRecords, removeTRecord, updateTRecord, positions, feeConfig } = useAppStore();
   const [tab, setTab] = useState<'trades' | 'positions'>('trades');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
   const [expandedStocks, setExpandedStocks] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [clearConfirm, setClearConfirm] = useState(false);
+
+  // 未平仓记录 Tab
+  const [unclosedTab, setUnclosedTab] = useState<'long' | 'short'>('long');
+
+  // 完善平仓弹窗
+  const [completeRecord, setCompleteRecord] = useState<string | null>(null);
+
+  // 未平仓记录按模式分组
+  const unclosedLong = useMemo(
+    () => tRecords.filter((r) => r.status === 'UNCLOSED' && r.mode === 'long'),
+    [tRecords]
+  );
+  const unclosedShort = useMemo(
+    () => tRecords.filter((r) => r.status === 'UNCLOSED' && r.mode === 'short'),
+    [tRecords]
+  );
 
   // 时间筛选
   const filteredRecords = useMemo(() => {
@@ -55,6 +72,13 @@ export default function Statistics() {
     clearTRecords();
     setClearConfirm(false);
   };
+
+  const handleCompleteConfirm = (id: string, updates: Partial<import('../store').TRecord>) => {
+    updateTRecord(id, updates);
+    setCompleteRecord(null);
+  };
+
+  const activeUnclosed = unclosedTab === 'long' ? unclosedLong : unclosedShort;
 
   return (
     <div className="page-container space-y-5">
@@ -105,6 +129,84 @@ export default function Statistics() {
 
       {tab === 'trades' ? (
         <div className="space-y-3">
+          {/* 未平仓记录区域 */}
+          {(unclosedLong.length > 0 || unclosedShort.length > 0) && (
+            <div className="card">
+              <h3>未平仓待完善记录</h3>
+
+              {/* Tab 切换 */}
+              <div className="tab-bar mb-3">
+                <button
+                  className={`tab-btn ${unclosedTab === 'long' ? 'active' : ''}`}
+                  onClick={() => setUnclosedTab('long')}
+                >
+                  正T未平仓
+                  {unclosedLong.length > 0 && (
+                    <span className="ml-1.5 text-xs bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full">
+                      {unclosedLong.length}
+                    </span>
+                  )}
+                </button>
+                <button
+                  className={`tab-btn ${unclosedTab === 'short' ? 'active' : ''}`}
+                  onClick={() => setUnclosedTab('short')}
+                >
+                  倒T未平仓
+                  {unclosedShort.length > 0 && (
+                    <span className="ml-1.5 text-xs bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full">
+                      {unclosedShort.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {activeUnclosed.length === 0 ? (
+                <p className="text-center text-slate-500 py-6 text-sm">暂无未平仓记录</p>
+              ) : (
+                <div className="space-y-2">
+                  {activeUnclosed.map((r) => (
+                    <div
+                      key={r.id}
+                      className="flex items-center justify-between p-3 bg-slate-900 rounded-lg border border-amber-300/20"
+                    >
+                      <div className="flex items-center gap-3 text-xs">
+                        <span className="text-slate-500">
+                          {new Date(r.timestamp).toLocaleDateString()}
+                        </span>
+                        <span className="font-medium text-slate-200">{r.stockName || '未命名'}</span>
+                        <span className="text-slate-400">
+                          {r.mode === 'long' ? (
+                            <>买入价 ¥{r.buyPrice.toFixed(3)} × {r.buyAmount}股</>
+                          ) : (
+                            <>卖出价 ¥{r.sellPrice.toFixed(3)} × {r.sellAmount}股</>
+                          )}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded-full text-xs bg-amber-100 text-amber-800 border border-amber-300">
+                          未平仓
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setCompleteRecord(r.id)}
+                          className="btn btn-sm text-xs py-1 px-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5 inline mr-1" />
+                          完善平仓
+                        </button>
+                        <button
+                          onClick={() => setDeleteConfirmId(r.id)}
+                          className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* 汇总卡片 */}
           <div className="card">
             <h3>按标的汇总</h3>
@@ -295,6 +397,17 @@ export default function Statistics() {
             )}
           </div>
         </div>
+      )}
+
+      {/* 完善平仓弹窗 */}
+      {completeRecord && (
+        <CompleteTModal
+          open={true}
+          record={tRecords.find((r) => r.id === completeRecord)!}
+          feeConfig={feeConfig}
+          onConfirm={handleCompleteConfirm}
+          onCancel={() => setCompleteRecord(null)}
+        />
       )}
 
       {/* 删除确认 */}

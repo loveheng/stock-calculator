@@ -55,6 +55,7 @@ export interface AppStore {
   // 做T记录
   tRecords: TRecord[];
   addTRecord: (record: TRecord) => void;
+  updateTRecord: (id: string, updates: Partial<TRecord>) => void;
   removeTRecord: (id: string) => void;
   clearTRecords: () => void;
 
@@ -139,6 +140,14 @@ export const useAppStore = create<AppStore>()(
       removeTRecord: (id: string) => {
         set((state) => ({
           tRecords: state.tRecords.filter((r) => r.id !== id),
+        }));
+      },
+
+      updateTRecord: (id: string, updates: Partial<TRecord>) => {
+        set((state) => ({
+          tRecords: state.tRecords.map((r) =>
+            r.id === id ? { ...r, ...updates } : r
+          ),
         }));
       },
 

@@ -1,5 +1,7 @@
 ### 1. 测试 A 股模糊搜索 (拼音搜索，指定 count=10)
-GET https://searchapi.eastmoney.com/api/suggest/get?input=闻泰&type=14&count=10
+#GET https://searchapi.eastmoney.com/api/suggest/get?input=闻泰&type=14&count=10
+#GET https://searchapi.eastmoney.com/api/suggest/get?input=%E9%97%BB%E6%B3%B0&type=14&count=10
+GET https://searchapi.eastmoney.com/api/suggest/get?input=%E9%97%BB%E6%B3%B0&type=14&count=10
 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 
 ### 1. 查询贵州茅台 (1.600519) 实时股价

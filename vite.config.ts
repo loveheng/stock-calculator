@@ -53,9 +53,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api/suggest': {
-        target: 'https://suggest-fkw57.eastmoney.com',
+        target: 'https://searchapi.eastmoney.com',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/suggest/, ''),
         configure: (proxy) => {
           proxy.on('error', (err) => {
             console.error('东财 Suggest API 代理错误:', err);

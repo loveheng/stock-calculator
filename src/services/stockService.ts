@@ -7,15 +7,17 @@ import type { StockSearchItem, StockSearchResponse } from '../types/stock';
 export async function searchStocks(input: string): Promise<StockSearchItem[]> {
   if (!input || input.trim().length === 0) return [];
 
-  const url = new URL('/api/suggest/get', 'https://searchapi.eastmoney.com');
-  url.searchParams.set('input', input.trim());
-  url.searchParams.set('type', '14');
-  url.searchParams.set('count', '10');
+  // 通过 Vite 代理转发请求，避免跨域问题
+  const params = new URLSearchParams({
+    input: input.trim(),
+    type: '14',
+    count: '10',
+  });
 
-  const res = await fetch(url.toString(), {
+  const res = await fetch(`/api/suggest/get?${params.toString()}`, {
     method: 'GET',
     headers: {
-      Accept: 'application/json',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signe',
     },
   });
 

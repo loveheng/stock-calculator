@@ -1,0 +1,50 @@
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
+
+export default defineConfig({
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: [],
+      manifest: {
+        name: '股票计算助手',
+        short_name: '股票计算器',
+        description: 'A股股票交易计算工具，支持做T、成本摊薄、涨跌幅计算',
+        theme_color: '#1e293b',
+        background_color: '#0f172a',
+        display: 'standalone',
+        icons: [
+          {
+            src: 'data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><rect width=\'100\' height=\'100\' rx=\'20\' fill=\'%232563eb\'/><path d=\'M20 70 L40 40 L60 55 L80 25\' stroke=\'white\' stroke-width=\'8\' fill=\'none\' stroke-linecap=\'round\'/></svg>',
+            sizes: '192x192 512x512',
+            type: 'image/svg+xml',
+          },
+        ],
+      },
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
+        runtimeCaching: [
+          {
+            urlPattern: /^https?:\/\/.*/i,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'stock-calculator-cache',
+              expiration: {
+                maxEntries: 200,
+                maxAgeSeconds: 30 * 24 * 60 * 60,
+              },
+            },
+          },
+        ],
+      },
+    }),
+  ],
+  build: {
+    outDir: 'dist',
+    modulePreload: {
+      polyfill: false,
+    },
+  },
+});

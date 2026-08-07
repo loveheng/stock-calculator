@@ -7,7 +7,7 @@ import CompleteTModal from '../components/ui/CompleteTModal';
 type TimeFilter = 'all' | '7d' | '30d';
 
 export default function Statistics() {
-  const { tRecords, clearTRecords, removeTRecord, updateTRecord, positions, feeConfig } = useAppStore();
+  const { tRecords, clearTRecords, removeTRecord, updateTRecord, positions, removePosition, deletePositionBatch, feeConfig } = useAppStore();
   const [tab, setTab] = useState<'trades' | 'positions'>('trades');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
   const [expandedStocks, setExpandedStocks] = useState<Set<string>>(new Set());
@@ -19,6 +19,10 @@ export default function Statistics() {
 
   // 完善平仓弹窗
   const [completeRecord, setCompleteRecord] = useState<string | null>(null);
+
+  // 建仓删除确认
+  const [deleteBatchConfirm, setDeleteBatchConfirm] = useState<{ positionId: string; batchId: string } | null>(null);
+  const [deleteTickerConfirm, setDeleteTickerConfirm] = useState<string | null>(null);
 
   // 未平仓记录按模式分组
   const unclosedLong = useMemo(
@@ -76,6 +80,20 @@ export default function Statistics() {
   const handleCompleteConfirm = (id: string, updates: Partial<import('../store').TRecord>) => {
     updateTRecord(id, updates);
     setCompleteRecord(null);
+  };
+
+  // 删除单笔批次
+  const handleDeleteBatch = () => {
+    if (!deleteBatchConfirm) return;
+    deletePositionBatch(deleteBatchConfirm.positionId, deleteBatchConfirm.batchId);
+    setDeleteBatchConfirm(null);
+  };
+
+  // 删除整个标的
+  const handleDeleteTicker = () => {
+    if (!deleteTickerConfirm) return;
+    removePosition(deleteTickerConfirm);
+    setDeleteTickerConfirm(null);
   };
 
   const activeUnclosed = unclosedTab === 'long' ? unclosedLong : unclosedShort;
@@ -327,7 +345,16 @@ export default function Statistics() {
                 <div key={pos.id} className="p-3 bg-slate-900 rounded-lg mb-2">
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-medium text-slate-200">{pos.stockName}</span>
-                    <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
+                      <button
+                        onClick={() => setDeleteTickerConfirm(pos.id)}
+                        className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                        title="删除标的"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <div className="flex items-center gap-4 text-sm text-slate-400">
                     <span>成本 ¥{pos.currentCost.toFixed(3)}</span>
@@ -336,20 +363,48 @@ export default function Statistics() {
                   </div>
                   {/* 操作时间轴 */}
                   <div className="mt-3 space-y-1.5">
-                    {pos.batches.map((batch) => (
-                      <div key={batch.id} className="flex items-center gap-3 text-xs text-slate-500">
-                        <div className="w-1.5 h-1.5 rounded-full bg-slate-600 flex-shrink-0" />
-                        <span className={`px-1.5 py-0.5 rounded ${
-                          batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
-                          batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
-                          'bg-red-500/20 text-red-400'
-                        }`}>
-                          {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : '减仓'}
-                        </span>
-                        <span>¥{batch.price.toFixed(3)} × {Math.abs(batch.amount)}股</span>
-                        <span className="ml-auto">{new Date(batch.timestamp).toLocaleDateString()}</span>
-                      </div>
-                    ))}
+                    {(() => {
+                      const sortedBatches = [...pos.batches].sort(
+                        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+                      );
+                      const isFirstBatch = (batchId: string) => sortedBatches.length > 1 && sortedBatches[0].id === batchId;
+                      return sortedBatches.map((batch) => (
+                        <div key={batch.id} className="flex items-center gap-3 text-xs text-slate-500">
+                          <div className="w-1.5 h-1.5 rounded-full bg-slate-600 flex-shrink-0" />
+                          <span className={`px-1.5 py-0.5 rounded ${
+                            batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
+                            batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
+                            'bg-red-500/20 text-red-400'
+                          }`}>
+                            {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : '减仓'}
+                          </span>
+                          <span>¥{batch.price.toFixed(3)} × {Math.abs(batch.amount)}股</span>
+                          <span className="ml-auto">{new Date(batch.timestamp).toLocaleDateString()}</span>
+                          <div className="relative group">
+                            <button
+                              onClick={() => {
+                                if (isFirstBatch(batch.id)) return;
+                                setDeleteBatchConfirm({ positionId: pos.id, batchId: batch.id });
+                              }}
+                              disabled={isFirstBatch(batch.id)}
+                              className={`p-1 rounded ${
+                                isFirstBatch(batch.id)
+                                  ? 'text-slate-700 cursor-not-allowed'
+                                  : 'hover:bg-slate-800 text-slate-600 hover:text-red-400'
+                              }`}
+                              title={isFirstBatch(batch.id) ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】' : '删除该笔操作记录'}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                            {isFirstBatch(batch.id) && (
+                              <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-60 bg-slate-800 text-slate-200 text-xs rounded-lg p-2 shadow-lg z-10">
+                                已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ));
+                    })()}
                   </div>
                 </div>
               ))
@@ -371,26 +426,63 @@ export default function Statistics() {
                         ¥{pos.currentCost.toFixed(3)} × {pos.currentAmount.toLocaleString()}股
                       </span>
                     </div>
-                    <span className="text-xs text-slate-500">
-                      {pos.closedAt ? new Date(pos.closedAt).toLocaleDateString() : ''}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500">
+                        {pos.closedAt ? new Date(pos.closedAt).toLocaleDateString() : ''}
+                      </span>
+                      <button
+                        onClick={() => setDeleteTickerConfirm(pos.id)}
+                        className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                        title="删除标的"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                   {/* 操作时间轴 */}
                   <div className="mt-2 space-y-1">
-                    {pos.batches.map((batch) => (
-                      <div key={batch.id} className="flex items-center gap-3 text-xs text-slate-500">
-                        <div className="w-1.5 h-1.5 rounded-full bg-slate-600 flex-shrink-0" />
-                        <span className={`px-1.5 py-0.5 rounded ${
-                          batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
-                          batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
-                          'bg-red-500/20 text-red-400'
-                        }`}>
-                          {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : '减仓'}
-                        </span>
-                        <span>¥{batch.price.toFixed(3)} × {Math.abs(batch.amount)}股</span>
-                        <span className="ml-auto">{new Date(batch.timestamp).toLocaleDateString()}</span>
-                      </div>
-                    ))}
+                    {(() => {
+                      const sortedBatches = [...pos.batches].sort(
+                        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+                      );
+                      const isFirstBatch = (batchId: string) => sortedBatches.length > 1 && sortedBatches[0].id === batchId;
+                      return sortedBatches.map((batch) => (
+                        <div key={batch.id} className="flex items-center gap-3 text-xs text-slate-500">
+                          <div className="w-1.5 h-1.5 rounded-full bg-slate-600 flex-shrink-0" />
+                          <span className={`px-1.5 py-0.5 rounded ${
+                            batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
+                            batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
+                            'bg-red-500/20 text-red-400'
+                          }`}>
+                            {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : '减仓'}
+                          </span>
+                          <span>¥{batch.price.toFixed(3)} × {Math.abs(batch.amount)}股</span>
+                          <span className="ml-auto">{new Date(batch.timestamp).toLocaleDateString()}</span>
+                          <div className="relative group">
+                            <button
+                              onClick={() => {
+                                if (isFirstBatch(batch.id)) return;
+                                setDeleteBatchConfirm({ positionId: pos.id, batchId: batch.id });
+                              }}
+                              disabled={isFirstBatch(batch.id)}
+                              className={`p-1 rounded ${
+                                isFirstBatch(batch.id)
+                                  ? 'text-slate-700 cursor-not-allowed'
+                                  : 'hover:bg-slate-800 text-slate-600 hover:text-red-400'
+                              }`}
+                              title={isFirstBatch(batch.id) ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】' : '删除该笔操作记录'}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                            {isFirstBatch(batch.id) && (
+                              <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-60 bg-slate-800 text-slate-200 text-xs rounded-lg p-2 shadow-lg z-10">
+                                已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ));
+                    })()}
                   </div>
                 </div>
               ))
@@ -410,7 +502,7 @@ export default function Statistics() {
         />
       )}
 
-      {/* 删除确认 */}
+      {/* 删除做T记录确认 */}
       <ConfirmModal
         open={deleteConfirmId !== null}
         title="删除记录"
@@ -430,6 +522,28 @@ export default function Statistics() {
         danger
         onConfirm={handleClear}
         onCancel={() => setClearConfirm(false)}
+      />
+
+      {/* 删除单笔批次确认 */}
+      <ConfirmModal
+        open={deleteBatchConfirm !== null}
+        title="删除建仓记录"
+        message="确定要删除该笔建仓/加减仓记录吗？删除后将重新计算当前持仓成本。"
+        confirmText="确认删除"
+        danger
+        onConfirm={handleDeleteBatch}
+        onCancel={() => setDeleteBatchConfirm(null)}
+      />
+
+      {/* 删除整个标的确认 */}
+      <ConfirmModal
+        open={deleteTickerConfirm !== null}
+        title="删除标的账本"
+        message="确定要删除该标的的所有建仓记录吗？此操作不可恢复！"
+        confirmText="确认删除"
+        danger
+        onConfirm={handleDeleteTicker}
+        onCancel={() => setDeleteTickerConfirm(null)}
       />
     </div>
   );

@@ -65,6 +65,7 @@ export interface AppStore {
   updatePosition: (id: string, pos: Partial<Position>) => void;
   addBatch: (positionId: string, batch: PositionBatch) => void;
   closePosition: (id: string) => void;
+  deletePositionBatch: (positionId: string, batchId: string) => void;
   removePosition: (id: string) => void;
 
   // 全量数据导入导出
@@ -187,6 +188,74 @@ export const useAppStore = create<AppStore>()(
               : p
           ),
         }));
+      },
+
+      deletePositionBatch: (positionId: string, batchId: string) => {
+        set((state) => {
+          const positions = state.positions.map((p) => {
+            if (p.id !== positionId) return p;
+
+            // 按时间排序
+            const sorted = [...p.batches].sort(
+              (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+            );
+
+            // 保护第一条建仓记录：若有多条记录，禁止删除第一条
+            if (sorted.length > 1 && sorted[0].id === batchId) {
+              return p;
+            }
+
+            const remainingBatches = p.batches.filter((b) => b.id !== batchId);
+
+            if (remainingBatches.length === 0) {
+              return {
+                ...p,
+                batches: [],
+                currentCost: 0,
+                currentAmount: 0,
+                isClosed: false,
+                closedAt: undefined,
+              };
+            }
+
+            // Replay all remaining batches in chronological order
+            const remainingSorted = [...remainingBatches].sort(
+              (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+            );
+
+            let cost = 0;
+            let amount = 0;
+
+            for (const batch of remainingSorted) {
+              const qty = Math.abs(batch.amount);
+              if (batch.amount > 0) {
+                if (amount === 0) {
+                  cost = batch.price;
+                  amount = qty;
+                } else {
+                  cost = (cost * amount + batch.price * qty) / (amount + qty);
+                  amount += qty;
+                }
+              } else {
+                amount -= qty;
+                if (amount <= 0) {
+                  cost = 0;
+                  amount = 0;
+                }
+              }
+            }
+
+            return {
+              ...p,
+              batches: remainingBatches,
+              currentCost: cost,
+              currentAmount: amount,
+              isClosed: amount === 0 ? true : p.isClosed,
+              closedAt: amount === 0 ? new Date().toISOString() : p.closedAt,
+            };
+          });
+          return { positions };
+        });
       },
 
       removePosition: (id: string) => {

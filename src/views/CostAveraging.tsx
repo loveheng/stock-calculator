@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle } from 'lucide-react';
+import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize } from '../utils/mathUtils';
 import type { Position, PositionBatch } from '../store';
@@ -7,13 +7,15 @@ import ConfirmModal from '../components/ui/ConfirmModal';
 
 // ---- Tab 1: 多批次建仓实盘账本 ----
 function PositionLedger() {
-  const { positions, addPosition, addBatch, closePosition, updatePosition } = useAppStore();
+  const { positions, addPosition, addBatch, closePosition, updatePosition, deletePositionBatch, removePosition } = useAppStore();
 
   const [stockName, setStockName] = useState('');
   const [openPrice, setOpenPrice] = useState('');
   const [openAmount, setOpenAmount] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null);
+  const [deleteBatchConfirm, setDeleteBatchConfirm] = useState<{ positionId: string; batchId: string } | null>(null);
+  const [deleteTickerConfirm, setDeleteTickerConfirm] = useState<string | null>(null);
 
   // 新建建仓
   const handleOpenPosition = () => {
@@ -110,6 +112,20 @@ function PositionLedger() {
     setCloseConfirmId(null);
   };
 
+  // 删除单笔批次
+  const handleDeleteBatch = () => {
+    if (!deleteBatchConfirm) return;
+    deletePositionBatch(deleteBatchConfirm.positionId, deleteBatchConfirm.batchId);
+    setDeleteBatchConfirm(null);
+  };
+
+  // 删除整个标的
+  const handleDeleteTicker = () => {
+    if (!deleteTickerConfirm) return;
+    removePosition(deleteTickerConfirm);
+    setDeleteTickerConfirm(null);
+  };
+
   const activePositions = positions.filter((p) => !p.isClosed);
   const closedPositions = positions.filter((p) => p.isClosed);
 
@@ -168,7 +184,16 @@ function PositionLedger() {
         <div key={pos.id} className="p-4 bg-slate-900 rounded-lg border border-slate-700">
           <div className="flex items-center justify-between mb-2">
             <h4 className="font-semibold text-slate-200">{pos.stockName}</h4>
-            <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
+              <button
+                onClick={() => setDeleteTickerConfirm(pos.id)}
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                title="删除标的"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3 text-sm mb-3">
             <div>
@@ -204,25 +229,55 @@ function PositionLedger() {
 
           {expandedId === pos.id && (
             <div className="mt-2 space-y-1">
-              {pos.batches.map((batch) => (
-                <div key={batch.id} className="flex items-center justify-between text-xs text-slate-400 py-1.5 border-b border-slate-800 last:border-0">
-                  <div className="flex items-center gap-2">
-                    <span className={`px-1.5 py-0.5 rounded text-xs ${
-                      batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
-                      batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
-                      batch.type === 'reduce' ? 'bg-red-500/20 text-red-400' :
-                      'bg-slate-500/20 text-slate-400'
-                    }`}>
-                      {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结案'}
-                    </span>
-                    <span>¥{batch.price.toFixed(3)}</span>
-                    <span>× {Math.abs(batch.amount)}股</span>
+              {(() => {
+                const sortedBatches = [...pos.batches].sort(
+                  (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+                );
+                const isFirstBatch = (batchId: string) => sortedBatches.length > 1 && sortedBatches[0].id === batchId;
+                return sortedBatches.map((batch) => (
+                  <div key={batch.id} className="flex items-center justify-between text-xs text-slate-400 py-1.5 border-b border-slate-800 last:border-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`px-1.5 py-0.5 rounded text-xs ${
+                        batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
+                        batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
+                        batch.type === 'reduce' ? 'bg-red-500/20 text-red-400' :
+                        'bg-slate-500/20 text-slate-400'
+                      }`}>
+                        {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结案'}
+                      </span>
+                      <span>¥{batch.price.toFixed(3)}</span>
+                      <span>× {Math.abs(batch.amount)}股</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500">
+                        {new Date(batch.timestamp).toLocaleDateString()}
+                      </span>
+                      <div className="relative group">
+                        <button
+                          onClick={() => {
+                            if (isFirstBatch(batch.id)) return;
+                            setDeleteBatchConfirm({ positionId: pos.id, batchId: batch.id });
+                          }}
+                          disabled={isFirstBatch(batch.id)}
+                          className={`p-1 rounded ${
+                            isFirstBatch(batch.id)
+                              ? 'text-slate-700 cursor-not-allowed'
+                              : 'hover:bg-slate-800 text-slate-600 hover:text-red-400'
+                          }`}
+                          title={isFirstBatch(batch.id) ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】' : '删除该笔操作记录'}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                        {isFirstBatch(batch.id) && (
+                          <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-60 bg-slate-800 text-slate-200 text-xs rounded-lg p-2 shadow-lg z-10">
+                            已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <span className="text-slate-500">
-                    {new Date(batch.timestamp).toLocaleDateString()}
-                  </span>
-                </div>
-              ))}
+                ));
+              })()}
             </div>
           )}
         </div>
@@ -241,9 +296,18 @@ function PositionLedger() {
                     ¥{pos.currentCost.toFixed(3)} × {pos.currentAmount.toLocaleString()}股
                   </span>
                 </div>
-                <span className="text-xs text-slate-500">
-                  {pos.closedAt ? new Date(pos.closedAt).toLocaleDateString() : ''}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500">
+                    {pos.closedAt ? new Date(pos.closedAt).toLocaleDateString() : ''}
+                  </span>
+                  <button
+                    onClick={() => setDeleteTickerConfirm(pos.id)}
+                    className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                    title="删除标的"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -258,6 +322,28 @@ function PositionLedger() {
         confirmText="确认结案"
         onConfirm={() => closeConfirmId && handleClose(closeConfirmId)}
         onCancel={() => setCloseConfirmId(null)}
+      />
+
+      {/* 删除单笔批次确认 */}
+      <ConfirmModal
+        open={deleteBatchConfirm !== null}
+        title="删除建仓记录"
+        message="确定要删除该笔建仓/加减仓记录吗？删除后将重新计算当前持仓成本。"
+        confirmText="确认删除"
+        danger
+        onConfirm={handleDeleteBatch}
+        onCancel={() => setDeleteBatchConfirm(null)}
+      />
+
+      {/* 删除整个标的确认 */}
+      <ConfirmModal
+        open={deleteTickerConfirm !== null}
+        title="删除标的账本"
+        message="确定要删除该标的的所有建仓记录吗？此操作不可恢复！"
+        confirmText="确认删除"
+        danger
+        onConfirm={handleDeleteTicker}
+        onCancel={() => setDeleteTickerConfirm(null)}
       />
     </div>
   );

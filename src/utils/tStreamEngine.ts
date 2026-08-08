@@ -21,7 +21,9 @@
 //  - 池持仓归零后下一次买入自动开启 Round + 1
 //
 //  绝对现金流法（Transfer to Base Position）：
-//  - P_avg = Σ(买入单价×买入数量) / Σ买入数量
+//  - 正T：P_avg = Σ(买入单价×买入数量) / Σ买入数量
+//  - 倒T：P_avg = [(P_base×N_sell) + Σ(后续买入单价×数量)] / (N_sell + Σ后续买入数量)
+//          （倒T首笔卖出将底仓持仓均价 P_base × 卖出数量 N_sell 并入 P_avg 加权计算池）
 //  - 归档净收益 = Σ((卖出单价 - P_avg)×卖出数量) - 系统计算总规费
 //  - 剩余持仓按 P_avg 平价划转入底仓，做T持仓归零触发归档
 // ============================================================
@@ -47,6 +49,8 @@ export interface TStreamRecord {
   note?: string;
   quoteId?: string;
   selectedStock?: StockSearchItem;
+  /** 倒T首笔卖出时已从底仓扣减数量 */
+  baseDeductedAmount?: number;
 }
 
 // ---- 单笔流水的撮合状态 ----
@@ -88,6 +92,10 @@ export interface StockStreamResult {
   pendingTotalCost: number;
   /** 待对冲数量中正在等待回补的卖出量（倒T裸卖量） */
   shortPendingAmount: number;
+  /** 倒T首笔裸卖数量（作为归档恢复底仓的基准） */
+  initialShortSellQty?: number;
+  /** 该 Round 模式：正T / 倒T */
+  mode: 'long' | 'short';
   /** 状态：完全结清 | 部分对冲 (剩余X股) | 待对冲 | 倒T待回补 */
   status: StreamStatus;
   /** 该股票全部流水（按时间戳自早至晚有序） */
@@ -103,7 +111,8 @@ export interface StockStreamResult {
   roundStarted: boolean;
   /** 本 Round 开启时间（第一笔流水时间戳） */
   openedAt?: string;
-  /** 本 Round 加权均价 P_avg = Σ(买入单价×买入数量) / Σ买入数量 */
+  /** 本 Round 加权均价 P_avg：正T = Σ(买入单价×买入数量)/Σ买入数量；
+   * 倒T（先卖后买）= [(P_base×N_sell) + Σ(后续买入单价×数量)] / (N_sell + Σ后续买入数量)，底仓成本并入加权池 */
   avgPrice: number;
   /** 本 Round 总买入数量 */
   buyAmount: number;
@@ -121,6 +130,14 @@ export interface StockStreamResult {
   totalFee: number;
   /** 绝对现金流法净收益 = Σ(已对冲卖价×卖量) - P_avg×已对冲卖量 - 总规费 */
   transferProfit: number;
+  /** 本 Round 全部卖出按各自成本基准（倒T首卖=P_base，其余=P_avg）计算的成本总额 */
+  sellCostTotal: number;
+  /** 已实现（已对冲）卖出的成本基准总额 */
+  realizedSellCost: number;
+  /** 倒T首笔卖出继承的底仓持仓均价 P_base（仅当 Round 以倒T首卖开启且有底仓成本时） */
+  firstSellCostBasis?: number;
+  /** 倒T成本继承：并入 P_avg 加权计算池的底仓卖出数量 N_sell */
+  inheritedBaseAmount?: number;
   /** 交易笔数 */
   tradeCount: number;
   /** 持股天数（开启至最后交易，至少 1 天） */
@@ -133,6 +150,10 @@ export interface SellValidation {
   /** 当前最大可卖数量 */
   maxSellable: number;
   error?: string;
+  /** 倒T首笔卖出时是否因缺少底仓持仓而校验失败 */
+  missingPosition?: boolean;
+  /** 是否为倒T首笔卖出（触发严格底仓校验） */
+  isFirstSell?: boolean;
 }
 
 /**
@@ -164,7 +185,8 @@ function calcHoldingDays(open: string | undefined, close: string | undefined): n
  */
 export function processStockStream(
   records: TStreamRecord[],
-  feeConfig: FeeConfig
+  feeConfig: FeeConfig,
+  baseCost?: number
 ): StockStreamResult {
   const sorted = [...records].sort((a, b) => compareByTimestamp(a.timestamp, b.timestamp));
 
@@ -199,6 +221,28 @@ export function processStockStream(
   let lastSellRemaining = 0;
   let lastSellCleared = false;
   let lastClosedAt: string | undefined;
+  // ---- 倒T首卖成本继承：第一笔卖出使用底仓持仓均价 P_base 作为对冲成本基准 ----
+  let firstSellId: string | undefined;
+
+  // ---- 倒T底仓成本并入 P_avg 加权计算池 ----
+  // 倒T（先卖后买）：首笔卖出时把 (P_base × N_sell) 作为初始基准填入 P_avg 池，
+  // 后续买入按标准公式平滑合成：
+  //   P_avg = [(P_base × N_sell) + Σ(后续买入单价 × 后续买入数量)] / (N_sell + Σ后续买入数量)
+  let inheritedBaseQty = 0;
+  let inheritedBaseTotal = 0;
+  let initialShortSellQty = 0;
+  if (
+    sorted.length > 0 &&
+    sorted[0].direction === 'sell' &&
+    baseCost !== undefined &&
+    baseCost > 0
+  ) {
+    const firstBuyIndex = sorted.findIndex((r) => r.direction === 'buy');
+    const shortSlice = firstBuyIndex === -1 ? sorted : sorted.slice(0, firstBuyIndex);
+    initialShortSellQty = shortSlice.reduce((sum, r) => sum + (r.direction === 'sell' ? r.amount : 0), 0);
+    inheritedBaseQty = initialShortSellQty;
+    inheritedBaseTotal = baseCost * inheritedBaseQty;
+  }
 
   // ---- Round 汇总累加器 ----
   let openedAt: string | undefined;
@@ -210,7 +254,8 @@ export function processStockStream(
   let realizedSellValue = 0;
   let tradeCount = 0;
 
-  for (const rec of sorted) {
+  for (let i = 0; i < sorted.length; i++) {
+    const rec = sorted[i];
     if (openedAt === undefined) openedAt = rec.timestamp;
     tradeCount += 1;
 
@@ -275,6 +320,8 @@ export function processStockStream(
         note: rec.note,
       });
     } else {
+      // 倒T首笔卖出：Round 第一条流水即卖出（先卖后买），继承底仓持仓均价为对冲成本基准
+      if (i === 0) firstSellId = rec.id;
       sellAmount += rec.amount;
       sellValue += rec.price * rec.amount;
 
@@ -370,13 +417,28 @@ export function processStockStream(
   realizedFee = roundTo(totalFeeAccumulated - pendingBuyFee - pendingSellFee, 2);
 
   // ---- Round 绝对现金流汇总 ----
-  const avgPrice = buyAmount > 0 ? buyTotal / buyAmount : 0; // P_avg
-  // 归档净收益 = Σ((卖出单价 - P_avg)×卖出数量) - 系统计算总规费(已实现部分)
+  // 统一 P_avg：
+  //  - 正T：仅按买入流水加权
+  //  - 倒T：初始基准 = 底仓成本 (P_base × N_sell) 并入加权池，与后续买入平滑合成
+  const effectiveBuyAmount = buyAmount + inheritedBaseQty;
+  const effectiveBuyTotal = buyTotal + inheritedBaseTotal;
+  const avgPrice = effectiveBuyAmount > 0 ? effectiveBuyTotal / effectiveBuyAmount : 0; // P_avg
+  // 倒T成本继承：底仓成本 (P_base × N_sell) 已并入 P_avg 加权池，
+  // 故本 Round 全部卖出（含倒T首卖）统一使用融合后的 P_avg 作为对冲成本基准结算。
+  let sellCostTotal = 0; // Σ(P_avg × 卖出数量)
+  let realizedSellCost = 0; // Σ(P_avg × 已对冲卖出数量)
+  for (const e of entries) {
+    if (e.direction !== 'sell') continue;
+    sellCostTotal += avgPrice * e.amount;
+    realizedSellCost += avgPrice * e.matchedAmount;
+  }
+  // 归档净收益 = Σ((卖出单价 - 成本基准)×卖出数量) - 系统计算总规费(已实现部分)
   //  - realizedFee = 全部流水规费 - 未对冲池内沉淀规费 = 与已对冲撮合相关的规费
   //  - 场景一（纯买入转底仓，无卖出）：sellValue=0 -> 收益 0 - 0 = 0 ✅
   //  - 场景二（卖200@12，P_avg=10.25）：2400-2050=350 -> 350 - 规费 ✅
+  //  - 场景三（倒T首卖100@12 继承 P_base=10，未买回）：P_avg=10 -> 1200-1000=200 -> 200 - 规费 ✅
   const transferProfit = roundTo(
-    sellValue - avgPrice * sellAmount - realizedFee,
+    sellValue - sellCostTotal - realizedFee,
     2
   );
   const holdingDays = calcHoldingDays(openedAt, lastClosedAt ?? sorted[sorted.length - 1]?.timestamp);
@@ -407,6 +469,8 @@ export function processStockStream(
     weightedBuyCost,
     pendingTotalCost,
     shortPendingAmount: shortTotal,
+    initialShortSellQty: initialShortSellQty > 0 ? initialShortSellQty : undefined,
+    mode: sorted[0]?.direction === 'sell' ? 'short' : 'long',
     status,
     entries,
     lastSellRemaining,
@@ -425,6 +489,13 @@ export function processStockStream(
     realizedSellValue: roundTo(realizedSellValue, 2),
     totalFee: roundTo(totalFeeAccumulated, 2),
     transferProfit,
+    sellCostTotal: roundTo(sellCostTotal, 2),
+    realizedSellCost: roundTo(realizedSellCost, 2),
+    firstSellCostBasis:
+      firstSellId && baseCost !== undefined && baseCost > 0
+        ? roundTo(baseCost, 3)
+        : undefined,
+    inheritedBaseAmount: inheritedBaseQty > 0 ? inheritedBaseQty : undefined,
     tradeCount,
     holdingDays,
   };
@@ -435,7 +506,8 @@ export function processStockStream(
  */
 export function processAllStreams(
   records: TStreamRecord[],
-  feeConfig: FeeConfig
+  feeConfig: FeeConfig,
+  baseCosts?: Map<string, number>
 ): StockStreamResult[] {
   const byStock = new Map<string, TStreamRecord[]>();
   for (const rec of records) {
@@ -445,8 +517,8 @@ export function processAllStreams(
     else byStock.set(key, [rec]);
   }
   const results: StockStreamResult[] = [];
-  for (const [, list] of byStock) {
-    results.push(processStockStream(list, feeConfig));
+  for (const [key, list] of byStock) {
+    results.push(processStockStream(list, feeConfig, baseCosts?.get(key)));
   }
   // 按最新流水时间降序展示
   return results.sort((a, b) => {
@@ -475,7 +547,8 @@ export function validateStreamTrade(
   basePositionAmount: number,
   direction: 'buy' | 'sell',
   price: number,
-  amount: number
+  amount: number,
+  isFirstSell?: boolean
 ): SellValidation {
   // 价格与数量必须 > 0
   if (!price || price <= 0 || !amount || amount <= 0) {
@@ -490,7 +563,33 @@ export function validateStreamTrade(
     return { valid: true, maxSellable: 0 };
   }
 
-  // 卖出超卖校验
+  // ---- 倒T首笔卖出：严格底仓校验（先卖后买，Round 尚无该标的流水） ----
+  const firstSell = isFirstSell ?? !stream;
+  if (firstSell) {
+    const baseHolding = Math.max(0, basePositionAmount);
+    // 1) 标的存在性校验：持仓/成本摊薄账本中必须存在该标的
+    if (baseHolding <= 0) {
+      return {
+        valid: false,
+        maxSellable: 0,
+        missingPosition: true,
+        isFirstSell: true,
+        error: '您没有该标的的持仓，无法进行倒 T 操作',
+      };
+    }
+    // 2) 持仓数量校验：卖出数量不能超过底仓可用数量 N_base
+    if (amount > baseHolding) {
+      return {
+        valid: false,
+        maxSellable: baseHolding,
+        isFirstSell: true,
+        error: `卖出数量超过最大可卖数量（当前最大可卖: ${baseHolding} 股）`,
+      };
+    }
+    return { valid: true, maxSellable: baseHolding, isFirstSell: true };
+  }
+
+  // ---- 后续卖出：正常校验（待对冲持仓 + 底仓） ----
   const pending = Math.max(0, stream?.netPendingAmount ?? 0);
   const baseHolding = Math.max(0, basePositionAmount);
   const maxSellable = pending + baseHolding;

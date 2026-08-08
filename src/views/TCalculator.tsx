@@ -32,6 +32,16 @@ function pnlColor(value: number): string {
   return value >= 0 ? 'text-red-400' : 'text-green-400';
 }
 
+function isSameDay(timestampA: string, timestampB: string): boolean {
+  const a = new Date(timestampA);
+  const b = new Date(timestampB);
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
 // ---------- 状态 Badge ----------
 function StreamStatusBadge({ result }: { result: StockStreamResult }) {
   if (result.status === 'CLEARED') {
@@ -66,29 +76,40 @@ function StreamStatusBadge({ result }: { result: StockStreamResult }) {
 function CurrentProjectCard({
   result,
   basePosition,
+  roundNo,
 }: {
   result: StockStreamResult;
   basePosition: Position | undefined;
+  roundNo: number;
 }) {
-  const [confirmTransfer, setConfirmTransfer] = useState(false);
+  const [showTxns, setShowTxns] = useState(false);
+  const [showAppend, setShowAppend] = useState(false);
   const transferToPosition = useAppStore((s) => s.transferToPosition);
+  const settleShortRound = useAppStore((s) => s.settleShortRound);
   const addToast = (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
 
   const baseHolding = basePosition?.currentAmount ?? 0;
 
+  const handleSettleShort = () => {
+    const res = settleShortRound(result.fullCode);
+    if (res.ok) {
+      addToast(res.message);
+    } else {
+      addToast(`🛑 ${res.message}`);
+    }
+  };
+
   const handleTransfer = () => {
     const res = transferToPosition(result.fullCode);
     if (res.ok) {
-      setConfirmTransfer(false);
       addToast(res.message);
     } else {
-      addToast(res.message);
+      addToast(`🛑 ${res.message}`);
     }
   };
 
   // ---- [+ 追加记录] 快速录入（同标的便捷追加，走同一撮合引擎） ----
   const addStreamRecord = useAppStore((s) => s.addStreamRecord);
-  const [showAppend, setShowAppend] = useState(false);
   const [apDir, setApDir] = useState<'buy' | 'sell'>('buy');
   const [apPrice, setApPrice] = useState('');
   const [apAmount, setApAmount] = useState('');
@@ -134,6 +155,12 @@ function CurrentProjectCard({
       note: apNote.trim() || undefined,
     };
     const res = addStreamRecord(rec);
+    // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量）-> 阻止提交并弹出 Toast
+    if (res?.rejected) {
+      addToast(`🛑 ${res.rejectedReason ?? '校验未通过'}`);
+      setApError(res.rejectedReason ?? '校验未通过');
+      return;
+    }
     if (res.cleared) {
       addToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${(res.netProfit ?? 0).toFixed(2)}`);
     } else {
@@ -148,16 +175,26 @@ function CurrentProjectCard({
   return (
     <div className="card space-y-3 !mb-0">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="font-semibold text-slate-200 truncate">{result.stockName}</span>
           <span className="text-xs text-slate-500 shrink-0">{result.fullCode}</span>
+          <span className="text-xs bg-slate-700/80 text-slate-200 px-1.5 py-0.5 rounded-full font-bold shrink-0">
+            Round {roundNo}
+          </span>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${result.mode === 'short' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
+            {result.mode === 'short' ? '倒T' : '正T'}
+          </span>
           <StreamStatusBadge result={result} />
         </div>
-        {baseHolding > 0 && (
+        {basePosition && basePosition.currentAmount === 0 ? (
+          <span className="text-xs text-amber-300 shrink-0 bg-amber-500/10 px-2 py-0.5 rounded-full">
+            底仓出空
+          </span>
+        ) : baseHolding > 0 ? (
           <span className="text-xs text-slate-400 shrink-0">
             底仓 <b className="text-slate-200">{baseHolding}</b> 股
           </span>
-        )}
+        ) : null}
       </div>
 
       {/* 当前项目指标 */}
@@ -200,68 +237,110 @@ function CurrentProjectCard({
         <div>
           已卖 {result.realizedSellAmount} 股 / 总买 {result.buyAmount} 股 / {result.tradeCount} 笔 / 持股 {result.holdingDays} 天
         </div>
+        {/* 倒T成本继承：底仓 (P_base × N_sell) 并入 P_avg 加权池，全部卖出统一按融合 P_avg 结算 */}
+        {result.firstSellCostBasis && result.firstSellCostBasis > 0 && result.inheritedBaseAmount && (
+          <div className="text-xs">
+            ⚙ 倒T成本继承：底仓 ¥{result.firstSellCostBasis.toFixed(3)} × {result.inheritedBaseAmount} 股并入 P_avg 加权池
+            <span className="text-slate-500 ml-1">
+              → 融合 P_avg <span className="font-mono font-semibold text-amber-400">¥{result.avgPrice.toFixed(3)}</span>，全部卖出/转底仓统一按此结算
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* 一键划转底仓 */}
-      {result.status !== 'CLEARED' && result.netPendingAmount > 0 && (
-        <div className="pt-1">
-          {!confirmTransfer ? (
-            <button
-              onClick={() => setConfirmTransfer(true)}
-              className="btn btn-primary btn-block"
-            >
-              📦 一键划转底仓（绝对现金流法）
-            </button>
-          ) : (
-            <div className="space-y-2 p-3 bg-slate-900 rounded-lg">
-              <p className="text-xs text-slate-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2">
-                将剩余 <b className="text-amber-400">{result.netPendingAmount}</b> 股按 P_avg（¥{result.avgPrice.toFixed(3)}）平价划转入底仓，
-                做T归零后自动归档本轮战报。
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleTransfer}
-                  className="btn btn-primary flex-1 !py-2"
-                >
-                  确认划转
-                </button>
-                <button
-                  onClick={() => setConfirmTransfer(false)}
-                  className="btn btn-outline flex-1 !py-2"
-                >
-                  取消
-                </button>
-              </div>
+      {result.entries.length > 0 && (
+        <div className="pt-2">
+          <button
+            onClick={() => setShowTxns((v) => !v)}
+            className="text-xs text-blue-400 hover:text-blue-300 underline"
+          >
+            {showTxns ? '▾ 收起流水明细' : `▸ 查看流水明细（${result.entries.length} 笔）`}
+          </button>
+          {showTxns && (
+            <div className="mt-2 bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
+              {result.entries.map((entry) => (
+                <div key={entry.id} className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${entry.direction === 'buy' ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
+                        {entry.direction === 'buy' ? '买入' : '卖出'}
+                      </span>
+                      <span className="text-slate-500">{new Date(entry.timestamp).toLocaleString()}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-slate-400">
+                      <span>¥{entry.price.toFixed(3)}</span>
+                      <span>{entry.amount} 股</span>
+                      <span>手续费 ¥{entry.fee.toFixed(2)}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-slate-500">对冲/收益</div>
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
+                      <span className={entry.realizedProfit >= 0 ? 'text-red-400' : 'text-green-400'}>
+                        {entry.realizedProfit >= 0 ? '+' : ''}{formatCurrency(entry.realizedProfit)}
+                      </span>
+                    </div>
+                    {entry.note && <div className="text-slate-500">{entry.note}</div>}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
       )}
 
-      {/* [+ 追加记录] 快速录入 */}
-      {result.status !== 'CLEARED' && (
-        <div className="pt-1">
-          <button
-            onClick={() => setShowAppend((v) => !v)}
-            className="text-xs text-blue-400 hover:text-blue-300 underline"
-          >
-            {showAppend ? '▾ 收起追加表单' : '+ 追加记录'}
-          </button>
-          {showAppend && (
-            <div className="mt-2 space-y-2 p-3 bg-slate-900 rounded-lg">
+      <div className="pt-3 grid grid-cols-4 gap-2">
+        <button
+          type="button"
+          onClick={() => setShowAppend(true)}
+          className="col-span-4 md:col-span-3 btn btn-primary !py-3"
+        >
+          + 追加记录
+        </button>
+        <button
+          type="button"
+          onClick={result.mode === 'short' ? handleSettleShort : handleTransfer}
+          className="col-span-4 md:col-span-1 btn btn-warning !py-3"
+          disabled={result.mode !== 'short' && result.netPendingAmount <= 0}
+        >
+          {result.mode === 'short' ? '结算 / 转底仓' : '一键划转底仓'}
+        </button>
+      </div>
+
+      {showAppend && (
+        <div className="fixed inset-0 z-[90] bg-black/60 p-4 flex items-center justify-center">
+          <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+              <div>
+                <p className="text-sm font-semibold text-slate-100">追加流水记录</p>
+                <p className="text-xs text-slate-500">可录入买入/卖出流水，系统实时撮合当前做T Round。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAppend(false)}
+                className="rounded-lg p-2 text-slate-400 hover:text-white hover:bg-slate-800"
+              >
+                关闭
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
               <div className="grid grid-cols-2 gap-2">
                 <button
+                  type="button"
                   onClick={() => setApDir('buy')}
-                  className={`text-xs px-2 py-1.5 rounded-lg font-medium transition-colors ${
+                  className={`text-sm px-3 py-2 rounded-lg font-medium transition-colors ${
                     apDir === 'buy'
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                   }`}
                 >
-                   买入
+                  买入
                 </button>
                 <button
+                  type="button"
                   onClick={() => setApDir('sell')}
-                  className={`text-xs px-2 py-1.5 rounded-lg font-medium transition-colors ${
+                  className={`text-sm px-3 py-2 rounded-lg font-medium transition-colors ${
                     apDir === 'sell'
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
@@ -270,7 +349,7 @@ function CurrentProjectCard({
                   卖出
                 </button>
               </div>
-              <div className="form-row">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="form-group">
                   <label>价格（元）</label>
                   <input
@@ -296,57 +375,64 @@ function CurrentProjectCard({
                   />
                 </div>
               </div>
-              <div className="form-group">
-                <label>时间</label>
-                <input
-                  type="datetime-local"
-                  value={apTime}
-                  onChange={(e) => setApTime(e.target.value)}
-                  step="60"
-                  className="[color-scheme:dark]"
-                />
-              </div>
-              <div className="form-group">
-                <label>备注</label>
-                <input
-                  type="text"
-                  value={apNote}
-                  onChange={(e) => setApNote(e.target.value)}
-                  placeholder="可选"
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="form-group">
+                  <label>时间</label>
+                  <input
+                    type="datetime-local"
+                    value={apTime}
+                    onChange={(e) => setApTime(e.target.value)}
+                    step="60"
+                    className="[color-scheme:dark]"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>备注</label>
+                  <input
+                    type="text"
+                    value={apNote}
+                    onChange={(e) => setApNote(e.target.value)}
+                    placeholder="可选"
+                  />
+                </div>
               </div>
               {!apValidation.valid && (
-                <div className="flex items-center justify-between gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
-                  <span className="text-[11px] font-medium text-red-300">🛑 {apValidation.error}</span>
-                  <button
-                    onClick={fillAppendMaxSell}
-                    className="text-[11px] px-2 py-1 rounded-lg bg-red-600 text-white font-medium hover:bg-red-700 shrink-0"
-                  >
-                    全部卖出
-                  </button>
+                <div className="flex items-center justify-between gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-red-300">
+                  <span>🛑 {apValidation.error}</span>
+                  {(apValidation.maxSellable ?? 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={fillAppendMaxSell}
+                      className="text-xs px-2 py-1 rounded-lg bg-red-600 text-white hover:bg-red-700"
+                    >
+                      全部卖出
+                    </button>
+                  )}
                 </div>
               )}
               {apError && (
-                <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
                   {apError}
                 </div>
               )}
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <button
+                  type="button"
                   onClick={handleAppend}
-                  className="btn btn-primary flex-1 !py-2"
+                  className="btn btn-primary flex-1"
                 >
                   追加提交
                 </button>
                 <button
+                  type="button"
                   onClick={() => setShowAppend(false)}
-                  className="btn btn-outline flex-1 !py-2"
+                  className="btn btn-outline flex-1"
                 >
                   取消
                 </button>
               </div>
             </div>
-          )}
+          </div>
         </div>
       )}
     </div>
@@ -359,35 +445,49 @@ function ArchiveRoundCard({
   onRemove,
 }: {
   round: NonNullable<ReturnType<typeof useAppStore.getState>['tRounds']>[number];
-  onRemove: (id: string) => void;
+  onRemove: (id: string, options?: { rollbackBase?: boolean }) => void;
 }) {
   const [showTxns, setShowTxns] = useState(false);
   const txns = round.transactions ?? [];
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-2">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="font-semibold text-slate-200 truncate">{round.stockName}</span>
           <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full font-bold shrink-0">
             Round {round.roundNo}
           </span>
-          {round.settleType === 'transfer' && (
-            <span className="text-xs bg-purple-500/15 text-purple-400 px-1.5 py-0.5 rounded-full font-bold shrink-0">
-              📦 划转结清
-            </span>
-          )}
-          {round.settleType === 'clear' && (
-            <span className="text-xs bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded-full font-bold shrink-0">
-              [已结清]
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.mode === 'short' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
+            {round.mode === 'short' ? '倒T' : '正T'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {round.settleType === 'transfer' && round.sellAmount === 0 ? (
+            <>
+              <span className="text-xs bg-slate-700/15 text-slate-200 px-1.5 py-0.5 rounded-full font-bold shrink-0">平仓</span>
+              <span className="text-xs bg-purple-500/15 text-purple-400 px-1.5 py-0.5 rounded-full font-bold shrink-0">划转</span>
+            </>
+          ) : round.settleType === 'transfer' ? (
+            <>
+              <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
+                {round.win ? '盈利' : '亏损'}
+              </span>
+              <span className="text-xs bg-purple-500/15 text-purple-400 px-1.5 py-0.5 rounded-full font-bold shrink-0">划转</span>
+            </>
+          ) : (
+            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.sellAmount > 0 ? (round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400') : 'bg-slate-700/15 text-slate-200'}`}>
+              {round.sellAmount > 0 ? (round.win ? '盈利' : '亏损') : '平仓'}
             </span>
           )}
         </div>
-        {round.netProfit !== 0 && (
+      </div>
+      {round.netProfit !== 0 && (
+        <div>
           <span className={`px-2 py-0.5 rounded-full text-xs font-bold shrink-0 ${round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
             {round.win ? '✓ 盈利' : '✗ 亏损'}
           </span>
-        )}
-      </div>
+        </div>
+      )}
       <div className="text-xs text-slate-500">
         {new Date(round.openedAt).toLocaleDateString()} ~ {new Date(round.closedAt).toLocaleDateString()} · 持股 {round.holdingDays} 天 · {round.tradeCount} 笔
       </div>
@@ -408,6 +508,11 @@ function ArchiveRoundCard({
         </div>
       </div>
       {/* 成交明细穿透（含撮合配对与划转记录） */}
+      {round.transferAmount && (
+        <div className="text-xs text-slate-400 pb-2">
+          划转底仓：{round.transferAmount} 股 @ ¥{round.avgPrice.toFixed(3)}
+        </div>
+      )}
       {txns.length > 0 && (
         <div>
           <button
@@ -454,7 +559,22 @@ function ArchiveRoundCard({
         </div>
       )}
       <button
-        onClick={() => onRemove(round.id)}
+        onClick={() => {
+          const sameDay = isSameDay(round.openedAt, round.closedAt);
+          if (round.settleType === 'transfer' && sameDay) {
+            if (window.confirm('当日划转战报删除将同步回滚底仓，确认删除？')) {
+              onRemove(round.id, { rollbackBase: true });
+            }
+          } else if (round.settleType === 'transfer') {
+            if (window.confirm('系统仅会移除此条做T战报，不会自动扣减当前底仓。如需修改底仓，请前往持仓页面手动调整。确认删除？')) {
+              onRemove(round.id);
+            }
+          } else {
+            if (window.confirm('确认删除本条历史战报？')) {
+              onRemove(round.id);
+            }
+          }
+        }}
         className="text-[11px] text-slate-500 hover:text-red-400 underline"
       >
         删除战报
@@ -472,6 +592,7 @@ export default function TCalculator() {
   const positions = useAppStore((s) => s.positions);
   const tRounds = useAppStore((s) => s.tRounds);
   const addStreamRecord = useAppStore((s) => s.addStreamRecord);
+  const validateSellWithPosition = useAppStore((s) => s.validateSellWithPosition);
   const removeStreamRecord = useAppStore((s) => s.removeStreamRecord);
   const importLegacyTRecords = useAppStore((s) => s.importLegacyTRecords);
   const removeRound = useAppStore((s) => s.removeRound);
@@ -540,8 +661,12 @@ export default function TCalculator() {
   const validation = useMemo(() => {
     const p = parseFloat(price);
     const a = parseFloat(amount);
-    return validateStreamTrade(selectedResult, basePosition?.currentAmount ?? 0, direction, p || 0, a || 0);
-  }, [selectedResult, basePosition?.currentAmount, direction, price, amount]);
+    // 倒T（先卖后买）：调用 Store 共享的严格底仓校验（标的存在性 + 可卖数量 N_base）
+    if (direction === 'sell') {
+      return validateSellWithPosition(stock?.fullCode ?? '', p || 0, a || 0);
+    }
+    return validateStreamTrade(selectedResult, basePosition?.currentAmount ?? 0, 'buy', p || 0, a || 0);
+  }, [validateSellWithPosition, stock?.fullCode, selectedResult, basePosition?.currentAmount, direction, price, amount]);
 
   // ---- 费用预览 ----
   const feePreview = useMemo(() => {
@@ -552,8 +677,9 @@ export default function TCalculator() {
   }, [price, amount, direction, feeConfig]);
 
   // ---- 全部卖出快捷键 ----
+  // 使用 strict 校验返回的 maxSellable：倒T首笔卖出 = 底仓 N_base；后续卖出 = 待对冲持仓 + 底仓
   const fillMaxSell = () => {
-    const max = Math.max(0, (selectedResult?.netPendingAmount ?? 0) + (basePosition?.currentAmount ?? 0));
+    const max = Math.max(0, validation?.maxSellable ?? 0);
     if (max > 0) setAmount(String(max));
     setDirection('sell');
   };
@@ -567,7 +693,11 @@ export default function TCalculator() {
     const p = parseFloat(price);
     const a = parseFloat(amount);
     if (validation && !validation.valid) {
+      // 倒T首笔卖出底仓校验失败（缺少持仓/超可卖数量）-> 阻止提交并弹出 Toast
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+      setToast(`🛑 ${validation.error ?? '输入无效'}`);
       setError(validation.error ?? '输入无效');
+      toastTimer.current = window.setTimeout(() => setToast(null), 4000);
       return;
     }
 
@@ -586,7 +716,15 @@ export default function TCalculator() {
       selectedStock: stock,
     };
 
-    addStreamRecord(record);
+    const result = addStreamRecord(record);
+    // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量）-> 阻止提交并弹出 Toast
+    if (result?.rejected) {
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+      setToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`);
+      setError(result.rejectedReason ?? '校验未通过');
+      toastTimer.current = window.setTimeout(() => setToast(null), 4000);
+      return;
+    }
     setPrice('');
     setAmount('');
     setNote('');
@@ -763,12 +901,15 @@ export default function TCalculator() {
         {validation && !validation.valid && (
           <div className="mt-3 flex items-center justify-between gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
             <span className="text-xs font-medium text-red-300">🛑 {validation.error}</span>
-            <button
-              onClick={fillMaxSell}
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-red-600 text-white font-medium hover:bg-red-700 shrink-0"
-            >
-              全部卖出
-            </button>
+            {/* 超可卖数量时才提供 [全部卖出] 快捷填入；缺少持仓（maxSellable=0）时无可卖数量可填 */}
+            {(validation.maxSellable ?? 0) > 0 && (
+              <button
+                onClick={fillMaxSell}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-red-600 text-white font-medium hover:bg-red-700 shrink-0"
+              >
+                全部卖出
+              </button>
+            )}
           </div>
         )}
 
@@ -807,13 +948,17 @@ export default function TCalculator() {
             暂无做T流水，从上方添加首笔买入/卖出自动开启 <b className="text-blue-400">Round 1</b>
           </div>
         ) : (
-          results.map((r) => (
-            <CurrentProjectCard
-              key={r.fullCode}
-              result={r}
-              basePosition={positions.find((p) => p.fullCode === r.fullCode && !p.isClosed)}
-            />
-          ))
+          results.map((r) => {
+            const roundNo = 1 + tRounds.filter((round) => round.fullCode === r.fullCode).length;
+            return (
+              <CurrentProjectCard
+                key={r.fullCode}
+                result={r}
+                basePosition={positions.find((p) => p.fullCode === r.fullCode && !p.isClosed)}
+                roundNo={roundNo}
+              />
+            );
+          })
         )}
       </div>
 
@@ -894,7 +1039,7 @@ export default function TCalculator() {
             {[...tRounds]
               .sort((a, b) => new Date(b.closedAt).getTime() - new Date(a.closedAt).getTime())
               .map((round) => (
-                <ArchiveRoundCard key={round.id} round={round} onRemove={removeRound} />
+                <ArchiveRoundCard key={round.id} round={round} onRemove={(id, options) => removeRound(id, options)} />
               ))}
           </div>
         )}

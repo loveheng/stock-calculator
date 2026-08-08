@@ -3,16 +3,19 @@
 //  - v3: 做T流水池 tStreams（FIFO 撮合）
 //  - v4: Round 生命周期归档库 tRounds + 绝对现金流划转
 // ============================================================
+import Decimal from 'decimal.js';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { useMemo } from 'react';
 import {
   processAllStreams,
   processStockStream,
+  validateStreamTrade,
   type TStreamRecord,
   type StockStreamResult,
+  type SellValidation,
 } from '../utils/tStreamEngine';
-import { calcTradeFees, type FeeConfig } from '../utils/mathUtils';
+import { calcTradeFees, roundTo, type FeeConfig } from '../utils/mathUtils';
 import type { StockSearchItem } from '../types/stock';
 
 // ---- 做T记录（旧版：买卖成对，仅保留用于统计页兼容展示） ----
@@ -94,6 +97,8 @@ export interface TRoundArchive {
   stockName: string;
   /** 周期序号（同一标的从 1 递增，自动开启 Round + 1） */
   roundNo: number;
+  /** 做T模式：正T / 倒T */
+  mode: 'long' | 'short';
   /** 结算方式：正常清仓 clear | 划转底仓 transfer */
   settleType: 'clear' | 'transfer';
   /** 该 Round 全部成交明细快照（含划转记录），用于历史穿透查看 */
@@ -104,6 +109,8 @@ export interface TRoundArchive {
   fees: number;
   /** 已对冲卖出数量 */
   sellAmount: number;
+  /** 划转到底仓数量（仅 transfer 场景） */
+  transferAmount?: number;
   /** 加权均价 P_avg */
   avgPrice: number;
   /** 总买入数量 */
@@ -136,6 +143,10 @@ export interface StreamAddResult {
   roundNo?: number;
   /** 该股票新增后的撮合结果 */
   stream?: StockStreamResult;
+  /** 是否被 Store 层校验拒绝（倒T首笔卖出底仓校验失败） */
+  rejected?: boolean;
+  /** 被拒绝时的提示文本 */
+  rejectedReason?: string;
 }
 
 // ---- 全局 Store 类型 ----
@@ -155,6 +166,12 @@ export interface AppStore {
   // 做T流水池（核心新模型：单边买卖流水，撮合引擎自动级联重算）
   tStreams: TStreamRecord[];
   addStreamRecord: (record: TStreamRecord) => StreamAddResult;
+  /** 倒T首笔卖出严格底仓校验（标的存在性 + 可卖数量），表单提交与 Store 更新共用 */
+  validateSellWithPosition: (
+    fullCode: string,
+    sellPrice: number,
+    sellAmount: number
+  ) => SellValidation;
   updateStreamRecord: (id: string, updates: Partial<TStreamRecord>) => void;
   removeStreamRecord: (id: string) => void;
   clearStreams: () => void;
@@ -164,7 +181,7 @@ export interface AppStore {
   // Round 生命周期归档库（历史战报）
   tRounds: TRoundArchive[];
   addRound: (round: TRoundArchive) => void;
-  removeRound: (id: string) => void;
+  removeRound: (id: string, options?: { rollbackBase?: boolean }) => void;
   clearRounds: () => void;
   /** 一键划转底仓（绝对现金流法：剩余持仓按 P_avg 平价划入；做T归零自动归档战报） */
   transferToPosition: (
@@ -172,6 +189,8 @@ export interface AppStore {
     transferAmount?: number,
     transferPrice?: number
   ) => MergeStreamResult;
+  /** 倒T主动结算；有剩余则转底仓，无剩余则直接归档 */
+  settleShortRound: (fullCode: string) => MergeStreamResult;
 
   // 持仓账本
   positions: Position[];
@@ -238,13 +257,282 @@ export function generateId(): string {
 // 保证"删除/修改某笔流水 -> 后续所有未结清持仓与已结盈亏自动刷新"。
 // 同时输出 Round 生命周期汇总（P_avg / transferProfit / 持股天数等）。
 // ============================================================
+/**
+ * 从持仓/成本摊薄账本构建 全Code -> 底仓持仓均价(P_base) 映射，
+ * 供引擎在倒T首笔卖出时继承该均价作为对冲成本基准。
+ */
+export function buildBasePositionCosts(positions: Position[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const pos of positions) {
+    if (pos.isClosed) continue;
+    const open = pos.batches.some((b) => b.type === 'open' || b.amount > 0);
+    if (!open) continue;
+    map.set(pos.fullCode, pos.currentCost);
+  }
+  return map;
+}
+
+function restoreBasePositionQuantity(
+  positions: Position[],
+  fullCode: string,
+  amount: number
+): Position[] {
+  return positions.map((p) => {
+    if (p.fullCode !== fullCode || p.isClosed) return p;
+    const currentAmount = p.currentAmount;
+    const currentTotalCost = new Decimal(p.currentCost).mul(currentAmount);
+    const addedCost = new Decimal(p.currentCost).mul(amount);
+    const newAmount = currentAmount + amount;
+    const newTotalCost = currentTotalCost.plus(addedCost);
+    const newCost = newAmount > 0 ? roundTo(newTotalCost.div(newAmount).toNumber(), 3) : 0;
+    return {
+      ...p,
+      currentAmount: newAmount,
+      currentCost: newCost,
+      totalInvested: roundTo(newCost * newAmount, 2),
+      isClosed: false,
+    };
+  });
+}
+
+function normalizeShortTDeductions(
+  rawStreams: TStreamRecord[],
+  positions: Position[]
+): { streams: TStreamRecord[]; positions: Position[] } {
+  const normalizedPositions = [...positions];
+  const grouped = new Map<string, TStreamRecord[]>();
+  for (const stream of rawStreams) {
+    const list = grouped.get(stream.fullCode);
+    if (list) list.push(stream);
+    else grouped.set(stream.fullCode, [stream]);
+  }
+
+  const updatedStreams: TStreamRecord[] = [...rawStreams];
+
+  for (const [fullCode, streams] of grouped) {
+    const sorted = [...streams].sort((a, b) => {
+      const ta = new Date(a.timestamp).getTime();
+      const tb = new Date(b.timestamp).getTime();
+      if (ta !== tb) return ta - tb;
+      return a.id.localeCompare(b.id);
+    });
+
+    const initialSellStreams = [] as TStreamRecord[];
+    let initialShortSellAmount = 0;
+    for (const stream of sorted) {
+      if (stream.direction === 'sell') {
+        initialShortSellAmount += stream.amount;
+        initialSellStreams.push(stream);
+        continue;
+      }
+      break;
+    }
+
+    const currentDeducted = initialSellStreams.reduce(
+      (sum, stream) => sum + (stream.baseDeductedAmount ?? 0),
+      0
+    );
+    const diff = initialShortSellAmount - currentDeducted;
+
+    if (diff > 0) {
+      const before = normalizedPositions.find(
+        (p) => p.fullCode === fullCode && !p.isClosed
+      );
+      if (before && before.currentAmount > 0) {
+        const result = deductBasePositionQuantity(normalizedPositions, fullCode, diff);
+        let remaining = diff;
+        for (const stream of initialSellStreams) {
+          if (remaining <= 0) break;
+          const want = Math.min(stream.amount, initialShortSellAmount);
+          const existing = stream.baseDeductedAmount ?? 0;
+          const assign = Math.max(0, Math.min(want - existing, remaining));
+          if (assign > 0) {
+            stream.baseDeductedAmount = existing + assign;
+            remaining -= assign;
+          }
+          const idx = updatedStreams.findIndex((s) => s.id === stream.id);
+          if (idx !== -1) {
+            updatedStreams[idx] = stream;
+          }
+        }
+        normalizedPositions.splice(0, normalizedPositions.length, ...result);
+      }
+    } else if (diff < 0) {
+      const restoreAmount = Math.abs(diff);
+      const result = restoreBasePositionQuantity(normalizedPositions, fullCode, restoreAmount);
+      normalizedPositions.splice(0, normalizedPositions.length, ...result);
+    }
+
+    let remainingDeduct = initialShortSellAmount;
+    for (const stream of sorted) {
+      if (stream.direction !== 'sell') {
+        stream.baseDeductedAmount = 0;
+      } else {
+        const assigned = Math.min(stream.amount, remainingDeduct);
+        stream.baseDeductedAmount = assigned > 0 ? assigned : 0;
+        remainingDeduct -= assigned;
+      }
+      const idx = updatedStreams.findIndex((s) => s.id === stream.id);
+      if (idx !== -1) {
+        updatedStreams[idx] = stream;
+      }
+    }
+  }
+
+  return { streams: updatedStreams, positions: normalizedPositions };
+}
+
+function isSameDay(timestampA: string, timestampB: string): boolean {
+  const dateA = new Date(timestampA).toISOString().slice(0, 10);
+  const dateB = new Date(timestampB).toISOString().slice(0, 10);
+  return dateA === dateB;
+}
+
+function deductBasePositionQuantity(
+  positions: Position[],
+  fullCode: string,
+  amount: number
+): Position[] {
+  return positions.map((p) => {
+    if (p.fullCode !== fullCode) return p;
+    const newAmount = Math.max(0, p.currentAmount - amount);
+    const newCost = p.currentCost;
+    const newTotalInvested = roundTo(newCost * newAmount, 2);
+    return {
+      ...p,
+      currentAmount: newAmount,
+      currentCost: newCost,
+      totalInvested: newTotalInvested,
+      isClosed: false,
+    };
+  });
+}
+
+function addBasePositionQuantity(
+  positions: Position[],
+  fullCode: string,
+  amount: number,
+  profit: number,
+  buyTotal?: number
+): Position[] {
+  return positions.map((p) => {
+    if (p.fullCode !== fullCode) return p;
+    const currentAmount = p.currentAmount;
+    const currentTotalCost = new Decimal(p.currentCost).mul(currentAmount);
+    const newAmount = currentAmount + amount;
+    let newCost: number;
+
+    if (currentAmount === 0) {
+      if (buyTotal !== undefined && amount > 0) {
+        newCost = roundTo((buyTotal - profit) / amount, 3);
+      } else {
+        const newTotalCost = new Decimal(currentTotalCost).minus(profit);
+        newCost = newAmount > 0 ? roundTo(newTotalCost.div(newAmount).toNumber(), 3) : 0;
+      }
+    } else {
+      const newTotalCost = currentTotalCost.minus(profit);
+      newCost = newAmount > 0 ? roundTo(newTotalCost.div(newAmount).toNumber(), 3) : 0;
+    }
+
+    return {
+      ...p,
+      currentAmount: newAmount,
+      currentCost: newCost,
+      totalInvested: roundTo(newCost * newAmount, 2),
+      isClosed: newAmount === 0,
+    };
+  });
+}
+
+function restoreBasePositionCost(
+  positions: Position[],
+  fullCode: string,
+  amount: number,
+  profit: number
+): Position[] {
+  const now = new Date().toISOString();
+  const pos = positions.find((p) => p.fullCode === fullCode && !p.isClosed);
+  if (!pos) {
+    const cost = amount > 0 ? roundTo((profit >= 0 ? 0 : -profit) / amount + 0, 3) : 0;
+    const newPos: Position = {
+      id: generateId(),
+      stockName: fullCode,
+      fullCode,
+      currentCost: cost,
+      currentAmount: amount,
+      batches: [
+        {
+          id: generateId(),
+          timestamp: now,
+          type: 'open',
+          price: cost,
+          amount,
+          costAfter: cost,
+          amountAfter: amount,
+          note: '倒T 归档恢复底仓',
+        },
+      ],
+      isClosed: false,
+      createdAt: now,
+      totalInvested: roundTo(cost * amount, 2),
+      realizedPnL: 0,
+    };
+    return [...positions, newPos];
+  }
+
+  const originalAmount = pos.currentAmount;
+  const finalAmount = originalAmount + amount;
+  const originalTotalCost = new Decimal(pos.currentCost).mul(finalAmount);
+  const newTotalCost = originalTotalCost.minus(profit);
+  const newCost = finalAmount > 0 ? roundTo(newTotalCost.div(finalAmount).toNumber(), 3) : 0;
+  const newTotalInvested = roundTo(newCost * finalAmount, 2);
+
+  return positions.map((p) =>
+    p.id !== pos.id
+      ? p
+      : {
+          ...p,
+          currentAmount: finalAmount,
+          currentCost: newCost,
+          totalInvested: newTotalInvested,
+          isClosed: false,
+        }
+  );
+}
+
+function rollbackTransferPosition(
+  positions: Position[],
+  fullCode: string,
+  transferAmount: number,
+  avgPrice: number
+): Position[] {
+  return positions.map((p) => {
+    if (p.fullCode !== fullCode || p.isClosed) return p;
+    const currentAmount = p.currentAmount;
+    if (currentAmount < transferAmount) return p;
+    const currentTotal = new Decimal(p.currentCost).mul(currentAmount);
+    const rollbackTotal = new Decimal(avgPrice).mul(transferAmount);
+    const nextAmount = currentAmount - transferAmount;
+    const nextTotal = currentTotal.minus(rollbackTotal);
+    const nextCost = nextAmount > 0 ? roundTo(nextTotal.div(nextAmount).toNumber(), 3) : 0;
+    return {
+      ...p,
+      currentAmount: nextAmount,
+      currentCost: nextCost,
+      totalInvested: roundTo(nextCost * nextAmount, 2),
+      isClosed: false,
+    };
+  });
+}
+
 export function useStreamResults(): StockStreamResult[] {
   const tStreams = useAppStore((s) => s.tStreams);
   const feeConfig = useAppStore((s) => s.feeConfig);
-  return useMemo(
-    () => processAllStreams(tStreams, feeConfig),
-    [tStreams, feeConfig]
-  );
+  const positions = useAppStore((s) => s.positions);
+  return useMemo(() => {
+    const baseCosts = buildBasePositionCosts(positions);
+    return processAllStreams(tStreams, feeConfig, baseCosts);
+  }, [tStreams, feeConfig, positions]);
 }
 
 // ---- 绝对现金流归档净收益（划转/自动归档共用） ----
@@ -280,6 +568,7 @@ function archiveRoundIfCleared(stream: StockStreamResult, rounds: TRoundArchive[
     id: generateId(),
     fullCode: stream.fullCode,
     stockName: stream.stockName,
+    mode: stream.mode,
     roundNo: maxRound + 1,
     settleType: 'clear',
     transactions,
@@ -341,23 +630,91 @@ export const useAppStore = create<AppStore>()(
         set({ tRecords: [] });
       },
 
+      // ---- 倒T首笔卖出严格底仓校验（标的存在性 + 可卖数量） ----
+      // 规则：
+      //  - 首笔卖出（Round 尚无该标的流水）= 倒T先卖后买 -> 严格校验底仓：标的存在性 + 卖出数量 ≤ N_base
+      //  - 后续卖出 = 正常校验（maxSellable = 待对冲持仓 pending + 底仓 N_base）
+      validateSellWithPosition: (
+        fullCode: string,
+        sellPrice: number,
+        sellAmount: number
+      ) => {
+        const { tStreams, positions, feeConfig } = get();
+        const existing = tStreams.filter((s) => s.fullCode === fullCode);
+        // 倒T首笔卖出 = Round 尚无该标的任何流水（先卖后买）
+        const isFirstSell = existing.length === 0;
+        const pos = positions.find(
+          (p) => p.fullCode === fullCode && !p.isClosed
+        );
+        const baseAmount = pos?.currentAmount ?? 0;
+        // 后续卖出：传入实际流水池撮合结果，正常计算待对冲持仓 + 底仓 => 最大可卖
+        const stream = isFirstSell
+          ? null
+          : processStockStream(
+              existing,
+              feeConfig,
+              buildBasePositionCosts(positions).get(fullCode)
+            );
+        return validateStreamTrade(
+          stream,
+          baseAmount,
+          'sell',
+          sellPrice,
+          sellAmount,
+          isFirstSell
+        );
+      },
+
       // ---- 做T流水池（增删改后自动检查 Round 归档） ----
       addStreamRecord: (record: TStreamRecord) => {
-        const { tStreams, feeConfig, tRounds } = get();
-        const next = [...tStreams, record];
-        // 级联重算，若该股票池归零则自动归档 Round
-        const results = processAllStreams(next, feeConfig);
+        // ---- Store 层兜底校验：倒T首笔卖出（Round 首条流水即卖出）严格底仓校验 ----
+        // 标的存在性 + 卖出数量 ≤ 底仓可用数量 N_base；UI 未拦截时此处也阻止写入
+        if (record.direction === 'sell') {
+          const existing = get().tStreams.filter(
+            (s) => s.fullCode === record.fullCode
+          );
+          if (existing.length === 0) {
+            const baseAmount =
+              get().positions.find(
+                (p) => p.fullCode === record.fullCode && !p.isClosed
+              )?.currentAmount ?? 0;
+            const check = validateStreamTrade(
+              null,
+              baseAmount,
+              'sell',
+              record.price,
+              record.amount,
+              true
+            );
+            if (!check.valid) {
+              return {
+                cleared: false,
+                rejected: true,
+                rejectedReason: check.error,
+              };
+            }
+          }
+        }
+
+        const { tStreams, feeConfig, tRounds, positions } = get();
+        const rawNext = [...tStreams, record];
+        const normalized = normalizeShortTDeductions(rawNext, positions);
+        const baseCosts = buildBasePositionCosts(normalized.positions);
+        const results = processAllStreams(normalized.streams, feeConfig, baseCosts);
         const stream = results.find((r) => r.fullCode === record.fullCode);
         const rounds = stream ? archiveRoundIfCleared(stream, tRounds) : tRounds;
-        // 本轮做T持仓归零 -> 自动结清归档（触发绿色 Toast）
         const cleared =
           !!stream &&
           stream.status === 'CLEARED' &&
           stream.entries.some((e) => e.direction === 'sell');
         const streamsAfter = cleared
-          ? next.filter((s) => s.fullCode !== record.fullCode)
-          : next;
-        // 构造归零结清返回结果（供 UI Toast：「本轮做T已完全结清！累计净盈亏：¥XXX.XX」）
+          ? normalized.streams.filter((s) => s.fullCode !== record.fullCode)
+          : normalized.streams;
+        let nextPositions = normalized.positions;
+        if (cleared && stream && stream.mode === 'short' && stream.initialShortSellQty) {
+          nextPositions = addBasePositionQuantity(nextPositions, stream.fullCode, stream.initialShortSellQty, stream.transferProfit);
+        }
+
         let addResult: StreamAddResult = { cleared: false, stream };
         if (cleared && stream) {
           const archivedRound = rounds
@@ -370,46 +727,66 @@ export const useAppStore = create<AppStore>()(
             stream,
           };
         }
-        set({ tStreams: streamsAfter, tRounds: rounds });
+        set({ tStreams: streamsAfter, tRounds: rounds, positions: nextPositions });
         return addResult;
       },
 
       removeStreamRecord: (id: string) => {
-        const { tStreams, feeConfig, tRounds } = get();
+        const { tStreams, feeConfig, tRounds, positions } = get();
         const target = tStreams.find((r) => r.id === id);
-        const next = tStreams.filter((r) => r.id !== id);
+        const rawNext = tStreams.filter((r) => r.id !== id);
         let rounds = tRounds;
-        let streams = next;
+        let streams = rawNext;
         if (target) {
-          const results = processAllStreams(next, feeConfig);
+          const normalized = normalizeShortTDeductions(rawNext, positions);
+          const results = processAllStreams(normalized.streams, feeConfig, buildBasePositionCosts(normalized.positions));
           const stream = results.find((r) => r.fullCode === target.fullCode);
+          let nextPositions = normalized.positions;
+          if (stream && stream.status === 'CLEARED' && stream.mode === 'short' && stream.initialShortSellQty) {
+            nextPositions = addBasePositionQuantity(nextPositions, stream.fullCode, stream.initialShortSellQty, stream.transferProfit);
+          }
           if (stream) {
             rounds = archiveRoundIfCleared(stream, tRounds);
             const hasSell = stream.entries.some((e) => e.direction === 'sell');
             if (stream.status === 'CLEARED' && hasSell) {
-              streams = next.filter((s) => s.fullCode !== target.fullCode);
+              streams = normalized.streams.filter((s) => s.fullCode !== target.fullCode);
+            } else {
+              streams = normalized.streams;
             }
+          } else {
+            streams = normalized.streams;
           }
+          set({ positions: nextPositions });
         }
         set({ tStreams: streams, tRounds: rounds });
       },
 
       updateStreamRecord: (id: string, updates: Partial<TStreamRecord>) => {
-        const { tStreams, feeConfig, tRounds } = get();
+        const { tStreams, feeConfig, tRounds, positions } = get();
         const target = tStreams.find((r) => r.id === id);
-        const next = tStreams.map((r) => (r.id === id ? { ...r, ...updates } : r));
+        const rawNext = tStreams.map((r) => (r.id === id ? { ...r, ...updates } : r));
         let rounds = tRounds;
-        let streams = next;
+        let streams = rawNext;
         if (target) {
-          const results = processAllStreams(next, feeConfig);
+          const normalized = normalizeShortTDeductions(rawNext, positions);
+          const results = processAllStreams(normalized.streams, feeConfig, buildBasePositionCosts(normalized.positions));
           const stream = results.find((r) => r.fullCode === target.fullCode);
+          let nextPositions = normalized.positions;
+          if (stream && stream.status === 'CLEARED' && stream.mode === 'short' && stream.initialShortSellQty) {
+            nextPositions = addBasePositionQuantity(nextPositions, stream.fullCode, stream.initialShortSellQty, stream.transferProfit);
+          }
           if (stream) {
             rounds = archiveRoundIfCleared(stream, tRounds);
             const hasSell = stream.entries.some((e) => e.direction === 'sell');
             if (stream.status === 'CLEARED' && hasSell) {
-              streams = next.filter((s) => s.fullCode !== target.fullCode);
+              streams = normalized.streams.filter((s) => s.fullCode !== target.fullCode);
+            } else {
+              streams = normalized.streams;
             }
+          } else {
+            streams = normalized.streams;
           }
+          set({ positions: nextPositions });
         }
         set({ tStreams: streams, tRounds: rounds });
       },
@@ -467,10 +844,24 @@ export const useAppStore = create<AppStore>()(
         set((state) => ({ tRounds: [...state.tRounds, round] }));
       },
 
-      removeRound: (id: string) => {
-        set((state) => ({
-          tRounds: state.tRounds.filter((r) => r.id !== id),
-        }));
+      removeRound: (id: string, options?: { rollbackBase?: boolean }) => {
+        set((state) => {
+          const round = state.tRounds.find((r) => r.id === id);
+          if (!round) return state;
+          let positions = state.positions;
+          if (options?.rollbackBase && round.settleType === 'transfer' && round.transferAmount) {
+            positions = rollbackTransferPosition(
+              state.positions,
+              round.fullCode,
+              round.transferAmount,
+              round.avgPrice
+            );
+          }
+          return {
+            tRounds: state.tRounds.filter((r) => r.id !== id),
+            positions,
+          };
+        });
       },
 
       clearRounds: () => {
@@ -480,14 +871,15 @@ export const useAppStore = create<AppStore>()(
       // ---- 一键划转底仓（绝对现金流法） ----
       transferToPosition: (fullCode: string, transferAmount?: number, transferPrice?: number) => {
         const { tStreams, tRounds, positions, feeConfig } = get();
+        const baseCosts = buildBasePositionCosts(positions);
         const streams = tStreams.filter((s) => s.fullCode === fullCode);
         if (streams.length === 0) {
           return { ok: false, message: '该股票没有做T流水，无法划转' };
         }
-        const result = processAllStreams(streams, feeConfig).find(
+        const result = processAllStreams(streams, feeConfig, baseCosts).find(
           (r) => r.fullCode === fullCode
         );
-        const stream = result ?? processStockStream(streams, feeConfig);
+        const stream = result ?? processStockStream(streams, feeConfig, baseCosts.get(fullCode));
         const pending = stream.netPendingAmount;
         const avg = transferPrice && transferPrice > 0 ? transferPrice : stream.avgPrice;
 
@@ -631,12 +1023,14 @@ export const useAppStore = create<AppStore>()(
           id: generateId(),
           fullCode,
           stockName: stream.stockName,
+          mode: stream.mode,
           roundNo: maxRound + 1,
           settleType: 'transfer',
           transactions,
           netProfit: transferProfit,
           fees: stream.realizedFee,
           sellAmount: stream.realizedSellAmount,
+          transferAmount: toTransfer,
           avgPrice: stream.avgPrice,
           buyAmount: stream.buyAmount,
           tradeCount: stream.tradeCount,
@@ -655,6 +1049,78 @@ export const useAppStore = create<AppStore>()(
         return {
           ok: true,
           message: `已划转 ${toTransfer} 股@${avg.toFixed(3)} 元至底仓，做T归零归档 Round ${round.roundNo}，累计净收益 ¥${transferProfit.toFixed(2)}`,
+        };
+      },
+      settleShortRound: (fullCode: string) => {
+        const { tStreams, tRounds, feeConfig, positions } = get();
+        const streams = tStreams.filter((s) => s.fullCode === fullCode);
+        if (streams.length === 0) {
+          return { ok: false, message: '当前无该标的做T流水，无法结算' };
+        }
+        const baseCosts = buildBasePositionCosts(positions);
+        const result = processAllStreams(streams, feeConfig, baseCosts).find(
+          (r) => r.fullCode === fullCode
+        );
+        if (!result) {
+          return { ok: false, message: '结算失败：未能计算当前做T结果' };
+        }
+        if (result.mode !== 'short') {
+          return { ok: false, message: '当前操作仅支持倒T结算' };
+        }
+
+        const now = new Date().toISOString();
+        const existing = tRounds.filter((r) => r.fullCode === fullCode);
+        const maxRound = existing.reduce((m, r) => Math.max(m, r.roundNo), 0);
+        const transactions: RoundTxn[] = result.entries.map((e) => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          direction: e.direction,
+          price: e.price,
+          amount: e.amount,
+          fee: e.fee,
+          matchedAmount: e.matchedAmount,
+          realizedProfit: e.realizedProfit,
+          note: e.note,
+        }));
+
+        if (result.netPendingAmount > 0) {
+          const transferRes = get().transferToPosition(fullCode);
+          if (!transferRes.ok) {
+            return transferRes;
+          }
+          return { ok: true, message: transferRes.message };
+        }
+
+        const round: TRoundArchive = {
+          id: generateId(),
+          fullCode: result.fullCode,
+          stockName: result.stockName,
+          mode: result.mode,
+          roundNo: maxRound + 1,
+          settleType: 'clear',
+          transactions,
+          netProfit: result.transferProfit,
+          fees: result.totalFee,
+          sellAmount: result.realizedSellAmount,
+          avgPrice: result.avgPrice,
+          buyAmount: result.buyAmount,
+          tradeCount: result.tradeCount,
+          holdingDays: result.holdingDays,
+          win: result.transferProfit >= 0,
+          openedAt: result.openedAt ?? now,
+          closedAt: now,
+        };
+        const streamsAfter = tStreams.filter((s) => s.fullCode !== fullCode);
+        const newRounds = [...tRounds, round];
+        const updatedPositions = positions.map((p) =>
+          p.fullCode === fullCode && !p.isClosed && p.currentAmount === 0
+            ? { ...p, isClosed: true, closedAt: now }
+            : p
+        );
+        set({ tStreams: streamsAfter, tRounds: newRounds, positions: updatedPositions });
+        return {
+          ok: true,
+          message: `已结算倒T Round ${round.roundNo}，累计净收益 ¥${result.transferProfit.toFixed(2)}`,
         };
       },
       addPosition: (pos: Position) => {
@@ -874,7 +1340,7 @@ export const useAppStore = create<AppStore>()(
           state = {
             ...state,
             tRounds: (state.tRounds ?? []).map((r) => {
-              if (r.settleType && r.transactions) return r;
+              if (r.settleType && r.transactions && r.mode) return r;
               const txns: RoundTxn[] = [
                 ...(r.buyAmount > 0
                   ? [{
@@ -904,6 +1370,7 @@ export const useAppStore = create<AppStore>()(
               return {
                 ...r,
                 settleType: (r as Partial<TRoundArchive>).settleType ?? 'clear',
+                mode: (r as Partial<TRoundArchive>).mode ?? 'long',
                 transactions: (r as Partial<TRoundArchive>).transactions ?? txns,
               };
             }),

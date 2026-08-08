@@ -551,6 +551,11 @@ function PositionLedger() {
               <h4 className="font-semibold text-slate-200">{pos.stockName}</h4>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
+                {pos.currentAmount === 0 && (
+                  <span className="text-xs text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded-full">
+                    底仓出空
+                  </span>
+                )}
                 <button
                   onClick={() => setDeleteTickerConfirm(pos.id)}
                   className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"

@@ -52,14 +52,21 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      '/api/suggest': {
-        target: 'https://suggest-fkw57.eastmoney.com',
+      '/api-gtimg': {
+        target: 'https://smartbox.gtimg.cn',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/suggest/, ''),
-        configure: (proxy) => {
-          proxy.on('error', (err) => {
-            console.error('东财 Suggest API 代理错误:', err);
-          });
+        rewrite: (path) => path.replace(/^\/api-gtimg/, ''),
+        headers: {
+          Referer: 'https://finance.qq.com/',
+        },
+      },
+      '/api/eastmoney': {
+        target: 'https://searchapi.eastmoney.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/eastmoney/, ''),
+        headers: {
+          Referer: 'https://quote.eastmoney.com',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
       },
     },

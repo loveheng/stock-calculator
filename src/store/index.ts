@@ -20,6 +20,8 @@ export interface TRecord {
   netProfit: number | null;
   profitRate: number | null;
   status: string;
+  /** 完整证券代码（含市场前缀，如 sh601318），作为与持仓账本关联的唯一主键 */
+  fullCode: string;
   /** 东财 QuoteID，作为唯一标识  */
   quoteId?: string;
   /** 搜索时选择的完整股票数据 */
@@ -44,6 +46,8 @@ export interface PositionBatch {
 export interface Position {
   id: string;
   stockName: string;
+  /** 完整证券代码（含市场前缀，如 sh601318），作为做T记录关联的唯一主键 */
+  fullCode: string;
   currentCost: number;
   currentAmount: number;
   batches: PositionBatch[];
@@ -334,7 +338,31 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name: 'stock-calculator-store',
-      version: 1,
+      version: 2,
+      // 从 v1 迁移：为旧 TRecord / Position 补全 fullCode 主键
+      migrate: (persistedState: unknown, version: number) => {
+        if (version < 2) {
+          const state = persistedState as Partial<AppStoreExport>;
+          return {
+            ...state,
+            tRecords: (state.tRecords ?? []).map((r) => ({
+              ...r,
+              // 旧数据从 selectedStock.fullCode / quoteId 推导；实在没有则回退空字符串
+              fullCode:
+                r.fullCode ??
+                r.selectedStock?.fullCode ??
+                r.quoteId ??
+                '',
+            })),
+            positions: (state.positions ?? []).map((p) => ({
+              ...p,
+              // 旧持仓账本从未保存过代码，只能填空；用户可重新选股建仓补齐
+              fullCode: p.fullCode ?? '',
+            })),
+          };
+        }
+        return persistedState;
+      },
     }
   )
 );

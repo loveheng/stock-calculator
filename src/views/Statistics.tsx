@@ -46,11 +46,11 @@ export default function Statistics() {
     });
   }, [tRecords, timeFilter]);
 
-  // 按标的汇总
+  // 按标的汇总（优先按 fullCode 精确分组，旧数据回退按名称分组）
   const stockSummary = useMemo(() => {
     const map = new Map<string, { total: number; wins: number; fee: number; profit: number }>();
     filteredRecords.forEach((r) => {
-      const key = r.stockName || '未命名';
+      const key = r.fullCode || r.stockName || '未命名';
       const item = map.get(key) || { total: 0, wins: 0, fee: 0, profit: 0 };
       item.total++;
       if (r.netProfit !== null && r.netProfit > 0) item.wins++;
@@ -267,7 +267,7 @@ export default function Statistics() {
                       {expandedStocks.has(stock) && (
                         <div className="mt-1 space-y-1 pl-4">
                               {filteredRecords
-                                .filter((r) => (r.stockName || '未命名') === stock)
+                                .filter((r) => (r.fullCode || r.stockName || '未命名') === stock)
                                 .map((r) => (
                                   <div
                                     key={r.id}
@@ -378,6 +378,9 @@ export default function Statistics() {
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className={`font-medium ${pos.isClosed ? 'text-slate-400' : 'text-slate-200'}`}>{pos.stockName}</span>
+                      {pos.fullCode && (
+                        <span className="text-xs text-slate-500 bg-slate-700/60 px-2 py-0.5 rounded-full">{pos.fullCode}</span>
+                      )}
                       {pos.isClosed ? (
                         <span className="text-xs text-slate-500 bg-slate-700/60 px-2 py-0.5 rounded-full">已结案</span>
                       ) : (

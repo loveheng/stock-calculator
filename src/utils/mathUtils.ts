@@ -39,12 +39,12 @@ export interface TargetPriceResult {
   diff: number;
 }
 
-export interface ContinuousLimitResult {
+export interface LadderItem {
   day: number;
-  upPrice: number;
-  downPrice: number;
-  upPercent: number;
-  downPercent: number;
+  price: number;
+  changeRate: number;
+  cumulativePercent: number;
+  diff: number;
 }
 
 export interface TTradeParams {
@@ -133,44 +133,32 @@ export function calcTargetPrice(basePrice: number, percent: number): TargetPrice
 }
 
 /**
- * 计算连续涨/跌停天数（复利累计）
+ * 计算连续 N 天按固定涨跌幅 r 的复利价格阶梯（支持负值即连跌）
+ * 公式：P_i = P_(i-1) × (1 + r)，即 P_i = 基准价 × (1 + r)^i
  * @param basePrice 基准价格
- * @param days 天数
- * @param limitPercent 涨跌幅限制百分比（如10表示±10%）
+ * @param days 连续天数 N
+ * @param ratePercent 单日涨跌幅百分比（如 +10 → 连涨，-7.5 → 连跌）
  */
-export function calcContinuousLimits(
+export function calcLadder(
   basePrice: number,
   days: number,
-  limitPercent: number = 10
-): ContinuousLimitResult[] {
-  const results: ContinuousLimitResult[] = [];
-  const limit = new Decimal(limitPercent);
+  ratePercent: number
+): LadderItem[] {
+  const results: LadderItem[] = [];
+  if (!isFinite(basePrice) || basePrice <= 0 || days < 1) return results;
+
+  const base = new Decimal(basePrice);
+  const factor = new Decimal(1).plus(new Decimal(ratePercent).div(100));
 
   for (let day = 1; day <= days; day++) {
-    // 涨停价：连续按日复利 (1 + limit%)^day
-    const upPrice = new Decimal(basePrice).mul(
-      new Decimal(1).plus(limit.div(100)).pow(day)
-    );
-
-    // 跌停价：连续按日复利 (1 - limit%)^day
-    const downPrice = new Decimal(basePrice).mul(
-      new Decimal(1).minus(limit.div(100)).pow(day)
-    );
-
-    // 累计涨跌幅
-    const upPercent = new Decimal(100).mul(
-      new Decimal(1).plus(limit.div(100)).pow(day).minus(1)
-    );
-    const downPercent = new Decimal(-100).mul(
-      new Decimal(1).minus(new Decimal(1).minus(limit.div(100)).pow(day))
-    );
-
+    const price = base.mul(factor.pow(day));
+    const cumulativePercent = new Decimal(100).mul(factor.pow(day).minus(1));
     results.push({
       day,
-      upPrice: roundTo(upPrice.toNumber(), 2),
-      downPrice: roundTo(downPrice.toNumber(), 2),
-      upPercent: roundTo(upPercent.toNumber(), 2),
-      downPercent: roundTo(downPercent.toNumber(), 2),
+      price: roundTo(price.toNumber(), 3),
+      changeRate: roundTo(ratePercent, 2),
+      cumulativePercent: roundTo(cumulativePercent.toNumber(), 2),
+      diff: roundTo(price.minus(base).toNumber(), 3),
     });
   }
 

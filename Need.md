@@ -558,14 +558,14 @@ src/
 ---
 
 ### 🛠️ 执行步骤 (Execution Checklist for Cline)
-
 - [ ] **Step 1**: 在 `CostAveraging.tsx` 中，使用 `positions.filter(p => p.status === 'OPEN')` 过滤渲染列表。
 - [ ] **Step 2**: 在 `Statistics.tsx` 的建仓 Tab 中，渲染所有标的数据（`OPEN` + `CLOSED`），并支持分类切换。
 - [ ] **Step 3**: 在 `Statistics.tsx` 的标的履历明细中，隐藏单笔批次的删除按钮，仅保留卡片层级的【删除整个标的】按钮及其二次 Confirm Modal。
 - [ ] **Step 4**: 测试在成本摊薄页将某个标的“结案”后，该标的是否自动从成本摊薄页消失，并在数据统计页正确归档显示。
 
 
-🤖 Task Update: Vercel Deployment, Mobile Responsiveness & PWA Support
+
+# 🤖 Task Update: Vercel Deployment, Mobile Responsiveness & PWA Support
 请对项目进行 Vercel 部署适配、移动端 UI 响应式优化 以及 PWA 原生安装能力 的全套集成。请严格按照以下规范与执行步骤逐一完成配置：
 
 1. Vercel 部署与 SPA 路由适配 (vercel.json & vite.config.ts)
@@ -655,94 +655,299 @@ padding-bottom: env(safe-area-inset-bottom);
 
 [ ] Step 5: 优化全站移动端 UI：为输入框增加 inputmode="decimal"、调整字体与点击区域大小、优化移动端汉堡菜单抽屉。
 
+# 🤖 Task Update: 增加股票名称的模糊搜索
+用腾讯股票联想搜索接口（Smartbox API）彻底替换掉项目现有的股票搜索接口逻辑。
 
-# 🤖 Task Update: Integrated Stock Auto-complete Search API (EastMoney) for TCalculator & CostAveraging
+1. 接口规范与数据解析
+请求地址：[https://smartbox.gtimg.cn/s3/?q=$](https://smartbox.gtimg.cn/s3/?q=$){encodeURIComponent(query)}&t=gp
 
-请对项目中的做T计算器 (`TCalculator.tsx`) 与成本摊薄/多批次建仓 (`CostAveraging.tsx`) 模块进行重构，将“股票名称/代码”字段升级为**股票联想搜索下拉选择组件 (Stock Search Autocomplete)**。请严格按照以下 API 规范、数据结构与交互规范执行：
+响应格式：GBK 编码的 JS 赋值字符串，形如：
+v_hint="sz000001~000001~平安银行~PAYH~GP-A^sh601318~601318~中国平安~ZGPA~GP-A";
+
+数据解析与映射规则：
+
+使用 arrayBuffer() 获取响应二进制流，并通过 new TextDecoder('gbk') 解码为中文文本。
+
+提取字符串中 ^ 分割的各项，再通过 ~ 拆分字段：
+
+item[0]: fullCode（带市场前缀的代码，如 sh601318, sz000001）
+
+item[1]: Code（纯数字代码，如 601318）
+
+item[2]: Name（股票中文名，如 中国平安）
+
+item[3]: PinYin（拼音首字母，如 ZGPA）
+
+item[4]: SecurityTypeName（证券类型，如 GP-A）
+
+核心主键逻辑：将解析出来的 fullCode (即 item[0]) 作为全局 QuoteID / 主键 ID，后续做T记录和成本摊薄建仓时，统一以该 fullCode 作为股票标的的唯一标识。
+
+2. 请更新以下代码文件：
+A. 配置 Vite 开发代理 (vite.config.ts)
+新增代理 /api-gtimg 转发至 [https://smartbox.gtimg.cn](https://smartbox.gtimg.cn)，解决跨域问题：
+
+TypeScript
+server: {
+  proxy: {
+    '/api-gtimg': {
+      target: 'https://smartbox.gtimg.cn',
+      changeOrigin: true,
+      rewrite: (path) => path.replace(/^\/api-gtimg/, ''),
+      headers: {
+        'Referer': 'https://finance.qq.com/'
+      }
+    }
+  }
+}
+B. 重构搜索服务函数 (src/services/stockService.ts)
+调整 searchStocks 函数，请求路径 /api-gtimg/s3/?q=${encodeURIComponent(input)}&t=gp。
+
+实现 GBK 解码与字符串解析，映射输出 StockSearchItem：
+
+QuoteID: item[0] (即 fullCode，作为建仓与做T的唯一标识)
+
+Code: item[1]
+
+Name: item[2]
+
+PinYin: item[3]
+
+SecurityTypeName: item[4]
+
+C. 升级类型与页面 (src/types/, src/views/)
+确认 TCalculator (做T计算器) 和 CostAveraging (成本摊薄) 保存持仓/交易记录时，均将 stockData.QuoteID（存储的 fullCode，如 sh601318）设为记录的关键唯一 Key。
+
+D. 更新 Vercel 线上代理 (vercel.json)
+在 rewrites 规则中增加：
+
+JSON
+{
+  "source": "/api-gtimg/:path*",
+  "destination": "https://smartbox.gtimg.cn/:path*"
+}
+修改完成后，请确保无 TypeScript 类型错误，并提醒我重启 Vite 开发服务器测试。
+
+
+# 🤖 Task Update: 替换底层区块数据的唯一标识
+搜索接口已经成功替换并能正常返回数据。现在需要修改前端数据模型与底层存储逻辑，将 fullCode（如 sh601318 / sz000001）全面作为建仓标的和做T记录的唯一主键标识。
+
+请按照以下步骤重构底层数据逻辑：
+
+1. 数据类型定义重构 (src/types/stock.ts 或相关类型文件)
+确认/补充 StockSearchItem 类型，确保包含 fullCode: string（字段 0，例如 sh601318）。
+
+在 持仓标的 (PositionItem) 和 做T账本 (TRecord / TAccount) 数据类型中：
+
+将主键字段（如 id 或 stockId）统一赋值/映射为 fullCode。
+
+增加或更新 fullCode: string 字段，作为与行情/历史记录关联的唯一 ID。
+
+2. 成本摊薄页面 (src/views/CostAveraging.tsx 及关联组件)
+新建/添加建仓：选择股票后，以选中的 fullCode 作为卡片/持仓记录的主键（Key/ID）。
+
+去重逻辑：在新增多批次建仓或添加股票时，基于 fullCode 进行判定。如果已存在相同的 fullCode，提示或直接合并到已有持仓，防止重复创建。
+
+LocalStorage 持久化：确保存储在本地缓存中的持仓列表，其每个 item 的唯一键均使用 fullCode。
+
+3. 做T计算器页面 (src/views/TCalculator.tsx 及关联组件)
+账本关联：新建做T账本或做T流水记录时，绑定标的的 fullCode。
+
+过滤与查询：在按股票查看做T历史明细、计算做T累计收益时，统一通过 fullCode 精确匹配对应的买卖记录。
+
+4. 数据迁移/兼容防护 (Migration & Compatibility)
+如果本地 localStorage 中保留了旧数据（比如之前用纯数字 601318 或随机数作 ID 的记录）：
+
+增加一层简单的读取兼容处理：若旧记录没有 fullCode 但有 code，尝试补充拼装（或给予默认值），避免读取旧缓存数据时报错崩溃。
+
+修改完成后，请进行 TypeScript 类型检查，确保无报错并提醒我重新测试。
+
+# 🤖 Task: Refactor Price Change Calculator (涨跌幅计算器逻辑与交互重构)
+
+请帮我重构“涨跌幅计算器”模块的交互与计算逻辑，提升易用性并补全连续阶梯计算功能：
 
 ---
 
-### 1. 股票搜索联想 API 接入规范 (`src/services/stockService.ts`)
+### 1. 模式切换与重命名
+将计算器的计算模式重命名并对齐以下逻辑：
+* **模式 A：按涨跌幅计算目标价**（原“目标价格”模式）
+  * 用户输入：基准价格、涨跌幅 (%)。
+  * 输出：目标价格、涨跌绝对金额。
+* **模式 B：按目标价计算涨跌幅**（原“涨跌值”模式）
+  * 用户输入：基准价格、目标价格。
+  * 输出：涨跌幅 (%)、涨跌绝对金额。
 
-在 `src/services/` 中新建或扩展 `stockService.ts`，封装东财股票模糊匹配接口：
+---
 
-* **接口地址建议**：建议配置代理或调用跨域可访问的搜索 Endpoint（例如东方财富 Suggest 接口）：
-  `https://searchapi.eastmoney.com/api/suggest/get` 或项目配置的 API Proxy 路径。
-* **请求方式**：`GET`
-* **请求头**：`Accept: application/json`
-* **Query 参数**：
-  * `input`: 搜索关键词（支持股票代码/中文名称/拼音首字母，如 `600519` / `贵州茅台` / `GZMT`）。
-  * `type`: `14`（综合类/股票优先）。
-  * `count`: `10`（控制返回最多 10 条匹配结果）。
-* **防抖 (Debounce) 处理**：前端搜索输入框必须加入 **300ms - 500ms 防抖** 机制，避免频繁敲击键盘时触发大量无用 HTTP 请求。
+### 2. 连续涨跌停阶梯计算功能增强
+在连续天数输入框的上边，增加板块涨跌幅快捷选项与自定义功能：
 
-#### 核心 TypeScript 数据结构类型定义 (`src/types/stock.ts`)：
-```typescript
-export interface StockSearchItem {
-  Code: string;              // 股票纯代码（如 "600519"）
-  Name: string;              // 股票中文名称（如 "贵州茅台"）
-  PinYin: string;            // 拼音首字母（如 "GZMT"）
-  SecurityTypeName: string;  // 市场板块标签（如 "沪 A"、"深 A"、"港股"）
-  SecurityType: string;
-  MktNum: string;            // 市场代码标识
-  MarketType: string;
-  Classify: string;          // 资产大类 (Stock, Fund 等)
-  Type: string;
-  UnifiedCode: string;
-  QuoteID: string;           // 东方财富唯一行情 ID（如 "1.600519"）- 作为项目的唯一标识 Key
-  ShortName: string;
-  InnerCode?: string;
-}
+1. **板块快捷单选组（在一行内排列）**：
+   * `主板 (10%)`
+   * `科创板/创业板 (20%)`
+   * `ST板块 (5%)`
+   * `自定义`
+2. **自定义涨跌幅输入区域**（仅当选中 `自定义` 时在下方展开）：
+   * 提供 **正负号切换按钮**（默认为 `+`，点击可在 `+` 与 `-` 之间切换）。
+   * 提供 **纯数字输入框**（例如用户输入 `7.5`），结合切换按钮自动合成最终涨跌幅（如 `-7.5%`）。
+3. **连续天数设置**：
+   * 位于板块选择/自定义输入框的下方，输入连续天数 $N$。
+4. **阶梯计算公式**：
+   * 第 $i$ 天价格：$P_i = P_{i-1} \times (1 + r)$
+   * 展示包含第 1 天到第 $N$ 天的每日递增/递减价格阶梯明细列表。
 
-export interface StockSearchResponse {
-  QuotationCodeTable: {
-    Data: StockSearchItem[];
-    Status: number;
-    Message: string;
-    TotalCount: number;
-  };
-}
-2. 交互与选择逻辑重构 (Autocomplete Component)
-必须做表单强校验：在做T计算器与多批次建仓表单中，股票名称/代码为必填项（若未选择有效股票，点击保存/提交时阻断并给出 Toast 提示：“请搜索并选择有效的股票标的”）。
+---
 
-下拉选择器交互 (Combobox/Autocomplete UI)：
+### 3. 组件与 UI 要求
+* 使用流畅的动画或条件渲染展示“自定义”输入框。
+* 确保输入框自动过滤非数字字符，输入时即时触发重新计算（即时响应）。
+* 请检查并排除 TypeScript 类型报错。
 
-用户在输入框键入代码、名称或拼音（如 gzmt 或 600）时，弹出下拉候选列表。
+# 🤖 Task: Refactor Continuous Limit Ladder in Price Change Calculator
 
-下拉列表项样式：左侧高亮显示 Name (Code)，右侧以 Badge 标签渲染 SecurityTypeName（例如：贵州茅台 (600519) [沪 A]）。
+请帮我重构“涨跌幅计算器”模块中的 连续涨跌停阶梯计算 功能，优化选项结构、自定义输入框样式及移动端适配：
 
-点击选择某只股票后：
+1. 快捷选项栏重构（拆分涨跌方向，去掉 ST）
+将连续阶梯计算的快捷预设选项按钮重构为以下 5 个单选项（位于“连续天数”输入框上方）：
 
-输入框自动锁定填入 Name（或 Name (Code)）。
+主板涨 10% （对应 +10%）
 
-系统使用 QuoteID（如 1.600519）替代原有的自增/随机 ID，作为该交易记录或建仓标的在系统内的唯一 Key/主键。
+主板跌 10% （对应 -10%）
 
-完整数据持久化：将接口返回的整条 Data 对象（含 QuoteID, Code, Name, SecurityTypeName, MktNum 等）随同交易记录一起存入 Store (IndexedDB / LocalStorage)。
+科创/创业涨 20% （对应 +20%）
 
-3. 应用场景覆盖规范
-做T计算器 (TCalculator.tsx)：
+科创/创业跌 20% （对应 -20%）
 
-在正T/倒T面板中，股票搜索框设为必选项。
+自定义
 
-保存做T记录时，数据结构新增存储 selectedStock: StockSearchItem 和 quoteId: item.QuoteID。
+2. “自定义”单行输入框与样式优化
+当用户选中 自定义 时，在下方展开一行精致的自定义输入区域：
 
-成本摊薄 - 多批次建仓 (CostAveraging.tsx)：
+布局结构（单行 Inline 显示）：
+展示为 [ + / - 切换按钮 ] [ 数字输入框 ] %
 
-首次发起新建仓时，通过股票搜索下拉框选择股票。
+交互与样式细节：
 
-使用 QuoteID 作为该持仓标的的核心索引 ID（例如 positionStore.getTicker(quoteId)）。
+正负号切换按钮：默认状态为 +，点击可在 +（正/红色或绿色）与 -（负）之间自由切换。
 
-界面顶栏展示标的名称时，同步渲染 SecurityTypeName 标签（如：贵州茅台 (600519) [沪 A]）。
+隐藏冗余合成文本：合成后的数值（如 -7.5%）仅在后台计算时使用，无需在界面上额外渲染合成结果文本，保持界面极简。
 
-🛠️ 执行步骤 (Execution Checklist for Cline)
-[ ] Step 1: 在 src/types/ 中添加 StockSearchItem 数据结构定义。
+数字输入框：移除浏览器默认的原生 Up/Down 数字微调箭头（appearance: none），优化 Padding 与 Focus 聚焦边框。
 
-[ ] Step 2: 在 src/services/stockService.ts 中实现带防抖与异常处理的 searchStocks(input: string) API 请求函数。
+3. 📱 移动端显示与交互深度优化
+为确保在手机/移动端设备上有优秀体验，请进行以下响应式适配：
 
-[ ] Step 3: 封装可复用的 <StockAutocomplete /> 下拉组件，支持搜索高亮、加载中状态 (Loading) 以及清空选择功能。
+快捷按钮网格/自适应换行：
+在移动端窄屏下，5 个快捷按钮自动按网格自适应排列（例如 grid-cols-2 或 flex-wrap 换行），防止按钮挤压变形或超出屏幕横向滚动。
 
-[ ] Step 4: 将 <StockAutocomplete /> 接入 TCalculator.tsx，将股票名称设为必填，保存时持久化 QuoteID 与完整 Data 对象。
+移动端触控热区放大：
 
-[ ] Step 5: 将 <StockAutocomplete /> 接入 CostAveraging.tsx 的首次建仓表单，使用 QuoteID 作为标的唯一 ID 并持久化 Data 数据。
+正负号切换按钮与快捷选项按钮设置合适的 min-height（推荐 40px+），方便手指点击。
 
-[ ] Step 6: 检查所有表单必填校验与本地持久化 Store 的 TypeScript 类型，确保无类型报错且流程顺畅。
+移动端数字输入框增加 inputMode="decimal" 属性，唤起手机原生的纯数字/小数键盘。
+
+阶梯计算结果卡片/表格：
+下方的连续天数阶梯明细列表在移动端上自动调整为紧凑型表格或卡片形态，确保价格与累计涨跌幅不折行显示。
+
+修改完成后，请检查移动端与桌面端的响应式显示效果，并确保无 TypeScript 类型错误。
+
+# 🤖 Task: 做T逻辑优化
+在股票做T（尤其是“半仓做T”或“滚动做T”）的实际交易中，**“未全额对冲”**（买卖数量不相等）和“多笔同向操作”（连续多次买入或连续多次卖出）是非常普遍且核心的需求。
+
+为了让账本既清晰、数学逻辑严密，又易于操作，通常有以下 **2 种主流处理方案**：
+
+---
+
+### 方案 1：【推荐】基于“持仓池/批次”的滚动匹配法（最符合真实做T逻辑）
+
+这种方法**不需要强制要求一笔买入必须对应一笔卖出**，而是将所有对同一只股票的操作打散为“买入流水”和“卖出流水”，由系统自动按“先入先出” (FIFO) 或 **“加权平均”** 帮进行撮合核算。
+
+#### 1. 数量不相等（如买 200 股，卖 100 股）：
+
+* **处理逻辑**：系统将这 200 股中的 **100 股** 与卖出的 100 股自动匹配，算作“已完成做T”，并计算出这 100 股的做T净收益；
+* **剩余部分**：剩下的 **100 股** 自动沉淀为“未对冲持仓”（可留待下次价格合适时再卖出对冲，或者直接合并入长期底仓）。
+
+#### 2. 同方向多次加仓（如 10 元买 100 股，9.5 元又买 100 股）：
+
+* **处理逻辑**：系统会自动将多笔买入计算为一个“加权平均买入成本”：
+
+$$\text{平均买入价} = \frac{10 \times 100 + 9.5 \times 100}{200} = 9.75 \text{ 元}$$
+
+
+* 当后续你在 10.2 元卖出 100 股时，直接按平均买入价 $9.75$ 元计算这 100 股的做T利润。
+
+---
+
+### 方案 2：分笔拆单/按批次绑定（适合精细化对比）
+
+如果你希望“明确知道某一次卖出到底是对冲了哪一次买入”，可以在 UI 交互上提供 **“部分撮合/拆单”** 功能：
+
+1. **录入操作**：每笔买入/卖出单独作为一条流水记录（包含：操作类型、价格、数量、时间）。
+2. **拆分/匹配**：
+* 当有一笔 200 股买入和 100 股卖出时，用户或系统将 200 股买入**拆分为两个 100 股**。
+* 100 股与卖出单勾选匹配，结清该笔做T损益。
+* 剩下 100 股状态显示为 **“待对冲/挂起中”**，后续有新的卖出单时再绑定该条记录。
+
+
+
+---
+
+### 💡 给你的“做T计算助手”功能的重构建议
+
+为了让你的计算器/账本功能体验达到专业级别，建议采用 **方案 1（流水化自动撮合）**。
+
+你可以直接将以下提示词发送给 **Cline**，让它为你的做T账本模块补充这个高阶对冲逻辑：
+
+---
+
+### 📋 复制发送给 Cline 的提示词 (Prompt)：
+
+> 请帮我升级做T账本的**未等额对冲与多笔买卖撮合算法**，解决“买卖数量不一致”及“连续同向买入/卖出”的核算问题：
+> ---
+> 
+> 
+> ### 1. 核心算法重构（流水化撮合与加权计算）
+> 
+> 
+> 将做T记录从“单次硬绑定”升级为“基于股票标的 (`fullCode`) 的流水池（Transaction Stream）”：
+> 1. **多笔买入平均成本计算**：
+> * 同一只股票若存在多笔未对冲的买入，系统自动计算**加权平均买入价**：
+> 
+> $$\text{加权买价} = \frac{\sum (\text{买入单价} \times \text{买入数量})}{\sum \text{买入数量}}$$
+> 
+> 
+> 
+> 
+> 2. **部分对冲（数量不一致）处理**：
+> * 当卖出数量 $N_{\text{卖}}$ 小于未对冲买入数量 $N_{\text{买}}$ 时：
+> * 取 $\min(N_{\text{买}}, N_{\text{卖}})$ 计算本次**已结做T盈亏**：$\text{已结盈亏} = (\text{卖出价} - \text{加权买价}) \times \text{对冲数量} - \text{手续费}$。
+> * 剩余数量 $(N_{\text{买}} - N_{\text{卖}})$ 状态标记为 **“部分对冲 (剩 $X$ 股待对冲)”**，保留在未结清池中。
+> 
+> 
+> 
+> 
+> 3. **多笔卖出分批对冲**：
+> * 若后续再次卖出，继续消耗剩余待对冲数量，直至完全结清。
+> 
+> 
+> 
+> 
+> ---
+> 
+> 
+> ### 2. UI 界面与交互优化
+> 
+> 
+> 1. **做T流水列表明细**：
+> * 每条交易流水增加状态标签：`完全结清` | `部分对冲 (剩余 X 股)` | `待对冲`。
+> 
+> 
+> 2. **做T统计汇总卡片**：
+> * 展示：**累计已实现做T收益**（已对冲部分的总盈亏）、**待对冲持仓数量**、**当前待对冲加权成本**。
+> 
+> 
+> 
+> 
+> ---
+> 
+> 
+> 修改完成后，请检查类型定义，确保无 TypeScript 报错，并验证数据持久化 logic。

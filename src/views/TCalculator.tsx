@@ -74,10 +74,15 @@ export default function TCalculator() {
       netProfit: result.isClosed ? result.netProfit : null,
       profitRate: result.isClosed ? result.profitRate : null,
       status: result.status,
+      // 唯一主键：完整证券代码（如 sh601318）；未选择搜索结果的旧流程回退空串
+      fullCode: selectedStock?.fullCode ?? '',
+      quoteId: selectedStock?.QuoteID,
+      selectedStock: selectedStock ?? undefined,
     });
 
     // 重置表单
     setStockName('');
+    setSelectedStock(null);
     setBuyPrice('');
     setBuyAmount('');
     setSellPrice('');
@@ -87,6 +92,7 @@ export default function TCalculator() {
 
   const handleReset = () => {
     setStockName('');
+    setSelectedStock(null);
     setBuyPrice('');
     setBuyAmount('');
     setSellPrice('');

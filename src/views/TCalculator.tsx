@@ -130,7 +130,12 @@ function CurrentProjectCard({
   roundNo: number;
 }) {
   const [showAppend, setShowAppend] = useState(false);
+  const [showEntries, setShowEntries] = useState(false);
   const removeStreamRecord = useAppStore((s) => s.removeStreamRecord);
+  /** entries 按时间倒序（最新在最上方），仅最新一条可撤销删除 */
+  const sortedEntries = [...result.entries].sort(
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+  );
   const transferToPosition = (fullCode: string) => ledgerService.transferToPositionService(fullCode);
   const settleShortRound = (fullCode: string) => ledgerService.settleShortRoundService(fullCode);
   const addToast = (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
@@ -296,44 +301,85 @@ function CurrentProjectCard({
       </div>
 
       {result.entries.length > 0 && (
-        <div className="bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
-          {result.entries.map((entry) => (
-            <div key={entry.id} className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${entry.direction === 'buy' ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
-                    {entry.direction === 'buy' ? '买入' : '卖出'}
-                  </span>
-                  <span className="text-slate-500">{new Date(entry.timestamp).toLocaleString()}</span>
+        <div className="pt-1">
+          <button
+            onClick={() => setShowEntries((v) => !v)}
+            className="text-xs text-blue-400 hover:text-blue-300 underline"
+          >
+            {showEntries
+              ? '🔼 收起明细'
+              : `🔽 展开明细（${result.entries.length} 笔）`}
+          </button>
+          {showEntries && (
+            <div className="mt-2 bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
+              {sortedEntries.map((entry, idx) => (
+                <div
+                  key={entry.id}
+                  className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          entry.direction === 'buy'
+                            ? 'bg-red-500/15 text-red-400'
+                            : 'bg-emerald-500/15 text-emerald-400'
+                        }`}
+                      >
+                        {entry.direction === 'buy' ? '买入' : '卖出'}
+                      </span>
+                      <span className="text-slate-500">
+                        {new Date(entry.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-slate-400">
+                      <span>¥{entry.price.toFixed(3)}</span>
+                      <span>{entry.amount} 股</span>
+                      <span>手续费 ¥{entry.fee.toFixed(2)}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-slate-500">对冲/收益</div>
+                      {idx === 0 ? (
+                        <button
+                          onClick={() => removeStreamRecord(entry.id)}
+                          className="text-slate-400 hover:text-red-400 transition-colors"
+                          aria-label="撤销最新一笔流水"
+                          title="撤销最新一笔流水"
+                        >
+                          🗑️
+                        </button>
+                      ) : (
+                        <span
+                          className="text-slate-600 cursor-not-allowed"
+                          title="为保证对冲逻辑正确，仅支持按顺序撤销最新的一条操作"
+                        >
+                          🔒
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
+                      <span
+                        className={
+                          entry.realizedProfit >= 0
+                            ? 'text-red-400'
+                            : 'text-green-400'
+                        }
+                      >
+                        {entry.realizedProfit >= 0 ? '+' : ''}
+                        {formatCurrency(entry.realizedProfit)}
+                      </span>
+                    </div>
+                    {entry.note && (
+                      <div className="text-slate-500">{entry.note}</div>
+                    )}
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2 text-slate-400">
-                  <span>¥{entry.price.toFixed(3)}</span>
-                  <span>{entry.amount} 股</span>
-                  <span>手续费 ¥{entry.fee.toFixed(2)}</span>
-                </div>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-slate-500">对冲/收益</div>
-                  <button
-                    onClick={() => removeStreamRecord(entry.id)}
-                    className="text-slate-600 hover:text-red-400"
-                    aria-label="删除该笔流水"
-                    title="删除该笔流水"
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-2 items-center">
-                  <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
-                  <span className={entry.realizedProfit >= 0 ? 'text-red-400' : 'text-green-400'}>
-                    {entry.realizedProfit >= 0 ? '+' : ''}{formatCurrency(entry.realizedProfit)}
-                  </span>
-                </div>
-                {entry.note && <div className="text-slate-500">{entry.note}</div>}
-              </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 
@@ -882,7 +928,7 @@ export default function TCalculator() {
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
-            正做T · 买入
+            正T · 买入
           </button>
           <button
             onClick={() => setDirection('sell')}
@@ -893,7 +939,7 @@ export default function TCalculator() {
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
-            倒做T · 卖出
+            倒T · 卖出
           </button>
         </div>
 

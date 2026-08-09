@@ -1,7 +1,7 @@
 /**
  * @file storeInit.ts
  * @description Store 初始化与持久化桥接层：应用启动时从 IndexedDB 全量装载数据到 Zustand Store，
- *              并在 Store 状态变更后自动订阅回写（含旧 LocalStorage 数据迁移）。
+ *              并在 Store 状态变更后自动订阅回写。
  * @layer DAO
  * @storage_impact 读取 IndexedDB 的 feeConfigs / positions / positionBatches / tRounds / tTransactions / stocks 表；
  *                 通过 saveAllToDB 将 Store 状态整体覆盖回写（先清空后写入）。
@@ -13,7 +13,6 @@
 // to state changes for automatic persistence back to Dexie.
 // ============================================================
 
-import { migrateFromLocalStorage } from './migration';
 import {
   ensureDefaultData,
   loadAllFromDB,
@@ -30,17 +29,15 @@ import { useAppStore, DEFAULT_FEE_CONFIG, type AppStore } from '../store';
 let initialLoadDone = false;
 
 /**
- * 初始化应用 Store：迁移旧数据 → 确保默认行 → 全量装载 DB → 注入 Store 状态。
+ * 初始化应用 Store：确保默认行 → 全量装载 DB → 注入 Store 状态。
  *
- * @description 执行顺序：① migrateFromLocalStorage() 将旧 LocalStorage 数据迁入 IndexedDB；
- *              ② ensureDefaultData() 确保现金账户与费率配置单行存在；
- *              ③ loadAllFromDB() 全量读取各表；
- *              ④ 若任一数据源非空，则 setState 覆盖当前 Store（feeConfig / positions / tRounds / tStreams / stocks）。
+ * @description 执行顺序：① ensureDefaultData() 确保现金账户与费率配置单行存在；
+ *              ② loadAllFromDB() 全量读取各表；
+ *              ③ 若任一数据源非空，则 setState 覆盖当前 Store（feeConfig / positions / tRounds / tStreams / stocks）。
  * @returns {Promise<void>}
  * @note 仅在启动时调用一次；装载完成后将 initialLoadDone 置 true，后续 Store 变更才开始持久化
  */
 export async function initStore(): Promise<void> {
-  await migrateFromLocalStorage();
   await ensureDefaultData();
 
   const { feeConfig, positions, tRounds, tStreams, stocks } = await loadAllFromDB();

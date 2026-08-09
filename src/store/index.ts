@@ -1,6 +1,6 @@
 /**
  * @file index.ts
- * @description 全局持久化状态中心（Zustand + localStorage 桥接 IndexedDB）：
+ * @description 全局内存状态中心（Zustand 纯内存管理）：
  *              管理费率配置、做T流水池（FIFO 撮合）、Round 生命周期归档库、持仓账本与数据导入导出。
  *              v3 引入做T流水池 tStreams（FIFO 撮合引擎级联重算）；v4 引入 Round 战报归档与绝对现金流划转。
  * @layer Store
@@ -10,7 +10,7 @@
  */
 
 // ============================================================
-// 全局持久化状态 (Zustand + localStorage)
+// 全局内存状态 (Zustand)
 //  - v3: 做T流水池 tStreams（FIFO 撮合）
 //  - v4: Round 生命周期归档库 tRounds + 绝对现金流划转
 // ============================================================

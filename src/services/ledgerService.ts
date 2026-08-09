@@ -159,30 +159,12 @@ export interface AddPositionTransactionData {
 }
 
 /**
- * 生成基于时间戳的降级唯一 ID。
+ * 生成全局唯一 ID。
  *
- * @description 在 crypto.randomUUID 不可用时兜底使用，格式 `时间戳-随机串`。
- * @returns {string} 唯一字符串 ID
- */
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-/**
- * 生成全局唯一 ID（优先使用标准 UUID）。
- *
- * @description 优先调用 `crypto.randomUUID()`，不可用时降级为 generateId()。
  * @returns {string} 唯一字符串 ID
  */
 function makeId(): string {
-  try {
-    // prefer standard UUID when available
-    // @ts-ignore
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  } catch (e) {
-    // ignore
-  }
-  return generateId();
+  return crypto.randomUUID();
 }
 
 /**

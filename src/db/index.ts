@@ -176,29 +176,12 @@ function cleanUndefined<T extends Record<string, any>>(obj: T): T {
 }
 
 /**
- * 生成全局唯一 ID（优先标准 UUID，降级时间戳组合）。
+ * 生成全局唯一 ID。
  *
  * @returns {string} 唯一字符串 ID
  */
 function makeId(): string {
-  try {
-    // @ts-ignore
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  } catch (e) {
-    // ignore
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-// Listen to DB changes - reserve hook for future SyncEngine
-try {
-  (db as any).on('changes', (changes: any[]) => {
-    if (changes && changes.length > 0) {
-      console.debug('[DB changes]', changes.map((c) => ({ table: c.table, key: c.key, type: c.type })));
-    }
-  });
-} catch (e) {
-  // ignore when not supported
+  return crypto.randomUUID();
 }
 
 /** 现金账户默认行：可用/冻结现金均为 0，累计入金 0 */

@@ -3,7 +3,7 @@
  * @description 核心金融计算工具库：基于 decimal.js（20 位金融精度）提供 A 股规费计算、
  *              做T盈亏测算、涨跌幅/目标价/网格/分批建仓成本摊薄等纯函数计算。
  * @layer Utility
- * @storage_impact 纯计算模块，无任何 IndexedDB / localStorage 读写，不产生副作用。
+ * @storage_impact 纯计算模块，无任何 IndexedDB 读写，不产生副作用。
  * @author 开发团队
  */
 

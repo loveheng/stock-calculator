@@ -1,8 +1,28 @@
+/**
+ * @file CompleteTModal.tsx
+ * @description 补全做T（正T卖出/倒T买入）交易参数弹窗组件：
+ *              输入对手盘价格/数量后调用 calcTTrade 计算实际净收益与费用明细，
+ *              确认后通过 onConfirm(id, updates) 回写 store 完成 T 落库。
+ * @layer UI
+ * @storage_impact 本组件自身不直接读写 IndexedDB；通过 props.onConfirm 回调
+ *                 （由父组件传入 store 的 completeTTrade）间接更新 tRecords 表。
+ * @author 开发团队
+ */
+
 import React, { useState } from 'react';
 import { X, Save } from 'lucide-react';
 import { type TRecord } from '../../store';
 import { calcTTrade, type FeeConfig } from '../../utils/mathUtils';
 
+/**
+ * CompleteTModal 组件入参定义。
+ *
+ * @property {boolean} open - 是否显示弹窗
+ * @property {TRecord} record - 待补全的做T记录（含 mode/buyPrice/buyAmount/sellPrice/sellAmount 初始值）
+ * @property {FeeConfig} feeConfig - 费率配置模板（佣金/印花税/过户费）
+ * @property {(id: string, updates: Partial<TRecord>) => void} onConfirm - 确认回调：传入记录 ID 与补全字段
+ * @property {() => void} onCancel - 取消回调
+ */
 interface CompleteTModalProps {
   open: boolean;
   record: TRecord;
@@ -11,6 +31,15 @@ interface CompleteTModalProps {
   onCancel: () => void;
 }
 
+/**
+ * 补全做T交易参数弹窗组件。
+ *
+ * @description 正T模式下补全卖出价/量，倒T模式下补全买入价/量；
+ *              通过 calcTTrade 预估完成交易后的净收益与费用，确认后回调 onConfirm 提交。
+ * @param {CompleteTModalProps} props - 见 {@link CompleteTModalProps}
+ * @returns {JSX.Element | null} 弹窗视图；open=false 时返回 null
+ * @note 本组件只做计算预览，不直接改库；落库动作由父组件传入的 onConfirm 完成
+ */
 export default function CompleteTModal({
   open,
   record,

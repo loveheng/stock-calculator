@@ -1,11 +1,36 @@
+/**
+ * @file InstallPrompt.tsx
+ * @description PWA 安装引导组件：Android/Chrome 通过监听 beforeinstallprompt 事件
+ *              展示安装到桌面横幅；iOS Safari 检测 UA 后展示「添加到主屏幕」分步引导，
+ *              关闭后写入 localStorage（ios-install-dismissed）避免重复打扰。
+ * @layer UI
+ * @storage_impact 仅读写 localStorage（ios-install-dismissed 标记），不涉及 IndexedDB。
+ * @author 开发团队
+ */
+
 import React, { useEffect, useState } from 'react';
 import { Download, X, Smartphone, Share2 } from 'lucide-react';
 
+/**
+ * beforeinstallprompt 事件类型扩展。
+ *
+ * @property {() => Promise<void>} prompt - 唤起浏览器原生安装弹窗
+ * @property {Promise<{ outcome: 'accepted' | 'dismissed' }>} userChoice - 用户安装选择结果
+ */
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
+/**
+ * PWA 安装引导组件。
+ *
+ * @description 在非 standalone 模式下自动判断平台：
+ *  - Android/Chrome：监听 beforeinstallprompt，注入安装横幅，点击「立即安装」调用 prompt()
+ *  - iOS Safari：检测到未 ignore 过时展示分步引导弹窗，关闭后持久化忽略标记
+ * @returns {JSX.Element | null} 安装引导横幅/引导弹窗视图；已忽略或已安装时返回 null
+ * @note 不涉及 IndexedDB；localStorage 仅用于 iOS 引导的「不再提示」记忆
+ */
 export default function InstallPrompt() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);

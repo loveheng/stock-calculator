@@ -1,3 +1,14 @@
+/**
+ * @file Statistics.tsx
+ * @description 数据统计页：合并「实时流水池撮合结果（进行中）+ 已归档做T战报」为统一卡片流，
+ *              支持按时间维度（近7天/30天/本月/全部）、正倒T状态、仓位状态多维筛选，
+ *              并内嵌个股行情行情快照搜索与建仓履历（持仓批次明细）。
+ * @layer UI
+ * @storage_impact 只读消费：tStreams（流水池）、tRounds（做T战报）、positions/batches（建仓履历）；
+ *                 不直接写入 IndexedDB。
+ * @author 开发团队
+ */
+
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Search, X, ChevronDown, ChevronUp, BarChart3, Wallet, Loader2 } from 'lucide-react';
 import { useStreamResults } from '../store';
@@ -62,6 +73,18 @@ interface TCardData {
   entries: (StreamEntry | RoundTxn)[];
 }
 
+/**
+ * 数据统计页面组件。
+ *
+ * @description 将进行中做T（streamResults）与已归档战报（tRounds）统一映射为
+ *              TCardData 卡片，按选中筛选条件过滤后展示：
+ *              - 汇总指标卡（总收益/完成率/胜率/交易笔数）
+ *              - 做T卡片流（支持展开查看明细/删除/还原）
+ *              - 个股行情搜索（快照行情）
+ *              - 建仓履历（持仓批次 + 做T降本对照）
+ * @returns {JSX.Element} 数据统计页视图
+ * @note 删除/还原归档战报属于写操作，通过 ledgerService 落库并联动 store 刷新
+ */
 export default function Statistics() {
   const streamResults = useStreamResults();
   const tRounds = useLiveQuery(async () => await ledgerService.getTRoundsWithTransactions(), [], []) as any[];

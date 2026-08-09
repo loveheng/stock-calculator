@@ -1,14 +1,43 @@
+/**
+ * @file StockAutocomplete.tsx
+ * @description 股票搜索自动补全输入框组件：输入关键词后经 stockService.searchStocks
+ *              防抖搜索（350ms），下拉列表展示匹配结果并支持键盘上下键导航、
+ *              Enter 选择、Escape 关闭、点击外部收起；选中后回填「名称 (代码)」。
+ * @layer UI
+ * @storage_impact 本组件不直接读写 IndexedDB，仅调用网络搜索接口 stockService；
+ *                 选中结果通过 onChange 回传父组件用于后续落库。
+ * @author 开发团队
+ */
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Search, X } from 'lucide-react';
 import { searchStocks, debounce } from '../../services/stockService';
 import type { StockSearchItem } from '../../types/stock';
 
+/**
+ * StockAutocomplete 组件入参定义。
+ *
+ * @property {StockSearchItem | null} value - 当前选中的股票（外部受控值）
+ * @property {(item: StockSearchItem | null) => void} onChange - 选中/清空回调
+ * @property {string} [placeholder] - 输入框占位文案，默认「搜索股票代码/名称/拼音」
+ */
 interface StockAutocompleteProps {
   value: StockSearchItem | null;
   onChange: (item: StockSearchItem | null) => void;
   placeholder?: string;
 }
 
+/**
+ * 股票搜索自动补全输入框组件。
+ *
+ * @description 受控组件：外部通过 value/onChange 双向绑定选中股票；
+ *              内部维护输入框文本、防抖搜索结果与键盘高亮索引。
+ *              手动修改输入时自动清空已选中的 value（触发父组件置空）。
+ * @param {StockAutocompleteProps} props - 见 {@link StockAutocompleteProps}
+ * @returns {JSX.Element} 自动补全输入框视图（含下拉列表）
+ * @note 防抖搜索依赖 stockService 的网络接口，失败时展示空结果；
+ *       组件为纯 UI 交互层，不产生任何数据持久化
+ */
 export default function StockAutocomplete({
   value,
   onChange,

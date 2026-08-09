@@ -1,3 +1,12 @@
+/**
+ * @file mathUtils.ts
+ * @description 核心金融计算工具库：基于 decimal.js（20 位金融精度）提供 A 股规费计算、
+ *              做T盈亏测算、涨跌幅/目标价/网格/分批建仓成本摊薄等纯函数计算。
+ * @layer Utility
+ * @storage_impact 纯计算模块，无任何 IndexedDB / localStorage 读写，不产生副作用。
+ * @author 开发团队
+ */
+
 // ============================================================
 // 核心金融计算工具函数
 // 使用 decimal.js 处理浮点数精度
@@ -8,6 +17,11 @@ import Decimal from 'decimal.js';
 // 设置 Decimal 精度（金融计算保留 20 位中间精度）
 Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
 
+/**
+ * 费率配置（全局税率参数）。
+ *
+ * @description 由费率配置页维护，唯一单例注入全局 Store；所有规费计算函数共享该参数。
+ */
 export interface FeeConfig {
   commissionRate: number;
   isFreeFive: boolean;
@@ -16,6 +30,11 @@ export interface FeeConfig {
   stampRate: number;
 }
 
+/**
+ * 单边交易规费明细。
+ *
+ * @description 由 calcTradeFees 返回，包含印花税、佣金、过户费及合计。
+ */
 export interface TradeFees {
   stamp: number;
   commission: number;
@@ -23,6 +42,11 @@ export interface TradeFees {
   total: number;
 }
 
+/**
+ * 买卖双边规费汇总（含往返合计）。
+ *
+ * @description calcRoundTripFees 的返回结构，buyFee/sellFee 分别对应买入与卖出单边明细。
+ */
 export interface RoundTripFees {
   buyFee: TradeFees;
   sellFee: TradeFees;
@@ -92,18 +116,25 @@ export interface TargetCostResult {
 }
 
 /**
- * 四舍五入保留指定小数位数
- * 中国股市规费计算：单项规费各自先四舍五入保留2位小数（分），然后再相加汇总
+ * 四舍五入到指定小数位（金融安全精度）。
+ *
+ * @description 内部基于 Decimal.toDecimalPlaces，避免 IEEE754 浮点误差累积。
+ * @param {number | string | Decimal} value - 待舍入数值
+ * @param {number} [decimals=2] - 保留小数位，默认 2 位（金额口径）
+ * @returns {number} 舍入后的数字
+ * @note 纯函数，无副作用；所有金额计算建议统一走本函数取整展示
  */
 export function roundTo(value: number | string | Decimal, decimals: number = 2): number {
   return new Decimal(value).toDecimalPlaces(decimals).toNumber();
 }
 
 /**
- * 计算涨跌幅
- * @param basePrice 基准价格
- * @param targetPrice 目标价格
- * @returns percent 涨跌幅百分比, diff 涨跌值
+ * 计算涨跌幅。
+ *
+ * @description 以 basePrice 为基准计算 targetPrice 相对涨跌幅与价差。
+ * @param {number} basePrice - 基准价（如昨收）
+ * @param {number} targetPrice - 目标价（如现价）
+ * @returns {ChangeRateResult} { percent: 涨跌幅%, diff: 价差 }；基准价为 0 时返回 0
  */
 export function calcChangeRate(basePrice: number, targetPrice: number): ChangeRateResult {
   const base = new Decimal(basePrice);
@@ -117,9 +148,12 @@ export function calcChangeRate(basePrice: number, targetPrice: number): ChangeRa
 }
 
 /**
- * 根据基准价格和百分比计算目标价格
- * @param basePrice 基准价格
- * @param percent 百分比（如 10 表示 +10%）
+ * 按目标涨跌幅反推目标价。
+ *
+ * @description 输入基准价与涨跌幅（可为负），计算对应目标价与价差。
+ * @param {number} basePrice - 基准价
+ * @param {number} percent - 涨跌幅（如 5 表示 +5%）
+ * @returns {TargetPriceResult} { target: 目标价, diff: 价差 }
  */
 export function calcTargetPrice(basePrice: number, percent: number): TargetPriceResult {
   const base = new Decimal(basePrice);
@@ -166,12 +200,17 @@ export function calcLadder(
 }
 
 /**
- * 计算单笔交易（买入或卖出）的手续费
- * 中国 A 股规费规则：
- *  - 印花税：成交金额的 0.05%，仅卖出时收取
- *  - 佣金：成交金额 × 佣金率，最低 5 元（免五则使用最低佣金配置）
- *  - 过户费：成交金额的 0.001%，买卖双向收取
- * 各项费用先各自四舍五入保留两位小数再汇总
+ * 计算单笔交易（买入或卖出）的手续费。
+ *
+ * @description 中国 A 股规费规则：印花税（成交额 × 印花税率，仅卖出收取）；
+ *              佣金（成交额 × 佣金率，免五则按 minCommission 兜底，不免五则强制最低 5 元）；
+ *              过户费（成交额 × 过户费率，双向收取）。各项费用先各自四舍五入保留 2 位（分）再汇总。
+ * @param {number} price - 成交单价（元/股）
+ * @param {number} amount - 成交数量（股）
+ * @param {'buy' | 'sell'} direction - 交易方向；卖出才计印花税
+ * @param {FeeConfig} feeConfig - 全局费率配置
+ * @returns {TradeFees} 单边规费拆解（stamp / commission / transfer / total，单位元）
+ * @note 纯函数；所有中间计算使用 decimal.js，最终金额保留 2 位小数
  */
 export function calcTradeFees(
   price: number,
@@ -223,7 +262,15 @@ export function calcTradeFees(
 }
 
 /**
- * 计算买卖双向的摩擦成本（规费总和）
+ * 计算做T买卖双边的总摩擦成本（规费总和）。
+ *
+ * @description 分别计算买入与卖出单边规费后求和。
+ * @param {number} buyPrice - 买入单价
+ * @param {number} buyAmount - 买入数量
+ * @param {number} sellPrice - 卖出单价
+ * @param {number} sellAmount - 卖出数量
+ * @param {FeeConfig} feeConfig - 全局费率配置
+ * @returns {RoundTripFees} 包含 buyFee / sellFee 明细与 totalFee 合计
  */
 export function calcRoundTripFees(
   buyPrice: number,
@@ -337,7 +384,14 @@ export function calcTTrade(params: TTradeParams, feeConfig: FeeConfig): TTradeRe
 }
 
 /**
- * 成本摊薄计算：多批次买入后的平均成本
+ * 分批建仓成本摊薄计算。
+ *
+ * @description 在当前已持有成本基础上，叠加多笔新买入（价 × 量），
+ *              返回累计总成本、总数量与摊薄后的平均成本价。
+ * @param {Array<{ price: number; amount: number }>} buys - 新增买入批次列表（忽略非正价/量）
+ * @param {number} [currentHoldCost=0] - 当前持仓成本价
+ * @param {number} [currentHoldAmount=0] - 当前持仓数量
+ * @returns {CostAveragingResult} { totalCost: 累计总成本, totalAmount: 累计数量, avgCost: 摊薄均价（3 位小数） }
  */
 export function calcCostAveraging(
   buys: Array<{ price: number; amount: number }>,
@@ -394,13 +448,15 @@ function buildLotResult(
 }
 
 /**
- * 目标成本推算：解套/补仓计算
- * 包含整手对比逻辑（向下整手/向上整手）
+ * 解套/补仓目标成本推算。
  *
- * @param currentCost 当前持仓成本价
- * @param currentAmount 当前持仓数量（必须为100整数倍）
- * @param plannedPrice 计划补仓单价
- * @param targetCost 目标成本价
+ * @description 根据公式 needAmount = (currentCost - targetCost) × currentAmount / (targetCost - plannedPrice)
+ *              推算理论补仓数量，并输出精确值、向下/向上整手方案与建议文案。
+ * @param {number} currentCost - 当前持仓成本价
+ * @param {number} currentAmount - 当前持仓数量（须为 100 整数倍）
+ * @param {number} plannedPrice - 计划补仓单价
+ * @param {number} targetCost - 期望摊薄后的目标成本价
+ * @returns {TargetCostResult} 含理论需补数量/资金、精确与整手方案、建议列表；无解时返回空建议
  */
 export function calcTargetCostAveraging(
   currentCost: number,
@@ -495,8 +551,14 @@ export function calcTargetCostAveraging(
 }
 
 /**
- * 计算费用明细（用于实时测算表格展示）
- * 直接传入成交金额，返回买入或卖出方向的费用拆解
+ * 计算费用明细（供实时测算表格展示）。
+ *
+ * @description 直接传入成交金额（turnover），按方向返回买入/卖出的规费拆解；
+ *              口径与 calcTradeFees 完全一致。
+ * @param {number} turnover - 成交金额（单价 × 数量）
+ * @param {'buy' | 'sell'} direction - 交易方向
+ * @param {FeeConfig} feeConfig - 全局费率配置
+ * @returns {TradeFees} 规费拆解（stamp / commission / transfer / total）
  */
 export function calcFeeBreakdown(
   turnover: number,
@@ -537,7 +599,11 @@ export function calcFeeBreakdown(
 }
 
 /**
- * 校验是否为 100 的整数倍
+ * 校验 A 股买入数量是否为 100 股的整数倍。
+ *
+ * @description 仅做合法性校验（正整数且 % 100 === 0），不涉及业务逻辑。
+ * @param {number} value - 待校验股数
+ * @returns {boolean} true 表示可下单的整手数量
  */
 export function isValidLotSize(value: number): boolean {
   return value > 0 && value % 100 === 0;

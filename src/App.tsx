@@ -1,3 +1,15 @@
+/**
+ * @file App.tsx
+ * @description 应用根组件与主布局：基于 React Router 的 SPA 壳层，
+ *              负责装配侧边栏导航、顶部标题栏、移动端抽屉菜单与
+ *              六个功能页面（首页/涨跌幅/做T计算器/成本摊薄/统计/费率配置）的路由分发；
+ *              同时挂载 PWA 安装引导组件。
+ * @layer UI
+ * @storage_impact 本文件不直接读写 IndexedDB；页面数据持久化由各视图组件
+ *                 （views/*）通过 store 完成。
+ * @author 开发团队
+ */
+
 import React, { useState } from 'react';
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -20,6 +32,13 @@ import CostAveraging from './views/CostAveraging';
 import Statistics from './views/Statistics';
 import FeeConfig from './views/FeeConfig';
 
+/**
+ * 导航菜单配置项。
+ *
+ * @property {string} path - 路由路径
+ * @property {string} label - 菜单显示文案
+ * @property {React.ElementType} icon - lucide 图标组件
+ */
 // ---- 导航菜单项 ----
 const NAV_ITEMS = [
   { path: '/', label: '首页', icon: Home },
@@ -30,6 +49,14 @@ const NAV_ITEMS = [
   { path: '/fee-config', label: '费率配置', icon: Settings },
 ];
 
+/**
+ * 侧边栏导航组件。
+ *
+ * @description 渲染应用 Logo、导航菜单列表（高亮当前路由）与版本号；
+ *              点击菜单项调用 navigate 跳转并通知父组件关闭移动端抽屉。
+ * @param {{ onNavigate: () => void }} props - onNavigate：导航后回调（用于移动端收起侧边栏）
+ * @returns {JSX.Element} 侧边栏视图
+ */
 // ---- 侧边栏导航 ----
 function Sidebar({ onNavigate }: { onNavigate: () => void }) {
   const location = useLocation();
@@ -78,6 +105,15 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
+/**
+ * 主布局组件。
+ *
+ * @description 桌面端展示固定侧边栏，移动端展示抽屉式侧边栏（含遮罩）；
+ *              顶部为 sticky 标题栏，内容区通过 <Routes> 分发各页面组件；
+ *              同时挂载 PWA 安装引导。
+ * @returns {JSX.Element} 应用主布局视图
+ * @note 本组件为静态壳层，不含业务数据读写
+ */
 // ---- 主布局 ----
 function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -138,6 +174,12 @@ function AppLayout() {
   );
 }
 
+/**
+ * 应用根组件。
+ *
+ * @description 以 BrowserRouter 包裹主布局，启动整个 SPA 应用。
+ * @returns {JSX.Element} 应用根视图
+ */
 // ---- 根组件 ----
 export default function App() {
   return (

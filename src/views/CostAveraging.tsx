@@ -1,3 +1,14 @@
+/**
+ * @file CostAveraging.tsx
+ * @description 成本分摊与持仓管理：Tab1 多批次建仓实盘账本 —— 建仓/加仓/减仓/结案
+ *              全生命周期、批次成本计算（含规费）、重复建仓拦截、清仓自动结案归档；
+ *              Tab2 目标成本推算 —— 输入现持仓成本/数量与目标均价，反推需补仓的数量与金额。
+ * @layer UI
+ * @storage_impact 读写 positions、batches 表（addPosition/addBatch/closePosition/
+ *                 updatePosition/deletePositionBatch/removePosition）；读取 settings 费率。
+ * @author 开发团队
+ */
+
 import React, { useState } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
@@ -9,7 +20,20 @@ import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 
-// ---- 加/减仓表单弹窗 ----
+/**
+ * 加/减仓表单弹窗组件。
+ *
+ * @description 弹出式表单：输入单价/数量/备注，内置校验
+ *              （加仓需 100 整数倍；减仓不可超过当前持仓且需 100 整数倍），
+ *              校验通过后回调 onConfirm(price, amount, note)。
+ * @param {{ open: boolean; title: string; position: Position; onConfirm: (price, amount, note) => void; onCancel: () => void }} props
+ *  - open: 是否显示弹窗
+ *  - title: 弹窗标题（含「减仓」字样时启用减仓校验与文案）
+ *  - position: 目标持仓（用于减仓上限校验）
+ *  - onConfirm: 确认回调（参数为价格/数量/备注）
+ *  - onCancel: 取消回调
+ * @returns {JSX.Element | null} 弹窗视图；open=false 时返回 null
+ */
 function BatchFormModal({
   open,
   title,
@@ -103,7 +127,20 @@ function BatchFormModal({
   );
 }
 
-// ---- 清仓自动结案弹窗 ----
+/**
+ * 清仓自动结案确认弹窗组件。
+ *
+ * @description 当建仓批次全部卖出（持股归零）时弹出，展示本次建仓周期最终
+ *              已实现净盈亏与收益率，询问是否将该持仓标记为「已结案」归档。
+ * @param {{ open: boolean; stockName: string; realizedPnL: number; totalInvested: number; onConfirm: () => void; onCancel: () => void }} props
+ *  - open: 是否显示弹窗
+ *  - stockName: 标的名称（展示用）
+ *  - realizedPnL: 已实现净盈亏
+ *  - totalInvested: 原始投入总额（用于计算收益率）
+ *  - onConfirm: 确认结案回调
+ *  - onCancel: 暂不归档回调
+ * @returns {JSX.Element | null} 弹窗视图；open=false 时返回 null
+ */
 function ClearPositionModal({
   open,
   stockName,
@@ -152,7 +189,18 @@ function ClearPositionModal({
   );
 }
 
-// ---- Tab 1: 多批次建仓实盘账本 ----
+/**
+ * Tab1 多批次建仓实盘账本组件。
+ *
+ * @description 管理持仓全生命周期：
+ *  - 新建建仓（股票搜索/手工输入，含规费计入成本、重复建仓拦截）
+ *  - 加仓/减仓（批次成本实时重算，减仓按先进先出销减）
+ *  - 清仓自动结案弹窗、手动结案、删除批次/删除标的
+ *  - 展开卡片查看批次履历与目标成本达成的补仓提示
+ * @returns {JSX.Element} 建仓账本视图
+ * @note 所有写操作委托 useAppStore（addPosition/addBatch/closePosition/
+ *       updatePosition/deletePositionBatch/removePosition）落库 IndexedDB
+ */
 function PositionLedger() {
   const { addPosition, addBatch, closePosition, updatePosition, deletePositionBatch, removePosition } = useAppStore();
 
@@ -771,7 +819,14 @@ function PositionLedger() {
   );
 }
 
-// ---- Tab 2: 目标成本推算 ----
+/**
+ * Tab2 目标成本推算组件。
+ *
+ * @description 输入当前持仓成本/数量与目标均价，结合费率模板，
+ *              反推需补仓的数量与金额，并同步测算补仓后的总成本与规费明细。
+ * @returns {JSX.Element} 目标成本推算视图
+ * @note 纯计算展示，不产生任何 IndexedDB 写入
+ */
 function TargetCostCalculator() {
   const [currentCost, setCurrentCost] = useState('');
   const [currentAmount, setCurrentAmount] = useState('');
@@ -934,7 +989,13 @@ function TargetCostCalculator() {
   );
 }
 
-// ---- 主组件 ----
+/**
+ * 成本分摊与持仓管理主页面组件。
+ *
+ * @description 提供「多批次建仓实盘账本」与「目标成本推算」双 Tab 切换容器。
+ * @returns {JSX.Element} 成本分摊页面视图
+ * @note 页面挂载即通过 useLiveQuery 订阅 positions/batches 实时响应 IndexedDB 变化
+ */
 export default function CostAveraging() {
   const [tab, setTab] = useState<'ledger' | 'target'>('ledger');
 

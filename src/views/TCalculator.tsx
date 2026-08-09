@@ -1,11 +1,16 @@
-// ============================================================
-// 做T账本与计算器（Round 生命周期 + 绝对现金流法）
-//  - 流水池撮合：FIFO、加权平均成本、部分对冲、级联重算
-//  - 边界校验：超卖拦截 + [全部卖出]、数量/价格 > 0
-//  - 持仓清零弹出 Toast；Round 自动归档
-//  - 一键划转底仓（绝对现金流法）
-//  - 归档历史库：Round 卡片 + 胜率 + 累计净收益
-// ============================================================
+/**
+ * @file TCalculator.tsx
+ * @description 做T账本与计算器（页面核心）：管理做T（Round）全生命周期 ——
+ *              流水池撮合（FIFO/加权平均/部分对冲/级联重算）、正T/倒T记录追加、
+ *              一键划转底仓（绝对现金流法）、倒T结算归档，并内嵌归档历史库
+ *              （Round 卡片 + 胜率 + 累计净收益）。
+ * @layer UI
+ * @storage_impact 写表：tStreams（流水池，applyStreamRecord）、tRounds（结算归档）、
+ *                 positions/batches/cashTransactions（划转/现金流）；
+ *                 读表：settings（费率）。
+ * @author 开发团队
+ */
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
@@ -24,16 +29,35 @@ import {
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import type { StockSearchItem } from '../types/stock';
 
-/** 格式化金额为 ¥xxx.xx */
+/**
+ * 格式化金额为人民币字符串。
+ *
+ * @description 将数值格式化为两位数小数的 ¥ 金额展示（如 ¥12.50）。
+ * @param {number} value - 原始金额数值
+ * @returns {string} 格式化后的金额字符串（如 "¥12.50"）
+ */
 function formatCurrency(value: number): string {
   return `¥${(value ?? 0).toFixed(2)}`;
 }
 
-/** 盈利红 / 亏损绿（与全局红涨绿跌一致） */
+/**
+ * 盈亏红绿配色（与全局红涨绿跌一致）。
+ *
+ * @param {number} value - 盈亏数值，>=0 视为盈利
+ * @returns {string} Tailwind 颜色类名：盈利 text-red-400 / 亏损 text-green-400
+ */
 function pnlColor(value: number): string {
   return value >= 0 ? 'text-red-400' : 'text-green-400';
 }
 
+/**
+ * 判断两个 ISO 时间戳是否处于同一自然日。
+ *
+ * @description 比较年/月/日三个维度是否完全相同。
+ * @param {string} timestampA - 第一个时间戳（ISO 字符串）
+ * @param {string} timestampB - 第二个时间戳（ISO 字符串）
+ * @returns {boolean} 同一自然日返回 true，否则 false
+ */
 function isSameDay(timestampA: string, timestampB: string): boolean {
   const a = new Date(timestampA);
   const b = new Date(timestampB);
@@ -44,7 +68,15 @@ function isSameDay(timestampA: string, timestampB: string): boolean {
   );
 }
 
-// ---------- 状态 Badge ----------
+/**
+ * 流水池状态徽章组件。
+ *
+ * @description 根据撮合结果状态渲染对应彩色徽章：
+ *              CLEARED(已完全结清) / SHORT_PENDING(倒T待回补) /
+ *              PARTIAL(部分对冲) / 其余(待对冲)。
+ * @param {{ result: StockStreamResult }} props - 单个标的的流水池撮合结果
+ * @returns {JSX.Element} 状态徽章视图
+ */
 function StreamStatusBadge({ result }: { result: StockStreamResult }) {
   if (result.status === 'CLEARED') {
     return (
@@ -74,7 +106,20 @@ function StreamStatusBadge({ result }: { result: StockStreamResult }) {
   );
 }
 
-// ---------- 单个当前项目卡片 ----------
+/**
+ * 单个进行中做T项目卡片（核心业务卡片）。
+ *
+ * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
+ *              累计已实现盈亏、流水明细展开、[+追加记录] 快速录入，
+ *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
+ * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number }} props
+ *  - result: 该标的的流水池撮合结果
+ *  - basePosition: 对应底仓持仓（用于超卖校验与划转）
+ *  - roundNo: 该标的当前做T轮次序号
+ * @returns {JSX.Element} 做T项目卡片视图
+ * @note 写操作均委托 ledgerService 落库并触发 store 级联重算；超卖/数量校验由
+ *       validateStreamTrade 在录入前拦截
+ */
 function CurrentProjectCard({
   result,
   basePosition,
@@ -441,7 +486,18 @@ function CurrentProjectCard({
   );
 }
 
-// ---------- 归档历史库 Round 卡片 ----------
+/**
+ * 归档历史库 Round 战报卡片。
+ *
+ * @description 展示已归档做T战报：Round 编号、正/倒T标签、结算类型（平仓/划转）、
+ *              净收益、卖出数量、融合均价、成交明细穿透；
+ *              提供「删除战报」操作（划转且当天结算时可选回滚底仓）。
+ * @param {{ round: TRound; onRemove: (id, options?) => void }} props
+ *  - round: 归档战报记录（含 transactions 明细）
+ *  - onRemove: 删除回调；options.rollbackBase=true 时同步回滚底仓
+ * @returns {JSX.Element} 战报卡片视图
+ * @note 删除属于写操作，通过 store.removeRound 落库
+ */
 function ArchiveRoundCard({
   round,
   onRemove,
@@ -585,9 +641,18 @@ function ArchiveRoundCard({
   );
 }
 
-// ============================================================
-// 主组件
-// ============================================================
+/**
+ * 做T账本与计算器主页面组件。
+ *
+ * @description 组合：
+ *  - 添加交易流水表单（正T买入/倒T卖出，含费用预览、超卖校验与[全部卖出]快捷键）
+ *  - 当前做T项目卡片流（实时撮合状态 + 追加记录 + 划转/结算）
+ *  - 流水明细列表（支持逐条删除，触发级联重算）
+ *  - 历史战报归档库（胜率 + 累计净收益 + 战报卡片）
+ *  所有写操作均通过 ledgerService/store 落库 IndexedDB 并级联重算流水池。
+ * @returns {JSX.Element} 做T账本与计算器页面视图
+ * @note 页面挂载即订阅 tStreams/positions/tRounds 实时响应 IndexedDB 变化
+ */
 export default function TCalculator() {
   const tStreams = useAppStore((s) => s.tStreams);
   const feeConfig = useLiveQuery(async () => await ledgerService.getFeeConfig(), [], undefined) as any;

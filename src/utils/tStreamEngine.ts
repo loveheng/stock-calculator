@@ -1,3 +1,14 @@
+/**
+ * @file tStreamEngine.ts
+ * @description 做T流水池核心撮合引擎：以「单边流水 + FIFO 双队列」模型执行
+ *              正T/倒T 撮合，输出全市场持仓状态、P_avg、已实现盈亏、Round 生命周期汇总，
+ *              并对外提供倒T首笔卖出的严格底仓校验。全程数据不可变（纯函数）。
+ * @layer Utility
+ * @storage_impact 纯计算引擎，不读写任何存储；但 Store 层（src/store/index.ts）会以
+ *                 本引擎结果为准归档 tRounds 战报、调整 positions 底仓状态。
+ * @author 开发团队
+ */
+
 // ============================================================
 // 做T流水池核心撮合引擎（Round 生命周期 + 绝对现金流法）
 // ------------------------------------------------------------
@@ -157,7 +168,13 @@ export interface SellValidation {
 }
 
 /**
- * 排序比较器：按时间戳自早至晚
+ * 按时间戳比较两条流水先后顺序（FIFO 排序回调）。
+ *
+ * @description 先比较时间戳毫秒值（NaN 视为最早/最晚兜底），保证排序稳定唯一。
+ * @param {string} a - 第一条流水时间戳
+ * @param {string} b - 第二条流水时间戳
+ * @returns {number} 负数表示 a 更早；0 相等；正数表示 b 更早
+ * @note 纯函数；供 processStockStream 内部对流水按时间序撮合使用
  */
 export function compareByTimestamp(a: string, b: string): number {
   const ta = new Date(a).getTime();
@@ -179,9 +196,17 @@ function calcHoldingDays(open: string | undefined, close: string | undefined): n
 }
 
 /**
- * 单只股票流水池撮合（FIFO + 加权平均成本 + Round 生命周期 + 绝对现金流法）
- * @param records 该股票全部流水（任意顺序，内部会按时间戳排序）
- * @param feeConfig 系统已配置费率（动态联动，不写死）
+ * 计算单只股票的流水池撮合结果（Round 引擎核心）。
+ *
+ * @description 将全部流水按时间序 FIFO 撮合：buy 优先回补 shortQueue，剩余进 longQueue；
+ *              sell 优先对冲 longQueue，剩余进 shortQueue（受底仓数量约束）。
+ *              维护每笔流水的 matchedAmount / realizedProfit / remaining，
+ *              输出 P_avg（绝对现金流法）、transferProfit、持股天数与 Round 状态机。
+ * @param {TStreamRecord[]} records - 该标的全部流水（任意顺序，内部按时间戳排序）
+ * @param {FeeConfig} feeConfig - 全局费率配置（每次级联重算联动最新费率）
+ * @param {number} [baseCost] - 底仓持仓均价 P_base（供倒T首笔卖出并入 P_avg 加权池）
+ * @returns {StockStreamResult} 撮合结果（持仓状态、P_avg、已实现盈亏、Round 汇总等）
+ * @note 纯函数；不修改入参 records，不写任何存储
  */
 export function processStockStream(
   records: TStreamRecord[],
@@ -502,7 +527,15 @@ export function processStockStream(
 }
 
 /**
- * 按全市场流水池分组撮合
+ * 处理全市场所有股票的流水池（级联重算入口）。
+ *
+ * @description 按 fullCode（兜底 stockName）分组后逐个调用 processStockStream，
+ *              并按每只股票最新流水时间戳降序返回（最新在前）。
+ * @param {TStreamRecord[]} records - 全市场流水
+ * @param {FeeConfig} feeConfig - 全局费率配置
+ * @param {Map<string, number>} [baseCosts] - 底仓均价映射：fullCode → P_base
+ * @returns {StockStreamResult[]} 各标的撮合结果数组（按最新流水时间降序）
+ * @note 纯函数；供 useStreamResults Hook 在流水/费率/持仓任一变化时全量重算
  */
 export function processAllStreams(
   records: TStreamRecord[],

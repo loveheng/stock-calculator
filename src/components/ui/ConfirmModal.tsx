@@ -1,6 +1,29 @@
+/**
+ * @file ConfirmModal.tsx
+ * @description 通用确认对话框组件：支持自定义标题/消息/按钮文案，
+ *              提供 danger 危险操作样式（红色警告图标与按钮），
+ *              点击遮罩或取消按钮均触发 onCancel。
+ * @layer UI
+ * @storage_impact 本组件为纯展示层，不直接读写 IndexedDB；写操作由
+ *                 onConfirm 回调（父组件传入）完成。
+ * @author 开发团队
+ */
+
 import React from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 
+/**
+ * ConfirmModal 组件入参定义。
+ *
+ * @property {boolean} open - 是否显示弹窗
+ * @property {string} title - 弹窗标题
+ * @property {string} message - 提示正文（支持多行）
+ * @property {string} [confirmText] - 确认按钮文案，默认「确认」
+ * @property {string} [cancelText] - 取消按钮文案，默认「取消」
+ * @property {boolean} [danger] - 危险操作模式（红色图标/按钮），默认 false
+ * @property {() => void} onConfirm - 点击确认按钮回调
+ * @property {() => void} onCancel - 点击取消/遮罩/关闭按钮回调
+ */
 interface ConfirmModalProps {
   open: boolean;
   title: string;
@@ -12,6 +35,15 @@ interface ConfirmModalProps {
   onCancel: () => void;
 }
 
+/**
+ * 通用确认对话框组件。
+ *
+ * @description 模态确认弹窗：显示标题与消息正文，提供确认/取消两个动作；
+ *              danger=true 时使用红色警示样式，用于删除类不可恢复操作。
+ * @param {ConfirmModalProps} props - 见 {@link ConfirmModalProps}
+ * @returns {JSX.Element | null} 弹窗视图；open=false 时返回 null
+ * @note 纯展示组件，不产生任何数据写入
+ */
 export default function ConfirmModal({
   open,
   title,

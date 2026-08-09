@@ -1,3 +1,14 @@
+/**
+ * @file index.ts
+ * @description 全局持久化状态中心（Zustand + localStorage 桥接 IndexedDB）：
+ *              管理费率配置、做T流水池（FIFO 撮合）、Round 生命周期归档库、持仓账本与数据导入导出。
+ *              v3 引入做T流水池 tStreams（FIFO 撮合引擎级联重算）；v4 引入 Round 战报归档与绝对现金流划转。
+ * @layer Store
+ * @storage_impact 通过 storeInit.ts 的 saveAllToDB / loadAllFromDB 间接读写 IndexedDB 的
+ *                 feeConfigs / positions / tRounds / tStreams / stocks 表（本文件维护内存态，不直接写库）。
+ * @author 开发团队
+ */
+
 // ============================================================
 // 全局持久化状态 (Zustand + localStorage)
 //  - v3: 做T流水池 tStreams（FIFO 撮合）
@@ -245,7 +256,13 @@ export const FEE_TEMPLATES: Record<string, FeeConfig> = {
   },
 };
 
-// ---- 生成唯一 ID ----
+/**
+ * 生成全局唯一 ID。
+ *
+ * @description 基于当前时间戳与随机数构造短唯一标识，用于流水、Round、持仓批次等实体主键。
+ * @returns {string} 形如 `1690000000000-abc1234` 的唯一字符串 ID
+ * @note 仅供内存态与归库前主键生成使用；IndexedDB 持久化由 storeInit 统一补全 `id`
+ */
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -273,6 +290,17 @@ export function buildBasePositionCosts(positions: Position[]): Map<string, numbe
   return map;
 }
 
+/**
+ * 恢复底仓数量（倒T回补）。
+ *
+ * @description 对指定标的的未平仓持仓按当前成本价追加数量，联动重算
+ *              加权成本 currentCost、当前数量 currentAmount 与累计投入 totalInvested；
+ *              若持仓此前因倒T被扣减为 0，会重新置为未平仓。
+ * @param {Position[]} positions - 全部持仓账本
+ * @param {string} fullCode - 标的完整代码（如 sh601318）
+ * @param {number} amount - 需要恢复的底仓股数（>0）
+ * @returns {Position[]} 恢复数量后的新持仓数组（不可变更新）
+ */
 function restoreBasePositionQuantity(
   positions: Position[],
   fullCode: string,
@@ -296,6 +324,20 @@ function restoreBasePositionQuantity(
   });
 }
 
+/**
+ * 归一化倒T首笔卖出的底仓扣减标记。
+ *
+ * @description 按标的分组、按时间排序流水后，将「初始连续卖出」的总数量与
+ *              持仓中已扣减的 baseDeductedAmount 对账：
+ *              不足则从底仓中补扣（deductBasePositionQuantity），
+ *              多扣则恢复底仓数量（restoreBasePositionQuantity），
+ *              并逐笔更新流水的 baseDeductedAmount 字段。
+ * @param {TStreamRecord[]} rawStreams - 原始做T流水池
+ * @param {Position[]} positions - 当前持仓账本
+ * @returns {{ streams: TStreamRecord[]; positions: Position[] }}
+ *          归一化后的流水池与持仓数组（会原地修改原始流水对象的 baseDeductedAmount）
+ * @note 纯内存计算，不写 IndexedDB；供撮合引擎 processAllStreams 预处理调用
+ */
 function normalizeShortTDeductions(
   rawStreams: TStreamRecord[],
   positions: Position[]
@@ -383,12 +425,30 @@ function normalizeShortTDeductions(
   return { streams: updatedStreams, positions: normalizedPositions };
 }
 
+/**
+ * 判断两个 ISO 时间字符串是否属于同一天。
+ *
+ * @param {string} timestampA - 时间 A（ISO 字符串）
+ * @param {string} timestampB - 时间 B（ISO 字符串）
+ * @returns {boolean} 同一天返回 true，否则 false
+ * @note 按 UTC 日期取前 10 位比较；仅供撮合引擎日内分组使用
+ */
 function isSameDay(timestampA: string, timestampB: string): boolean {
   const dateA = new Date(timestampA).toISOString().slice(0, 10);
   const dateB = new Date(timestampB).toISOString().slice(0, 10);
   return dateA === dateB;
 }
 
+/**
+ * 从底仓中扣减数量（倒T首笔卖出）。
+ *
+ * @description 按 fullCode 匹配未平仓持仓，减少 currentAmount（下限 0），
+ *              保持 currentCost 不变，并同步重算累计投入 totalInvested。
+ * @param {Position[]} positions - 全部持仓账本
+ * @param {string} fullCode - 标的完整代码
+ * @param {number} amount - 扣减股数（>0）
+ * @returns {Position[]} 扣减后的新持仓数组（不可变更新）
+ */
 function deductBasePositionQuantity(
   positions: Position[],
   fullCode: string,
@@ -409,6 +469,19 @@ function deductBasePositionQuantity(
   });
 }
 
+/**
+ * 向底仓追加数量并合并做T盈亏（归档回补）。
+ *
+ * @description 将做T实现的 profit 计入底仓总成本：若原始数量为 0 且提供
+ *              buyTotal，则以 (buyTotal - profit) / amount 重算成本；
+ *              否则用「原总成本 - 盈利」除以新数量得到加权成本。
+ * @param {Position[]} positions - 全部持仓账本
+ * @param {string} fullCode - 标的完整代码
+ * @param {number} amount - 追加股数（>0）
+ * @param {number} profit - 本次做T净盈利（元，负数表示亏损，会抬高成本）
+ * @param {number} [buyTotal] - 可选：本次买入总金额（元）
+ * @returns {Position[]} 追加并重算后的新持仓数组（不可变更新）
+ */
 function addBasePositionQuantity(
   positions: Position[],
   fullCode: string,
@@ -445,6 +518,18 @@ function addBasePositionQuantity(
   });
 }
 
+/**
+ * 恢复底仓成本与数量（倒T归档还原）。
+ *
+ * @description 若目标标的无未平仓持仓，则按 profit 反推建仓成本并新建一条
+ *              open 批次底仓；若已有持仓，则在原数量上追加 amount，并用
+ *              「原总成本 - 盈利」重算加权成本。
+ * @param {Position[]} positions - 全部持仓账本
+ * @param {string} fullCode - 标的完整代码
+ * @param {number} amount - 恢复股数（倒T卖出数量，>0）
+ * @param {number} profit - 倒T实现盈亏（元，负数表示亏损抬高成本）
+ * @returns {Position[]} 恢复后的新持仓数组（不可变更新；可能新增持仓项）
+ */
 function restoreBasePositionCost(
   positions: Position[],
   fullCode: string,
@@ -501,6 +586,18 @@ function restoreBasePositionCost(
   );
 }
 
+/**
+ * 回滚划转底仓（transfer 结算撤销）。
+ *
+ * @description 从持仓数量中扣回已划转的 transferAmount 股，按划转均价
+ *              avgPrice 从总成本中扣除对应金额，重算加权成本与累计投入；
+ *              若持仓数量不足以划转则原样返回。
+ * @param {Position[]} positions - 全部持仓账本
+ * @param {string} fullCode - 标的完整代码
+ * @param {number} transferAmount - 需要回滚的划转股数（>0）
+ * @param {number} avgPrice - 当时划转的加权均价（元）
+ * @returns {Position[]} 回滚后的新持仓数组（不可变更新）
+ */
 function rollbackTransferPosition(
   positions: Position[],
   fullCode: string,
@@ -526,6 +623,15 @@ function rollbackTransferPosition(
   });
 }
 
+/**
+ * 派生全市场撮合结果 Hook（级联重算核心）。
+ *
+ * @description 订阅 tStreams / feeConfig / positions 变化，按 FIFO 顺序重新
+ *              撮合全部流水池，输出每股的持仓、盈亏、Round 生命周期汇总；
+ *              任何流水增删改或费率变化都会自动重算并驱动 UI 刷新。
+ * @returns {StockStreamResult[]} 全标的撮合结果数组（每标的一项）
+ * @note 纯派生计算，不写 IndexedDB；由 useMemo 缓存降低重算开销
+ */
 export function useStreamResults(): StockStreamResult[] {
   const tStreams = useAppStore((s) => s.tStreams);
   const feeConfig = useAppStore((s) => s.feeConfig);
@@ -536,14 +642,30 @@ export function useStreamResults(): StockStreamResult[] {
   }, [tStreams, feeConfig, positions]);
 }
 
-// ---- 绝对现金流归档净收益（划转/自动归档共用） ----
-// = Σ((卖出单价 - P_avg)×卖出数量) - 系统计算总规费(已实现部分)
-// 引擎已按此口径计算 transferProfit，此处直接复用
+/**
+ * 计算绝对现金流归档净收益（划转/自动归档共用）。
+ *
+ * @description 直接复用引擎已按「Σ((卖出单价 - P_avg)×卖出数量) - 已实现总规费」
+ *              口径计算好的 transferProfit，作为 Round 战报的归档净收益。
+ * @param {StockStreamResult} stream - 单标的撮合结果
+ * @returns {number} 归档净收益（元）
+ * @note 非事务方法，不写 IndexedDB；仅用于生成 TRoundArchive.netProfit
+ */
 function calcTransferArchiveProfit(stream: StockStreamResult): number {
   return stream.transferProfit;
 }
 
-// ---- 内部：Round 自动归档（池归零且发生过卖出 -> 生成战报并重置池） ----
+/**
+ * Round 自动归档：池归零且发生过卖出时生成战报。
+ *
+ * @description 当撮合结果状态为 CLEARED 且存在卖出流水时，将该股票全部成交明细
+ *              快照为 TRoundArchive（roundNo 自动 +1），追加到归档库；
+ *              否则原样返回归档列表。
+ * @param {StockStreamResult} stream - 单标的撮合结果
+ * @param {TRoundArchive[]} rounds - 现有 Round 归档列表
+ * @returns {TRoundArchive[]} 追加新战报后的归档数组（若满足归档条件）
+ * @note 非事务方法，不写 IndexedDB；由 addStreamRecord/removeStreamRecord 等调用并 set 回 Store
+ */
 function archiveRoundIfCleared(stream: StockStreamResult, rounds: TRoundArchive[]): TRoundArchive[] {
   const hasSell = stream.entries.some((e) => e.direction === 'sell');
   // 池持仓归零且发生过卖出才能归档（纯买入后清空流水不算一轮 T）

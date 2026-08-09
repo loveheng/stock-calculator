@@ -159,6 +159,8 @@ function PositionLedger() {
   const [openPrice, setOpenPrice] = useState('');
   const [openAmount, setOpenAmount] = useState('');
   const [openNote, setOpenNote] = useState('');
+  // 重复建仓提示（同一股票代码已存在进行中持仓）
+  const [dupAlert, setDupAlert] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null);
   const [deleteBatchConfirm, setDeleteBatchConfirm] = useState<{ positionId: string; batchId: string } | null>(null);
@@ -179,6 +181,15 @@ function PositionLedger() {
     const price = Number(openPrice);
     const amount = Number(openAmount);
     if (!price || !amount || !isValidLotSize(amount)) return;
+
+    // fullCode 作为持仓唯一主键（如 sh601318）；未选择搜索结果的旧流程回退空串
+    const fullCode = selectedStock?.fullCode ?? '';
+
+    // 同一股票代码已存在进行中持仓 → 阻止重复建仓
+    if (fullCode && positions.some((p) => p.fullCode === fullCode && !p.isClosed)) {
+      setDupAlert(`${selectedStock?.Name ?? stockName.trim()}（${fullCode}）已存在进行中持仓，请直接在原账本上加仓。`);
+      return;
+    }
 
     // 计算买入规费
     const buyFee = calcTradeFees(price, amount, 'buy', feeConfig);
@@ -201,6 +212,7 @@ function PositionLedger() {
     const pos: Position = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       stockName: stockName.trim(),
+      fullCode,
       currentCost: totalInvested / amount,
       currentAmount: amount,
       batches: [batch],
@@ -212,6 +224,7 @@ function PositionLedger() {
 
     addPosition(pos);
     setStockName('');
+    setSelectedStock(null);
     setOpenPrice('');
     setOpenAmount('');
     setOpenNote('');
@@ -538,6 +551,11 @@ function PositionLedger() {
               <h4 className="font-semibold text-slate-200">{pos.stockName}</h4>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
+                {pos.currentAmount === 0 && (
+                  <span className="text-xs text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded-full">
+                    底仓出空
+                  </span>
+                )}
                 <button
                   onClick={() => setDeleteTickerConfirm(pos.id)}
                   className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
@@ -679,6 +697,16 @@ function PositionLedger() {
         );
       })}
 
+
+      {/* 重复建仓提示 */}
+      <ConfirmModal
+        open={dupAlert !== null}
+        title="已存在相同持仓"
+        message={dupAlert ?? ''}
+        confirmText="知道了"
+        onConfirm={() => setDupAlert(null)}
+        onCancel={() => setDupAlert(null)}
+      />
 
       {/* 加/减仓弹窗 */}
       {batchForm && (

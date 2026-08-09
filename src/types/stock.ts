@@ -1,4 +1,6 @@
 export interface StockSearchItem {
+  /** 完整证券代码（含市场前缀），如 sh601318 / sz000001。作为持仓与做T记录的唯一主键。 */
+  fullCode: string;
   Code: string;
   Name: string;
   PinYin: string;

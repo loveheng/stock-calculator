@@ -1,13 +1,16 @@
 import React, { useState, useMemo } from 'react';
 import { Save, Download, Upload, FileSpreadsheet, RefreshCw } from 'lucide-react';
 import { useAppStore, FEE_TEMPLATES } from '../store';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { getFeeConfig } from '../services/ledgerService';
 import { calcFeeBreakdown } from '../utils/mathUtils';
 import type { FeeConfig } from '../utils/mathUtils';
 
 export default function FeeConfigPage() {
-  const { feeConfig, setFeeConfig, exportJSON, importJSON, exportCSV } = useAppStore();
+  const { setFeeConfig, exportJSON, importJSON, exportCSV } = useAppStore();
+  const feeConfig = useLiveQuery(async () => await getFeeConfig(), [], undefined) as FeeConfig | null;
 
-  const [localConfig, setLocalConfig] = useState<FeeConfig>({ ...feeConfig });
+  const [localConfig, setLocalConfig] = useState<FeeConfig>({ ...(feeConfig ?? FEE_TEMPLATES['A股标准模板']) });
   const [hasChanges, setHasChanges] = useState(false);
 
   // 实时测算基准
@@ -32,7 +35,7 @@ export default function FeeConfigPage() {
   };
 
   const handleReset = () => {
-    setLocalConfig({ ...feeConfig });
+    setLocalConfig({ ...(feeConfig ?? FEE_TEMPLATES['A股标准模板']) });
     setHasChanges(false);
   };
 

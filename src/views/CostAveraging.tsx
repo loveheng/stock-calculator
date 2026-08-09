@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { getPositionsWithStockInfo, getFeeConfig } from '../services/ledgerService';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees } from '../utils/mathUtils';
 import type { Position, PositionBatch } from '../store';
 import type { StockSearchItem } from '../types/stock';
@@ -152,7 +154,10 @@ function ClearPositionModal({
 
 // ---- Tab 1: 多批次建仓实盘账本 ----
 function PositionLedger() {
-  const { positions, addPosition, addBatch, closePosition, updatePosition, deletePositionBatch, removePosition, feeConfig } = useAppStore();
+  const { addPosition, addBatch, closePosition, updatePosition, deletePositionBatch, removePosition } = useAppStore();
+
+  const positions = useLiveQuery(async () => await getPositionsWithStockInfo(), [], []) as any[];
+  const feeConfig = useLiveQuery(async () => await getFeeConfig(), [], undefined) as any;
 
   const [selectedStock, setSelectedStock] = useState<StockSearchItem | null>(null);
   const [stockName, setStockName] = useState('');

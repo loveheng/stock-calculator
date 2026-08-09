@@ -7,12 +7,14 @@
 //  - 归档历史库：Round 卡片 + 胜率 + 累计净收益
 // ============================================================
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import {
   useAppStore,
   useStreamResults,
   generateId,
   type Position,
 } from '../store';
+import { ledgerService } from '../services/ledgerService';
 import { calcTradeFees, roundTo } from '../utils/mathUtils';
 import {
   validateStreamTrade,
@@ -84,14 +86,14 @@ function CurrentProjectCard({
 }) {
   const [showTxns, setShowTxns] = useState(false);
   const [showAppend, setShowAppend] = useState(false);
-  const transferToPosition = useAppStore((s) => s.transferToPosition);
-  const settleShortRound = useAppStore((s) => s.settleShortRound);
+  const transferToPosition = (fullCode: string) => ledgerService.transferToPositionService(fullCode);
+  const settleShortRound = (fullCode: string) => ledgerService.settleShortRoundService(fullCode);
   const addToast = (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
 
   const baseHolding = basePosition?.currentAmount ?? 0;
 
-  const handleSettleShort = () => {
-    const res = settleShortRound(result.fullCode);
+  const handleSettleShort = async () => {
+    const res = await settleShortRound(result.fullCode);
     if (res.ok) {
       addToast(res.message);
     } else {
@@ -99,8 +101,8 @@ function CurrentProjectCard({
     }
   };
 
-  const handleTransfer = () => {
-    const res = transferToPosition(result.fullCode);
+  const handleTransfer = async () => {
+    const res = await transferToPosition(result.fullCode);
     if (res.ok) {
       addToast(res.message);
     } else {
@@ -109,7 +111,7 @@ function CurrentProjectCard({
   };
 
   // ---- [+ 追加记录] 快速录入（同标的便捷追加，走同一撮合引擎） ----
-  const addStreamRecord = useAppStore((s) => s.addStreamRecord);
+  const addStreamRecord = (rec: any) => ledgerService.applyStreamRecord(rec);
   const [apDir, setApDir] = useState<'buy' | 'sell'>('buy');
   const [apPrice, setApPrice] = useState('');
   const [apAmount, setApAmount] = useState('');
@@ -134,7 +136,7 @@ function CurrentProjectCard({
     setApDir('sell');
   };
 
-  const handleAppend = () => {
+  const handleAppend = async () => {
     setApError('');
     const p = parseFloat(apPrice);
     const a = parseFloat(apAmount);
@@ -154,7 +156,7 @@ function CurrentProjectCard({
       fee: roundTo(txnFee, 2),
       note: apNote.trim() || undefined,
     };
-    const res = addStreamRecord(rec);
+    const res = await addStreamRecord(rec);
     // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量）-> 阻止提交并弹出 Toast
     if (res?.rejected) {
       addToast(`🛑 ${res.rejectedReason ?? '校验未通过'}`);
@@ -588,10 +590,10 @@ function ArchiveRoundCard({
 // ============================================================
 export default function TCalculator() {
   const tStreams = useAppStore((s) => s.tStreams);
-  const feeConfig = useAppStore((s) => s.feeConfig);
-  const positions = useAppStore((s) => s.positions);
-  const tRounds = useAppStore((s) => s.tRounds);
-  const addStreamRecord = useAppStore((s) => s.addStreamRecord);
+  const feeConfig = useLiveQuery(async () => await ledgerService.getFeeConfig(), [], undefined) as any;
+  const positions = useLiveQuery(async () => await ledgerService.getPositionsWithStockInfo(), [], []) as Position[];
+  const tRounds = useLiveQuery(async () => await ledgerService.getTRoundsWithTransactions(), [], []) as any[];
+  const addStreamRecord = (rec: TStreamRecord) => ledgerService.applyStreamRecord(rec);
   const validateSellWithPosition = useAppStore((s) => s.validateSellWithPosition);
   const removeStreamRecord = useAppStore((s) => s.removeStreamRecord);
   const importLegacyTRecords = useAppStore((s) => s.importLegacyTRecords);
@@ -684,7 +686,7 @@ export default function TCalculator() {
     setDirection('sell');
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     setError('');
     if (!stock?.fullCode) {
       setError('请先选择股票');
@@ -716,7 +718,7 @@ export default function TCalculator() {
       selectedStock: stock,
     };
 
-    const result = addStreamRecord(record);
+    const result = await addStreamRecord(record);
     // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量）-> 阻止提交并弹出 Toast
     if (result?.rejected) {
       if (toastTimer.current) window.clearTimeout(toastTimer.current);

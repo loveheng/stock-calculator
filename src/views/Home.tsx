@@ -13,7 +13,9 @@ import {
   AlertTriangle,
   ArrowRight,
 } from 'lucide-react';
-import { useAppStore, useStreamResults } from '../store';
+import { useStreamResults } from '../store';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { ledgerService } from '../services/ledgerService';
 import { roundTo } from '../utils/mathUtils';
 import type { StockStreamResult } from '../utils/tStreamEngine';
 
@@ -38,8 +40,15 @@ interface AlertItem {
 
 export default function Home() {
   const navigate = useNavigate();
-  const { positions, tRounds } = useAppStore();
   const streamResults = useStreamResults();
+
+  const positions = useLiveQuery(
+    async () => await ledgerService.getPositionsWithStockInfo(),
+    [],
+    [],
+  ) as any[];
+
+  const tRounds = useLiveQuery(async () => await ledgerService.getTRoundsWithTransactions(), [], []) as any[];
 
   // ---- 时间筛选状态 ----
   const [timeRange, setTimeRange] = useState<TimeRange>('7d');

@@ -90,12 +90,48 @@ export interface TStreamRow {
 
 export const db = tradingDb;
 
+/** Recursively strip undefined values from an object to prevent IndexedDB serialization errors */
+function cleanUndefined<T extends Record<string, any>>(obj: T): T {
+  const result: any = {};
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (val !== undefined) {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+function makeId(): string {
+  try {
+    // @ts-ignore
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  } catch (e) {
+    // ignore
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+// Listen to DB changes - reserve hook for future SyncEngine
+try {
+  (db as any).on('changes', (changes: any[]) => {
+    if (changes && changes.length > 0) {
+      console.debug('[DB changes]', changes.map((c) => ({ table: c.table, key: c.key, type: c.type })));
+    }
+  });
+} catch (e) {
+  // ignore when not supported
+}
+
 const DEFAULT_ACCOUNT_CASH: AccountCashEntity = {
   id: 1,
   availableCash: 0,
   frozenCash: 0,
   totalDeposit: 0,
   lastUpdated: Date.now(),
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+  isDeleted: 0,
 };
 
 const DEFAULT_FEE_CONFIG_ROW: FeeConfigEntity = {
@@ -105,6 +141,9 @@ const DEFAULT_FEE_CONFIG_ROW: FeeConfigEntity = {
   minCommission: 0.5,
   transferRate: 0.00001,
   stampRate: 0.0005,
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+  isDeleted: 0,
 };
 
 function parseTimestamp(value: string | number | undefined): number {
@@ -117,6 +156,7 @@ function parseTimestamp(value: string | number | undefined): number {
 
 function toStockEntity(stock: StockRow): StockEntity {
   return {
+    id: makeId(),
     fullCode: stock.fullCode,
     code: stock.code,
     stockName: stock.stockName,
@@ -126,6 +166,9 @@ function toStockEntity(stock: StockRow): StockEntity {
     quoteId: stock.quoteId,
     shortName: stock.shortName,
     unifiedCode: stock.unifiedCode,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    isDeleted: 0,
   };
 }
 
@@ -137,9 +180,11 @@ function toPositionEntity(position: PositionRow): PositionEntity {
     currentAmount: position.currentAmount,
     isClosed: position.isClosed,
     createdAt: parseTimestamp(position.createdAt),
+    updatedAt: parseTimestamp(position.createdAt),
     closedAt: position.closedAt ? parseTimestamp(position.closedAt) : undefined,
     totalInvested: position.totalInvested ?? 0,
     realizedPnL: position.realizedPnL ?? 0,
+    isDeleted: 0,
   };
 }
 
@@ -155,6 +200,9 @@ function toPositionBatchEntity(batch: PositionBatch, positionId: string): Positi
     amountAfter: batch.amountAfter,
     timestamp: parseTimestamp(batch.timestamp),
     note: batch.note,
+    createdAt: parseTimestamp(batch.timestamp),
+    updatedAt: parseTimestamp(batch.timestamp),
+    isDeleted: 0,
   };
 }
 
@@ -180,6 +228,9 @@ function toRoundEntity(round: TRoundRow): TRoundEntity {
     holdingDays: round.holdingDays,
     win: round.win,
     lastUpdated: round.lastUpdated,
+    createdAt: parseTimestamp(round.openedAt),
+    updatedAt: round.lastUpdated ?? parseTimestamp(round.openedAt),
+    isDeleted: 0,
   };
 }
 
@@ -195,6 +246,9 @@ function toTransactionEntity(transaction: RoundTxn, roundId: string): TTransacti
     realizedProfit: transaction.realizedProfit,
     timestamp: parseTimestamp(transaction.timestamp),
     note: transaction.note,
+    createdAt: parseTimestamp(transaction.timestamp),
+    updatedAt: parseTimestamp(transaction.timestamp),
+    isDeleted: 0,
   };
 }
 
@@ -226,7 +280,7 @@ export async function ensureDefaultData(): Promise<void> {
 }
 
 export async function loadAllFromDB() {
-  const [feeConfigs, positions, positionBatches, tRounds, tTransactions, stocks] = await Promise.all([
+  const [feeConfigsRaw, positionsRaw, positionBatchesRaw, tRoundsRaw, tTransactionsRaw, stocksRaw] = await Promise.all([
     db.feeConfigs.toArray(),
     db.positions.toArray(),
     db.positionBatches.toArray(),
@@ -234,6 +288,13 @@ export async function loadAllFromDB() {
     db.tTransactions.toArray(),
     db.stocks.toArray(),
   ]);
+
+  const feeConfigs = feeConfigsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
+  const positions = positionsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
+  const positionBatches = positionBatchesRaw.filter((r) => (r.isDeleted ?? 0) === 0);
+  const tRounds = tRoundsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
+  const tTransactions = tTransactionsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
+  const stocks = stocksRaw.filter((r) => (r.isDeleted ?? 0) === 0);
 
   const stockMap = new Map(stocks.map((item) => [item.fullCode, item]));
 
@@ -324,7 +385,8 @@ export async function loadAllFromDB() {
 
 export async function saveFeeConfigToDB(config: FeeConfigRow): Promise<void> {
   await db.transaction('rw', db.feeConfigs, async () => {
-    await db.feeConfigs.put({ id: 1, ...config });
+    const now = Date.now();
+    await db.feeConfigs.put(cleanUndefined({ id: 1, updatedAt: now, createdAt: now, isDeleted: 0, ...config } as any));
   });
 }
 
@@ -333,8 +395,9 @@ export async function saveAllPositionsToDB(positions: PositionRow[]): Promise<vo
     await db.positions.clear();
     await db.positionBatches.clear();
     if (positions.length > 0) {
-      await db.positions.bulkAdd(positions.map(toPositionEntity));
-      const batches = positions.flatMap((position) => position.batches.map((batch) => toPositionBatchEntity(batch, position.id)));
+      const now = Date.now();
+      await db.positions.bulkAdd(positions.map((p) => cleanUndefined({ ...toPositionEntity(p), updatedAt: now, isDeleted: 0 } as any)));
+      const batches = positions.flatMap((position) => position.batches.map((batch) => cleanUndefined({ ...toPositionBatchEntity(batch, position.id), updatedAt: now, isDeleted: 0 } as any)));
       if (batches.length > 0) {
         await db.positionBatches.bulkAdd(batches);
       }
@@ -347,8 +410,9 @@ export async function saveAllTRoundsToDB(rounds: TRoundRow[]): Promise<void> {
     await db.tRounds.clear();
     await db.tTransactions.clear();
     if (rounds.length > 0) {
-      await db.tRounds.bulkAdd(rounds.map(toRoundEntity));
-      const transactions = rounds.flatMap((round) => round.transactions.map((txn) => toTransactionEntity(txn, round.id)));
+      const now = Date.now();
+      await db.tRounds.bulkAdd(rounds.map((r) => cleanUndefined({ ...toRoundEntity(r), updatedAt: now, isDeleted: 0 } as any)));
+      const transactions = rounds.flatMap((round) => round.transactions.map((txn) => cleanUndefined({ ...toTransactionEntity(txn, round.id), updatedAt: now, isDeleted: 0 } as any)));
       if (transactions.length > 0) {
         await db.tTransactions.bulkAdd(transactions);
       }
@@ -372,10 +436,11 @@ export async function saveAllTStreamsToDB(streams: TStreamRow[]): Promise<void> 
         matchedAmount: 0,
         realizedProfit: 0,
         timestamp: parseTimestamp(stream.timestamp),
-        note: stream.note,
+        note: stream.note ?? '',
       }));
     if (transactions.length > 0) {
-      await db.tTransactions.bulkPut(transactions);
+      const now = Date.now();
+      await db.tTransactions.bulkPut(transactions.map((t) => cleanUndefined({ ...t, updatedAt: now, createdAt: now, isDeleted: 0 } as any)));
     }
   });
 }
@@ -388,16 +453,17 @@ export async function saveAllToDB(
   stocks: StockRow[],
 ): Promise<void> {
   await db.transaction('rw', [db.feeConfigs, db.stocks, db.positions, db.positionBatches, db.tRounds, db.tTransactions], async () => {
-    await db.feeConfigs.put({ id: 1, ...feeConfig });
+    const now = Date.now();
+    await db.feeConfigs.put(cleanUndefined({ id: 1, updatedAt: now, createdAt: now, isDeleted: 0, ...feeConfig } as any));
     await db.stocks.clear();
     if (stocks.length > 0) {
-      await db.stocks.bulkAdd(stocks.map(toStockEntity));
+      await db.stocks.bulkAdd(stocks.map((s) => cleanUndefined({ ...toStockEntity(s), updatedAt: now, createdAt: now, isDeleted: 0 } as any)));
     }
     await db.positions.clear();
     await db.positionBatches.clear();
     if (positions.length > 0) {
-      await db.positions.bulkAdd(positions.map(toPositionEntity));
-      const batches = positions.flatMap((position) => position.batches.map((batch) => toPositionBatchEntity(batch, position.id)));
+      await db.positions.bulkAdd(positions.map((p) => cleanUndefined({ ...toPositionEntity(p), updatedAt: now, createdAt: now, isDeleted: 0 } as any)));
+      const batches = positions.flatMap((position) => position.batches.map((batch) => cleanUndefined({ ...toPositionBatchEntity(batch, position.id), updatedAt: now, createdAt: now, isDeleted: 0 } as any)));
       if (batches.length > 0) {
         await db.positionBatches.bulkAdd(batches);
       }
@@ -405,8 +471,8 @@ export async function saveAllToDB(
     await db.tRounds.clear();
     await db.tTransactions.clear();
     if (tRounds.length > 0) {
-      await db.tRounds.bulkAdd(tRounds.map(toRoundEntity));
-      const transactions = tRounds.flatMap((round) => round.transactions.map((txn) => toTransactionEntity(txn, round.id)));
+      await db.tRounds.bulkAdd(tRounds.map((r) => cleanUndefined({ ...toRoundEntity(r), updatedAt: now, createdAt: now, isDeleted: 0 } as any)));
+      const transactions = tRounds.flatMap((round) => round.transactions.map((txn) => cleanUndefined({ ...toTransactionEntity(txn, round.id), updatedAt: now, createdAt: now, isDeleted: 0 } as any)));
       if (transactions.length > 0) {
         await db.tTransactions.bulkAdd(transactions);
       }

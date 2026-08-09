@@ -1,6 +1,13 @@
 import Dexie, { type Table } from 'dexie';
 
-export interface StockEntity {
+export interface BaseEntity {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  isDeleted?: number; // 0 = normal, 1 = soft-deleted
+}
+
+export interface StockEntity extends BaseEntity {
   fullCode: string;
   code: string;
   stockName: string;
@@ -12,20 +19,17 @@ export interface StockEntity {
   unifiedCode?: string;
 }
 
-export interface PositionEntity {
-  id: string;
+export interface PositionEntity extends BaseEntity {
   fullCode: string;
   currentCost: number;
   currentAmount: number;
   isClosed: boolean;
-  createdAt: number;
   closedAt?: number;
   totalInvested: number;
   realizedPnL: number;
 }
 
-export interface PositionBatchEntity {
-  id: string;
+export interface PositionBatchEntity extends BaseEntity {
   positionId: string;
   type: 'open' | 'add' | 'reduce';
   price: number;
@@ -37,8 +41,7 @@ export interface PositionBatchEntity {
   note?: string;
 }
 
-export interface TRoundEntity {
-  id: string;
+export interface TRoundEntity extends BaseEntity {
   positionId?: string;
   fullCode: string;
   mode: 'long' | 'short';
@@ -60,8 +63,7 @@ export interface TRoundEntity {
   lastUpdated?: number;
 }
 
-export interface TTransactionEntity {
-  id: string;
+export interface TTransactionEntity extends BaseEntity {
   roundId: string;
   direction: 'buy' | 'sell';
   price: number;
@@ -79,10 +81,12 @@ export interface AccountCashEntity {
   frozenCash: number;
   totalDeposit: number;
   lastUpdated: number;
+  createdAt: number;
+  updatedAt: number;
+  isDeleted?: number;
 }
 
-export interface CashFlowEntity {
-  id: string;
+export interface CashFlowEntity extends BaseEntity {
   type: 'deposit' | 'withdraw' | 'dividend' | 'interest';
   fullCode?: string;
   amount: number;
@@ -90,8 +94,7 @@ export interface CashFlowEntity {
   timestamp: number;
 }
 
-export interface TradeNoteEntity {
-  id: string;
+export interface TradeNoteEntity extends BaseEntity {
   roundId?: string;
   positionId?: string;
   tags: string;
@@ -108,6 +111,9 @@ export interface FeeConfigEntity {
   isFreeFive: boolean;
   transferRate: number;
   stampRate: number;
+  createdAt: number;
+  updatedAt: number;
+  isDeleted?: number;
 }
 
 export class TradingLedgerDB extends Dexie {
@@ -123,16 +129,16 @@ export class TradingLedgerDB extends Dexie {
 
   constructor() {
     super('TradingLedgerDB_v3');
-    this.version(1).stores({
-      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType',
-      positions: 'id, fullCode, isClosed, createdAt',
-      positionBatches: 'id, positionId, type, timestamp',
-      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt',
-      tTransactions: 'id, roundId, timestamp',
-      accountCash: 'id',
-      cashFlows: 'id, type, timestamp, fullCode',
-      tradeNotes: 'id, roundId, positionId, timestamp',
-      feeConfigs: 'id',
+    this.version(2).stores({
+      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, updatedAt, isDeleted',
+      positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
+      positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
+      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
+      tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
+      accountCash: 'id, updatedAt',
+      cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
+      tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
+      feeConfigs: 'id, updatedAt',
     });
   }
 }

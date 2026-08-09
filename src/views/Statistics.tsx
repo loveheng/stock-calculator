@@ -1,6 +1,9 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Search, X, ChevronDown, ChevronUp, BarChart3, Wallet, Loader2 } from 'lucide-react';
-import { useAppStore, useStreamResults } from '../store';
+import { useStreamResults } from '../store';
+import type { Position, PositionBatch } from '../store';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { ledgerService } from '../services/ledgerService';
 import type { RoundTxn } from '../store';
 import type { StreamEntry } from '../utils/tStreamEngine';
 import { searchStocks } from '../services/stockService';
@@ -61,7 +64,8 @@ interface TCardData {
 
 export default function Statistics() {
   const streamResults = useStreamResults();
-  const { tRounds, positions } = useAppStore();
+  const tRounds = useLiveQuery(async () => await ledgerService.getTRoundsWithTransactions(), [], []) as any[];
+  const positions = useLiveQuery(async () => await ledgerService.getPositionsWithStockInfo(), [], []) as Position[];
 
   const [tab, setTab] = useState<'trades' | 'positions'>('trades');
   const [searchQuery, setSearchQuery] = useState('');
@@ -812,7 +816,7 @@ export default function Statistics() {
               <>
                 {filteredPositions.slice(0, visibleCount).map((position) => {
                   const openBatch = position.batches.find(
-                    (b) => b.type === 'open' || b.type === 'add'
+                    (b: PositionBatch) => b.type === 'open' || b.type === 'add'
                   );
                   const originalCost = openBatch?.price ?? position.currentCost;
                   const currentValue =
@@ -955,7 +959,7 @@ export default function Statistics() {
                                   .slice()
                                   .reverse()
                                   .slice(0, 5)
-                                  .map((batch) => (
+                                  .map((batch: PositionBatch) => (
                                     <div
                                       key={batch.id}
                                       className="flex items-center justify-between text-xs text-slate-400"

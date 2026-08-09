@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   RefreshCw,
@@ -9,20 +9,238 @@ import {
   DollarSign,
   Activity,
   TrendingDown,
+  Wallet,
+  AlertTriangle,
+  ArrowRight,
 } from 'lucide-react';
-import { useAppStore } from '../store';
+import { useAppStore, useStreamResults } from '../store';
 import { roundTo } from '../utils/mathUtils';
+import type { StockStreamResult } from '../utils/tStreamEngine';
+
+// ---- 时间维度 ----
+type TimeRange = '1d' | '7d' | '30d' | 'all';
+
+const timeRangeOptions: Array<{ value: TimeRange; label: string }> = [
+  { value: '1d', label: '1天' },
+  { value: '7d', label: '近7天' },
+  { value: '30d', label: '近30天' },
+  { value: 'all', label: '全部' },
+];
+
+// ---- 预警条目 ----
+interface AlertItem {
+  id: string;
+  stockName: string;
+  fullCode: string;
+  message: string;
+  amount: number;
+}
 
 export default function Home() {
   const navigate = useNavigate();
-  const { tRecords } = useAppStore();
+  const { positions, tRounds } = useAppStore();
+  const streamResults = useStreamResults();
 
-  const totalTrades = tRecords.length;
-  const totalFee = tRecords.reduce((sum, r) => sum + r.totalFee, 0);
-  const totalProfit = tRecords.reduce((sum, r) => sum + (r.netProfit ?? 0), 0);
-  const winTrades = tRecords.filter((r) => r.netProfit !== null && r.netProfit > 0).length;
-  const winRate = totalTrades > 0 ? roundTo((winTrades / totalTrades) * 100, 1).toFixed(1) : '0.0';
+  // ---- 时间筛选状态 ----
+  const [timeRange, setTimeRange] = useState<TimeRange>('7d');
 
+  // ---- 计算时间范围边界 ----
+  const timeBoundary = useMemo(() => {
+    if (timeRange === 'all') return 0;
+    const now = Date.now();
+    const days = timeRange === '1d' ? 1 : timeRange === '7d' ? 7 : 30;
+    return now - days * 86400000;
+  }, [timeRange]);
+
+  // ---- 筛选：时间区间内处于"开启/进行中"状态的做T项目（以最后一次操作时间为准） ----
+  const filteredActiveStreams = useMemo(() => {
+    return streamResults.filter((s) => {
+      if (s.status === 'CLEARED') return false;
+      if (timeRange === 'all') return true;
+      // 以该标的最新一条流水的操作时间为准
+      const lastEntry = s.entries[s.entries.length - 1];
+      if (!lastEntry) return false;
+      const lastTime = new Date(lastEntry.timestamp).getTime();
+      return lastTime >= timeBoundary;
+    });
+  }, [streamResults, timeRange, timeBoundary]);
+
+  // ---- 所有开启/进行中的做T项目（无时间筛选，用于总数统计） ----
+  const allActiveStreams = useMemo(
+    () => streamResults.filter((s) => s.status !== 'CLEARED'),
+    [streamResults],
+  );
+
+  // ==============================
+  // 模块 1：做T战况统计
+  // ==============================
+
+  // 1a. 区间做T总金额（实际资金占用总额，排除流水重复计算）
+  const tTotalCapital = useMemo(() => {
+    return filteredActiveStreams.reduce((sum, s) => {
+      if (s.mode === 'long') {
+        // 正T：pendingTotalCost 即为已买入未卖出的资金占用
+        return sum + s.pendingTotalCost;
+      }
+      // 倒T：shortPendingAmount × avgPrice 估算待买回资金占用
+      return sum + s.shortPendingAmount * s.avgPrice;
+    }, 0);
+  }, [filteredActiveStreams]);
+
+  // 1b. 正在开启做T总数及分布
+  const tActiveCount = allActiveStreams.length;
+  const tLongCount = allActiveStreams.filter((s) => s.mode === 'long').length;
+  const tShortCount = allActiveStreams.filter((s) => s.mode === 'short').length;
+  const tFilteredCount = filteredActiveStreams.length;
+
+  // 1c. 区间摩擦成本明细（买入规费 / 卖出规费）
+  const tFeeDetails = useMemo(() => {
+    let totalFee = 0;
+    let buyFee = 0;
+    let sellFee = 0;
+    for (const s of filteredActiveStreams) {
+      totalFee += s.totalFee;
+      for (const e of s.entries) {
+        if (e.direction === 'buy') buyFee += e.fee;
+        else sellFee += e.fee;
+      }
+    }
+    return { totalFee, buyFee, sellFee };
+  }, [filteredActiveStreams]);
+
+  // 1d. 当前做T盈亏明细（正T盈亏 / 倒T盈亏）
+  const tProfitDetails = useMemo(() => {
+    let totalProfit = 0;
+    let longProfit = 0;
+    let shortProfit = 0;
+    for (const s of filteredActiveStreams) {
+      totalProfit += s.transferProfit;
+      if (s.mode === 'long') longProfit += s.transferProfit;
+      else shortProfit += s.transferProfit;
+    }
+    return { totalProfit, longProfit, shortProfit };
+  }, [filteredActiveStreams]);
+
+  // 1e. 区间最大盈利做T（落袋/浮盈金额最大的单笔做T标的）
+  const topProfitRound = useMemo(() => {
+    if (filteredActiveStreams.length === 0) return null;
+    return filteredActiveStreams.reduce((best, s) =>
+      s.transferProfit > best.transferProfit ? s : best,
+    );
+  }, [filteredActiveStreams]);
+
+  // 1f. 区间最大亏损做T（亏损金额最大的单笔做T标的）
+  const topLossRound = useMemo(() => {
+    const losers = filteredActiveStreams.filter((s) => s.transferProfit < 0);
+    if (losers.length === 0) return null;
+    return losers.reduce((worst, s) =>
+      s.transferProfit < worst.transferProfit ? s : worst,
+    );
+  }, [filteredActiveStreams]);
+
+  // 1g. 待办轮动提醒：倒T底仓出空或待平仓项目
+  const alertItems = useMemo<AlertItem[]>(() => {
+    const items: AlertItem[] = [];
+    for (const s of allActiveStreams) {
+      if (s.mode !== 'short') continue;
+      if (s.shortPendingAmount <= 0) continue;
+      const pos = positions.find(
+        (p) => p.fullCode === s.fullCode && !p.isClosed,
+      );
+      const isBaseExhausted = !pos || pos.currentAmount === 0;
+      items.push({
+        id: s.fullCode,
+        stockName: s.stockName,
+        fullCode: s.fullCode,
+        message: isBaseExhausted
+          ? `倒T底仓出空，待低吸买回 ${s.shortPendingAmount} 股`
+          : `倒T待回补 ${s.shortPendingAmount} 股`,
+        amount: s.shortPendingAmount,
+      });
+    }
+    return items;
+  }, [allActiveStreams, positions]);
+
+  // ==============================
+  // 模块 2：开启仓位统计
+  // ==============================
+
+  const openPositions = useMemo(
+    () => positions.filter((p) => !p.isClosed),
+    [positions],
+  );
+
+  // 2a. 仓位实际总金额（实时持仓总市值/实际资金占用）
+  const positionTotalValue = useMemo(
+    () =>
+      openPositions.reduce(
+        (sum, p) => sum + (p.currentAmount * p.currentCost || 0),
+        0,
+      ),
+    [openPositions],
+  );
+
+  // 2b. 开启仓位数量
+  const positionCount = openPositions.length;
+
+  // 2c. 最多金额仓位
+  const maxCapitalPosition = useMemo(() => {
+    if (openPositions.length === 0) return null;
+    return openPositions.reduce((max, p) => {
+      const val = p.currentAmount * p.currentCost;
+      const maxVal = max.currentAmount * max.currentCost;
+      return val > maxVal ? p : max;
+    });
+  }, [openPositions]);
+
+  // 2d. 最大持有时间仓位
+  const maxHoldingPosition = useMemo(() => {
+    if (openPositions.length === 0) return null;
+    const now = Date.now();
+    return openPositions.reduce((max, p) => {
+      const maxDays =
+        (now - new Date(max.createdAt).getTime()) / 86400000;
+      const curDays =
+        (now - new Date(p.createdAt).getTime()) / 86400000;
+      return curDays > maxDays ? p : max;
+    });
+  }, [openPositions]);
+
+  // 2e. 做T降本最多仓位（开启仓位中做T累计落袋收益最高的标的）
+  const bestCostReduction = useMemo(() => {
+    // 按 fullCode 汇总所有 streamResult 的 transferProfit
+    const profitByCode: Record<
+      string,
+      { stockName: string; totalProfit: number }
+    > = {};
+    for (const s of streamResults) {
+      if (!profitByCode[s.fullCode]) {
+        profitByCode[s.fullCode] = { stockName: s.stockName, totalProfit: 0 };
+      }
+      profitByCode[s.fullCode].totalProfit += s.transferProfit;
+    }
+    // 只保留有开启仓位的标的
+    const openCodes = new Set(openPositions.map((p) => p.fullCode));
+    let best: { stockName: string; totalProfit: number } | null = null;
+    for (const [code, info] of Object.entries(profitByCode)) {
+      if (!openCodes.has(code)) continue;
+      if (info.totalProfit <= 0) continue; // 只统计正降本
+      if (!best || info.totalProfit > best.totalProfit) {
+        best = info;
+      }
+    }
+    return best;
+  }, [streamResults, openPositions]);
+
+  // 2f. 当前仓位总盈利（浮动盈亏）= 所有开启仓位对应的做T盈亏之和
+  const positionTotalProfit = useMemo(() => {
+    const openCodes = new Set(openPositions.map((p) => p.fullCode));
+    return streamResults
+      .filter((s) => openCodes.has(s.fullCode))
+      .reduce((sum, s) => sum + s.transferProfit, 0);
+  }, [streamResults, openPositions]);
+
+  // ---- 快捷入口卡片 ----
   const quickCards = [
     {
       label: '做T计算器',
@@ -61,52 +279,386 @@ export default function Home() {
     },
   ];
 
+  // ---- 格式化 ----
+  const fmtMoney = (val: number) =>
+    `${val >= 0 ? '+' : ''}¥${Math.abs(val).toFixed(2)}`;
+  const fmtMoneyAbs = (val: number) => `¥${val.toFixed(2)}`;
+
+  // ---- 预警轮动状态 ----
+  const [alertIndex, setAlertIndex] = useState(0);
+  const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (alertItems.length === 0) return;
+    alertTimerRef.current = setInterval(() => {
+      setAlertIndex((prev) => (prev + 1) % alertItems.length);
+    }, 4000);
+    return () => {
+      if (alertTimerRef.current) clearInterval(alertTimerRef.current);
+    };
+  }, [alertItems.length]);
+
+  const currentAlert =
+    alertItems.length > 0 ? alertItems[alertIndex % alertItems.length] : null;
+
+  // ---- 计算持仓天数 ----
+  const getHoldingDays = (createdAt: string) => {
+    const diff = Date.now() - new Date(createdAt).getTime();
+    return Math.max(1, Math.ceil(diff / 86400000));
+  };
+
   return (
-    <div className="page-container space-y-6">
-      {/* 概览卡片 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="card mb-0">
-          <div className="flex items-center gap-2 text-slate-500 mb-2">
-            <Activity className="w-4 h-4" />
-            <span className="text-xs">累计做T笔数</span>
+    <div className="page-container space-y-5 pb-8">
+      {/* ============================ */}
+      {/* 模块 1：做T战况统计 (T-Trading Metrics) */}
+      {/* ============================ */}
+      <div className="card !p-0 overflow-hidden border-slate-700/80 bg-gradient-to-br from-slate-900 to-slate-950">
+        {/* 卡片标题 */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-0">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-600/20">
+              <Activity className="h-4 w-4 text-blue-400" />
+            </div>
+            <span className="text-sm font-semibold text-slate-200">
+              做 T 战况
+            </span>
           </div>
-          <p className="text-2xl font-bold text-white">{totalTrades}</p>
         </div>
 
-        <div className="card mb-0">
-          <div className="flex items-center gap-2 text-slate-500 mb-2">
-            <DollarSign className="w-4 h-4" />
-            <span className="text-xs">摩擦成本总额</span>
+        {/* 时间维度切换器 */}
+        <div className="px-5 mt-4">
+          <div className="flex gap-1.5 rounded-xl bg-slate-800/60 p-1">
+            {timeRangeOptions.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setTimeRange(opt.value)}
+                className={`flex-1 rounded-lg py-2 text-xs font-medium transition-all duration-200 ${
+                  timeRange === opt.value
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
-          <p className="text-2xl font-bold text-red-400">¥{roundTo(totalFee, 2).toFixed(2)}</p>
         </div>
 
-        <div className="card mb-0">
-          <div className="flex items-center gap-2 text-slate-500 mb-2">
-            <TrendingUp className="w-4 h-4" />
-            <span className="text-xs">做T净利润</span>
+        {/* 核心数据网格：6 cells, 2-col mobile / 4-col sm, last 2 span-2 */}
+        <div className="grid grid-cols-2 gap-3 px-5 pt-4 pb-5 sm:grid-cols-4">
+          {/* 区间做T总金额 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              区间做T总金额
+            </div>
+            <div className="mt-1.5 text-base font-bold text-white sm:text-lg">
+              {fmtMoneyAbs(tTotalCapital)}
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-600">
+              {tFilteredCount} 笔 · 实际资金占用
+            </div>
           </div>
-          <p
-            className={`text-2xl font-bold ${
-              totalProfit >= 0 ? 'text-green-400' : 'text-red-400'
-            }`}
-          >
-            {totalProfit >= 0 ? '+' : ''}¥{roundTo(totalProfit, 2).toFixed(2)}
-          </p>
+
+          {/* 正在开启做T总数 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              正在开启做T总数
+            </div>
+            <div className="mt-1.5 text-base font-bold text-white sm:text-lg">
+              {tActiveCount} 笔
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-500">
+              正T: {tLongCount} | 倒T: {tShortCount}
+            </div>
+          </div>
+
+          {/* 区间摩擦成本明细 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              区间摩擦成本
+            </div>
+            <div className="mt-1.5 text-base font-bold text-red-400 sm:text-lg">
+              {fmtMoneyAbs(tFeeDetails.totalFee)}
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-500">
+              买¥{tFeeDetails.buyFee.toFixed(2)} / 卖¥{tFeeDetails.sellFee.toFixed(2)}
+            </div>
+          </div>
+
+          {/* 当前做T盈亏明细 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              当前做T盈亏
+            </div>
+            <div
+              className={`mt-1.5 text-base font-bold sm:text-lg ${
+                tProfitDetails.totalProfit >= 0
+                  ? 'text-green-400'
+                  : 'text-red-400'
+              }`}
+            >
+              {tProfitDetails.totalProfit >= 0 ? '+' : ''}
+              ¥{tProfitDetails.totalProfit.toFixed(2)}
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-500">
+              正T{' '}
+              <span
+                className={
+                  tProfitDetails.longProfit >= 0
+                    ? 'text-green-400'
+                    : 'text-red-400'
+                }
+              >
+                {tProfitDetails.longProfit >= 0 ? '+' : ''}
+                ¥{tProfitDetails.longProfit.toFixed(2)}
+              </span>{' '}
+              / 倒T{' '}
+              <span
+                className={
+                  tProfitDetails.shortProfit >= 0
+                    ? 'text-green-400'
+                    : 'text-red-400'
+                }
+              >
+                {tProfitDetails.shortProfit >= 0 ? '+' : ''}
+                ¥{tProfitDetails.shortProfit.toFixed(2)}
+              </span>
+            </div>
+          </div>
+
+          {/* 区间最大盈利做T */}
+          <div className="rounded-2xl bg-slate-950/80 p-3 col-span-1 sm:col-span-2">
+            <div className="text-[11px] text-slate-500">
+              区间最大盈利做T
+            </div>
+            <div className="mt-1.5 text-sm font-bold text-white leading-tight">
+              {topProfitRound && topProfitRound.transferProfit > 0 ? (
+                <>
+                  <span className="truncate block">
+                    {topProfitRound.stockName}
+                  </span>
+                  <span className="text-base text-green-400">
+                    +¥{topProfitRound.transferProfit.toFixed(2)}
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-500">--</span>
+              )}
+            </div>
+          </div>
+
+          {/* 区间最大亏损做T */}
+          <div className="rounded-2xl bg-slate-950/80 p-3 col-span-1 sm:col-span-2">
+            <div className="text-[11px] text-slate-500">
+              区间最大亏损做T
+            </div>
+            <div className="mt-1.5 text-sm font-bold text-white leading-tight">
+              {topLossRound ? (
+                <>
+                  <span className="truncate block">
+                    {topLossRound.stockName}
+                  </span>
+                  <span className="text-base text-red-400">
+                    ¥{topLossRound.transferProfit.toFixed(2)}
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-500">-</span>
+              )}
+            </div>
+          </div>
         </div>
 
-        <div className="card mb-0">
-          <div className="flex items-center gap-2 text-slate-500 mb-2">
-            <TrendingDown className="w-4 h-4" />
-            <span className="text-xs">胜率</span>
+        {/* 待办轮动提醒 */}
+        {currentAlert && (
+          <div className="mx-5 mb-5 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-400" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-amber-300">
+                    待办提醒
+                  </span>
+                  {alertItems.length > 1 && (
+                    <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-400">
+                      {alertIndex + 1}/{alertItems.length}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-sm font-medium text-amber-200 leading-snug">
+                  [{currentAlert.stockName}{' '}
+                  <span className="text-amber-400/70">
+                    {currentAlert.fullCode}
+                  </span>
+                  ] {currentAlert.message}
+                </p>
+              </div>
+              {alertItems.length > 1 && (
+                <div className="flex gap-0.5 mt-1.5">
+                  {alertItems.map((_, i) => (
+                    <span
+                      key={i}
+                      className={`block h-1 w-4 rounded-full transition-colors ${
+                        i === alertIndex
+                          ? 'bg-amber-400'
+                          : 'bg-amber-500/20'
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-          <p className="text-2xl font-bold text-white">{winRate}%</p>
+        )}
+
+        {/* 无预警时显示占位 */}
+        {alertItems.length === 0 && (
+          <div className="mx-5 mb-5 rounded-2xl border border-slate-700/50 bg-slate-950/40 px-4 py-3">
+            <p className="text-xs text-slate-500 text-center">
+              暂无待办提醒，所有做T项目状态正常
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* ============================ */}
+      {/* 模块 2：开启仓位统计 (Active Position Metrics) */}
+      {/* ============================ */}
+      <div className="card !p-0 overflow-hidden border-slate-700/80 bg-gradient-to-br from-slate-900 to-slate-950">
+        {/* 卡片标题 */}
+        <div className="flex items-center gap-2.5 px-5 pt-5 pb-0">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600/20">
+            <Wallet className="h-4 w-4 text-emerald-400" />
+          </div>
+          <span className="text-sm font-semibold text-slate-200">
+            开启仓位
+          </span>
+          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
+            全量统计
+          </span>
+        </div>
+
+        {/* 核心数据网格：6 cells, 2-col mobile / 4-col sm, last 2 span-2 */}
+        <div className="grid grid-cols-2 gap-3 px-5 pt-4 pb-5 sm:grid-cols-4">
+          {/* 仓位实际总金额 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              仓位实际总金额
+            </div>
+            <div className="mt-1.5 text-base font-bold text-white sm:text-lg">
+              {fmtMoneyAbs(positionTotalValue)}
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-600">
+              实时市值
+            </div>
+          </div>
+
+          {/* 开启仓位数量 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              开启仓位数量
+            </div>
+            <div className="mt-1.5 text-base font-bold text-white sm:text-lg">
+              {positionCount} 个标的
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-600">
+              覆盖股票数
+            </div>
+          </div>
+
+          {/* 最多金额仓位 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              最多金额仓位
+            </div>
+            <div className="mt-1.5 text-sm font-bold text-white leading-tight">
+              {maxCapitalPosition ? (
+                <>
+                  <span className="truncate block">
+                    {maxCapitalPosition.stockName}
+                  </span>
+                  <span className="text-base text-blue-400">
+                    {fmtMoneyAbs(
+                      maxCapitalPosition.currentAmount *
+                        maxCapitalPosition.currentCost,
+                    )}
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-500">--</span>
+              )}
+            </div>
+          </div>
+
+          {/* 最大持有时间仓位 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              最大持有时间仓位
+            </div>
+            <div className="mt-1.5 text-sm font-bold text-white leading-tight">
+              {maxHoldingPosition ? (
+                <>
+                  <span className="truncate block">
+                    {maxHoldingPosition.stockName}
+                  </span>
+                  <span className="text-base text-amber-400">
+                    已持有{' '}
+                    {getHoldingDays(maxHoldingPosition.createdAt)}{' '}
+                    天
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-500">--</span>
+              )}
+            </div>
+          </div>
+
+          {/* 做T降本最多仓位 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3 col-span-1 sm:col-span-2">
+            <div className="text-[11px] text-slate-500">
+              做T降本最多仓位
+            </div>
+            <div className="mt-1.5 text-sm font-bold text-white leading-tight">
+              {bestCostReduction ? (
+                <>
+                  <span className="truncate block">
+                    {bestCostReduction.stockName}
+                  </span>
+                  <span className="text-base text-emerald-400">
+                    累计降本 +¥{bestCostReduction.totalProfit.toFixed(2)}
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-500">--</span>
+              )}
+            </div>
+          </div>
+
+          {/* 当前仓位总盈利（占满宽度） */}
+          <div className="rounded-2xl bg-slate-950/80 p-3 col-span-1 sm:col-span-2">
+            <div className="text-[11px] text-slate-500">
+              当前仓位总盈利（浮动盈亏）
+            </div>
+            <div
+              className={`mt-1.5 text-base font-bold sm:text-lg ${
+                positionTotalProfit >= 0
+                  ? 'text-green-400'
+                  : 'text-red-400'
+              }`}
+            >
+              {positionTotalProfit >= 0 ? '+' : ''}
+              ¥{positionTotalProfit.toFixed(2)}
+            </div>
+          </div>
         </div>
       </div>
 
       {/* 快捷入口 */}
       <div>
-        <h3 className="text-base font-semibold text-slate-300 mb-3">快捷入口</h3>
+        <h3 className="text-base font-semibold text-slate-300 mb-3">
+          快捷入口
+        </h3>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {quickCards.map((card) => {
             const Icon = card.icon;
@@ -130,13 +682,25 @@ export default function Home() {
 
       {/* 提示信息 */}
       <div className="card">
-        <h3 className="text-base font-semibold text-slate-300 mb-2">使用说明</h3>
+        <h3 className="text-base font-semibold text-slate-300 mb-2">
+          使用说明
+        </h3>
         <ul className="space-y-2 text-sm text-slate-400">
-          <li>• 做T计算器：支持正T（先买后卖）和倒T（先卖后买）两种模式</li>
-          <li>• 涨跌幅计算：支持连续涨跌停阶梯推算</li>
-          <li>• 成本摊薄：多批次建仓账本 + 目标成本推算工具</li>
-          <li>• 数据统计：做T账本统计与建仓履历展示</li>
-          <li>• 费率配置：自定义佣金率、免五开关、过户费/印花税率</li>
+          <li>
+            • 做T计算器：支持正T（先买后卖）和倒T（先卖后买）两种模式
+          </li>
+          <li>
+            • 涨跌幅计算：支持连续涨跌停阶梯推算
+          </li>
+          <li>
+            • 成本摊薄：多批次建仓账本 + 目标成本推算工具
+          </li>
+          <li>
+            • 数据统计：做T账本统计与建仓履历展示
+          </li>
+          <li>
+            • 费率配置：自定义佣金率、免五开关、过户费/印花税率
+          </li>
         </ul>
       </div>
     </div>

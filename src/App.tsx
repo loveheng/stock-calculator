@@ -42,9 +42,9 @@ import FeeConfig from './views/FeeConfig';
 // ---- 导航菜单项 ----
 const NAV_ITEMS = [
   { path: '/', label: '首页', icon: Home },
-  { path: '/change-rate', label: '涨跌幅计算', icon: TrendingUp },
-  { path: '/t-calculator', label: '做T计算器', icon: RefreshCw },
-  { path: '/cost-averaging', label: '成本摊薄', icon: BarChart3 },
+  { path: '/change-rate', label: '涨跌幅计算器', icon: TrendingUp },
+  { path: '/t-calculator', label: '短线交易', icon: RefreshCw },
+  { path: '/cost-averaging', label: '中长期交易', icon: BarChart3 },
   { path: '/statistics', label: '数据统计', icon: PieChart },
   { path: '/fee-config', label: '费率配置', icon: Settings },
 ];

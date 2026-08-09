@@ -563,7 +563,7 @@ export default function Home() {
             <Wallet className="h-4 w-4 text-emerald-400" />
           </div>
           <span className="text-sm font-semibold text-slate-200">
-            开启仓位
+            仓位统计
           </span>
           <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
             全量统计

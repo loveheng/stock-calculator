@@ -1002,14 +1002,14 @@ export default function CostAveraging() {
   return (
     <div className="page-container">
       <div className="card">
-        <h3>成本摊薄计算器</h3>
+        <h3>仓位管理</h3>
 
         <div className="tab-bar">
           <button
             className={`tab-btn ${tab === 'ledger' ? 'active' : ''}`}
             onClick={() => setTab('ledger')}
           >
-            多批次建仓账本
+            建仓账本
           </button>
           <button
             className={`tab-btn ${tab === 'target' ? 'active' : ''}`}

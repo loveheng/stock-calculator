@@ -5,7 +5,6 @@
 // ============================================================
 import Decimal from 'decimal.js';
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import { useMemo } from 'react';
 import {
   processAllStreams,
@@ -16,7 +15,7 @@ import {
   type SellValidation,
 } from '../utils/tStreamEngine';
 import { calcTradeFees, roundTo, type FeeConfig } from '../utils/mathUtils';
-import type { StockSearchItem } from '../types/stock';
+import type { StockMeta, StockSearchItem } from '../types/stock';
 
 // ---- 做T记录（旧版：买卖成对，仅保留用于统计页兼容展示） ----
 export interface TRecord {
@@ -165,6 +164,7 @@ export interface AppStore {
 
   // 做T流水池（核心新模型：单边买卖流水，撮合引擎自动级联重算）
   tStreams: TStreamRecord[];
+  stocks: StockMeta[];
   addStreamRecord: (record: TStreamRecord) => StreamAddResult;
   /** 倒T首笔卖出严格底仓校验（标的存在性 + 可卖数量），表单提交与 Store 更新共用 */
   validateSellWithPosition: (
@@ -215,6 +215,7 @@ export interface AppStoreExport {
   tStreams: TStreamRecord[];
   tRounds: TRoundArchive[];
   positions: Position[];
+  stocks: StockMeta[];
 }
 
 // ---- 默认费率配置 ----
@@ -587,14 +588,13 @@ function archiveRoundIfCleared(stream: StockStreamResult, rounds: TRoundArchive[
 }
 
 // ---- 创建 Store ----
-export const useAppStore = create<AppStore>()(
-  persist(
-    (set, get) => ({
+export const useAppStore = create<AppStore>()((set, get) => ({
       feeConfig: { ...DEFAULT_FEE_CONFIG },
       tRecords: [],
       tStreams: [],
       tRounds: [],
       positions: [],
+      stocks: [],
 
       setFeeConfig: (config: Partial<FeeConfig>) => {
         set((state) => ({
@@ -1252,6 +1252,7 @@ export const useAppStore = create<AppStore>()(
           tStreams: state.tStreams,
           tRounds: state.tRounds,
           positions: state.positions,
+          stocks: state.stocks,
         };
       },
 
@@ -1262,6 +1263,7 @@ export const useAppStore = create<AppStore>()(
           tStreams: data.tStreams ?? [],
           tRounds: data.tRounds ?? [],
           positions: data.positions ?? [],
+          stocks: data.stocks ?? [],
         });
       },
 
@@ -1291,100 +1293,4 @@ export const useAppStore = create<AppStore>()(
         ]);
         return [headers.join(','), ...rows.map((row) => row.map((cell) => `"${cell}"`).join(','))].join('\n');
       },
-    }),
-    {
-      name: 'stock-calculator-store',
-      version: 5,
-      // 迁移：
-      //  v1 -> v2 : 为旧 TRecord / Position 补全 fullCode 主键
-      //  v2 -> v3 : 新增做T流水池 tStreams
-      //  v3 -> v4 : 新增 Round 生命周期归档库 tRounds
-      //  v4 -> v5 : 归档战报补全结算方式 settleType 与成交明细快照 transactions
-      migrate: (persistedState: unknown, version: number) => {
-        let state = persistedState as Partial<AppStoreExport>;
-
-        if (version < 2) {
-          state = {
-            ...state,
-            tRecords: (state.tRecords ?? []).map((r) => ({
-              ...r,
-              fullCode:
-                r.fullCode ??
-                r.selectedStock?.fullCode ??
-                r.quoteId ??
-                '',
-            })),
-            positions: (state.positions ?? []).map((p) => ({
-              ...p,
-              fullCode: p.fullCode ?? '',
-            })),
-          };
-        }
-
-        if (version < 3) {
-          state = {
-            ...state,
-            tStreams: state.tStreams ?? [],
-          };
-        }
-
-        if (version < 4) {
-          state = {
-            ...state,
-            tRounds: state.tRounds ?? [],
-          };
-        }
-
-        if (version < 5) {
-          // 旧归档无结算方式与成交明细：默认 'clear' + 按流水时间序补全快照
-          state = {
-            ...state,
-            tRounds: (state.tRounds ?? []).map((r) => {
-              if (r.settleType && r.transactions && r.mode) return r;
-              const txns: RoundTxn[] = [
-                ...(r.buyAmount > 0
-                  ? [{
-                      id: `${r.id}-buy`,
-                      timestamp: r.openedAt,
-                      direction: 'buy' as const,
-                      price: r.buyAmount > 0 ? r.avgPrice : 0,
-                      amount: r.buyAmount,
-                      fee: 0,
-                      matchedAmount: 0,
-                      realizedProfit: 0,
-                    }]
-                  : []),
-                ...(r.sellAmount > 0
-                  ? [{
-                      id: `${r.id}-sell`,
-                      timestamp: r.closedAt,
-                      direction: 'sell' as const,
-                      price: r.avgPrice,
-                      amount: r.sellAmount,
-                      fee: 0,
-                      matchedAmount: r.sellAmount,
-                      realizedProfit: 0,
-                    }]
-                  : []),
-              ];
-              return {
-                ...r,
-                settleType: (r as Partial<TRoundArchive>).settleType ?? 'clear',
-                mode: (r as Partial<TRoundArchive>).mode ?? 'long',
-                transactions: (r as Partial<TRoundArchive>).transactions ?? txns,
-              };
-            }),
-          };
-        }
-
-        return {
-          feeConfig: state.feeConfig ?? DEFAULT_FEE_CONFIG,
-          tRecords: state.tRecords ?? [],
-          tStreams: state.tStreams ?? [],
-          tRounds: state.tRounds ?? [],
-          positions: state.positions ?? [],
-        };
-      },
-    }
-  )
-);
+    }));

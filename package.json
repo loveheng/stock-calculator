@@ -20,6 +20,7 @@
     "autoprefixer": "^10.5.4",
     "decimal.js": "^10.6.0",
     "dexie": "^4.4.4",
+    "dexie-react-hooks": "^4.4.0",
     "lucide-react": "^1.29.0",
     "postcss": "^8.5.26",
     "react": "^19.2.8",

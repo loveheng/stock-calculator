@@ -16,6 +16,18 @@ export interface StockSearchItem {
   InnerCode?: string;
 }
 
+export interface StockMeta {
+  fullCode: string;
+  code: string;
+  stockName: string;
+  pinYin: string;
+  marketType: string;
+  securityType: string;
+  quoteId?: string;
+  shortName?: string;
+  unifiedCode?: string;
+}
+
 export interface StockSearchResponse {
   QuotationCodeTable: {
     Data: StockSearchItem[];

@@ -150,6 +150,32 @@ export interface TTransactionEntity extends BaseEntity {
   note?: string;
 }
 
+/** 未完成做T项目流水实体（tStreams 表）。记录进行中 Round 的单边买卖流水，供刷新后恢复做T项目。 */
+export interface TStreamEntity extends BaseEntity {
+  /** 做T流水的展示时间戳（ISO 字符串或 'YYYY-MM-DD HH:mm'，与撮合引擎 FIFO 排序格式一致） */
+  timestamp: string;
+  /** 完整证券代码（含市场前缀，如 sh601318），作为流水池唯一主键 */
+  fullCode: string;
+  /** 股票展示名称 */
+  stockName: string;
+  /** 交易方向：买入 / 卖出 */
+  direction: 'buy' | 'sell';
+  /** 成交单价（元） */
+  price: number;
+  /** 成交数量（股，正数） */
+  amount: number;
+  /** 单边规费快照（元） */
+  fee: number;
+  /** 备注 */
+  note?: string;
+  /** 行情快照 ID */
+  quoteId?: string;
+  /** 选股条目快照（恢复 UI 自动补全展示用） */
+  selectedStock?: Record<string, unknown>;
+  /** 倒T首笔卖出已扣减的底仓数量（股） */
+  baseDeductedAmount?: number;
+}
+
 /** 现金账户实体（accountCash 表）。单行记录（id 固定为 1）。 */
 export interface AccountCashEntity {
   /** 主键，固定为 1（单例） */
@@ -241,6 +267,8 @@ export class TradingLedgerDB extends Dexie {
   tRounds!: Table<TRoundEntity, string>;
   /** 做T成交流水表 */
   tTransactions!: Table<TTransactionEntity, string>;
+  /** 未完成做T项目流水表（进行中 Round 的单边流水池） */
+  tStreams!: Table<TStreamEntity, string>;
   /** 现金账户表（单行） */
   accountCash!: Table<AccountCashEntity, number>;
   /** 现金流水表 */
@@ -263,6 +291,18 @@ export class TradingLedgerDB extends Dexie {
       positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
       tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
       tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
+      accountCash: 'id, updatedAt',
+      cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
+      tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
+      feeConfigs: 'id, updatedAt',
+    });
+    this.version(3).stores({
+      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, updatedAt, isDeleted',
+      positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
+      positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
+      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
+      tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
+      tStreams: 'id, fullCode, direction, timestamp, updatedAt, isDeleted',
       accountCash: 'id, updatedAt',
       cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
       tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',

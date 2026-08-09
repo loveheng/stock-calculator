@@ -3,7 +3,7 @@
  * @description IndexedDB 数据读写中枢（DAO 层）：提供全局 `db` 实例、行级视图模型、实体转换函数，
  *              以及全量加载/批量落盘的持久化 API，供 Store 层初始化与刷新时调用。
  * @layer DAO
- * @storage_impact 读写 IndexedDB 全部 9 张表（feeConfigs / stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes）；
+ * @storage_impact 读写 IndexedDB 全部 10 张表（feeConfigs / stocks / positions / positionBatches / tRounds / tTransactions / tStreams / accountCash / cashFlows / tradeNotes）；
  *                 所有写库均自动补充 `createdAt` / `updatedAt` / `isDeleted=0`，并通过 cleanUndefined 剔除 undefined 字段防序列化错误。
  * @author 开发团队
  */
@@ -24,6 +24,7 @@ import {
   type PositionBatchEntity,
   type PositionEntity,
   type StockEntity,
+  type TStreamEntity,
   type TTransactionEntity,
   type TRoundEntity,
   type TradeNoteEntity,
@@ -147,6 +148,8 @@ export interface TStreamRow {
   note?: string;
   /** 行情快照 ID */
   quoteId?: string;
+  /** 选股条目快照（恢复 UI 自动补全展示用） */
+  selectedStock?: Record<string, unknown>;
   /** 倒T首笔卖出已扣减的底仓数量（股） */
   baseDeductedAmount?: number;
 }
@@ -388,6 +391,55 @@ function toRoundTxn(transaction: TTransactionEntity): RoundTxn {
 }
 
 /**
+ * 将做T流水行视图模型转换为 tStreams 实体（保留 selectedStock 快照）。
+ *
+ * @param {TStreamRow} stream - 做T流水行视图模型
+ * @returns {TStreamEntity} tStreams 实体
+ */
+function toTStreamEntity(stream: TStreamRow): TStreamEntity {
+  return {
+    id: stream.id,
+    timestamp: stream.timestamp,
+    fullCode: stream.fullCode,
+    stockName: stream.stockName,
+    direction: stream.direction,
+    price: stream.price,
+    amount: stream.amount,
+    fee: stream.fee,
+    note: stream.note,
+    quoteId: stream.quoteId,
+    selectedStock: stream.selectedStock,
+    baseDeductedAmount: stream.baseDeductedAmount,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    isDeleted: 0,
+  };
+}
+
+/**
+ * 将 tStreams 实体映射回做T流水行视图模型。
+ *
+ * @param {TStreamEntity} entity - tStreams 实体
+ * @returns {TStreamRow} 做T流水行视图模型
+ */
+function toTStreamRow(entity: TStreamEntity): TStreamRow {
+  return {
+    id: entity.id,
+    fullCode: entity.fullCode,
+    stockName: entity.stockName,
+    direction: entity.direction,
+    price: entity.price,
+    amount: entity.amount,
+    fee: entity.fee,
+    timestamp: entity.timestamp,
+    note: entity.note,
+    quoteId: entity.quoteId,
+    selectedStock: entity.selectedStock,
+    baseDeductedAmount: entity.baseDeductedAmount,
+  };
+}
+
+/**
  * 确保默认数据存在（现金账户 + 费率配置单行记录）。
  *
  * @description 在读写事务内检查 accountCash 与 feeConfigs 的 id=1 行，缺失则写入默认值。
@@ -410,17 +462,18 @@ export async function ensureDefaultData(): Promise<void> {
 /**
  * 全量读取数据库并重组为 Store 初始化所需的视图模型集合。
  *
- * @description 并行读取 6 张核心表，过滤软删除记录，装配 持仓/批次、Round/成交 两级聚合并映射股票名称。
+ * @description 并行读取 7 张核心表，过滤软删除记录，装配 持仓/批次、Round/成交 两级聚合并映射股票名称。
  * @returns {Promise<{ feeConfig: FeeConfigEntity | null; positions: PositionRow[]; tRounds: TRoundRow[]; tStreams: TStreamRow[]; stocks: StockRow[] }>}
  *          Store 初始化数据包
  */
 export async function loadAllFromDB() {
-  const [feeConfigsRaw, positionsRaw, positionBatchesRaw, tRoundsRaw, tTransactionsRaw, stocksRaw] = await Promise.all([
+  const [feeConfigsRaw, positionsRaw, positionBatchesRaw, tRoundsRaw, tTransactionsRaw, tStreamsRaw, stocksRaw] = await Promise.all([
     db.feeConfigs.toArray(),
     db.positions.toArray(),
     db.positionBatches.toArray(),
     db.tRounds.toArray(),
     db.tTransactions.toArray(),
+    db.tStreams.toArray(),
     db.stocks.toArray(),
   ]);
 
@@ -429,6 +482,7 @@ export async function loadAllFromDB() {
   const positionBatches = positionBatchesRaw.filter((r) => (r.isDeleted ?? 0) === 0);
   const tRounds = tRoundsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
   const tTransactions = tTransactionsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
+  const tStreams = tStreamsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
   const stocks = stocksRaw.filter((r) => (r.isDeleted ?? 0) === 0);
 
   const stockMap = new Map(stocks.map((item) => [item.fullCode, item]));
@@ -503,7 +557,7 @@ export async function loadAllFromDB() {
     feeConfig: feeConfigs.length > 0 ? feeConfigs[0] : null,
     positions: Array.from(positionMap.values()),
     tRounds: Array.from(roundMap.values()),
-    tStreams: [] as TStreamRow[],
+    tStreams: tStreams.map((item) => toTStreamRow(item)),
     stocks: stocks.map((item) => ({
       fullCode: item.fullCode,
       code: item.code,
@@ -580,40 +634,29 @@ export async function saveAllTRoundsToDB(rounds: TRoundRow[]): Promise<void> {
 }
 
 /**
- * 保存存量做T流水到事务表（兼容旧数据迁移）。
+ * 保存做T流水池到 tStreams 表（先清空后 bulkAdd，保持内存态与 DB 一致）。
  *
- * @description 仅写入带 roundId 的流水记录；无 roundId 的孤立流水会被过滤。
+ * @description 以 Store 内存中的 tStreams 为唯一事实源，整体覆盖落盘；
+ *              未完成做T项目（未归档 Round 的单边流水池）由此持久化，刷新后可恢复。
  * @param {TStreamRow[]} streams - 做T流水列表
  * @returns {Promise<void>}
- * @note 运行在 `rw` 事务（tTransactions）；新架构已分离归档事务，本方法仅作兜底迁移
+ * @note 运行在 `rw` 事务（tStreams）；清空会物理删除旧记录；
+ *      所有记录统一补充当前 `createdAt` / `updatedAt` 与 `isDeleted=0`
  */
 export async function saveAllTStreamsToDB(streams: TStreamRow[]): Promise<void> {
-  // 新的数据库架构已将做T流水与归档事务分离，
-  // 目前不直接把旧的 tStreams 全量写入规范化表。
-  await db.transaction('rw', db.tTransactions, async () => {
-    const transactions = streams
-      .filter((stream): stream is TStreamRow & { roundId: string } => typeof stream.roundId === 'string')
-      .map((stream) => ({
-        id: stream.id,
-        roundId: stream.roundId as string,
-        direction: stream.direction,
-        price: stream.price,
-        amount: stream.amount,
-        fee: stream.fee,
-        matchedAmount: 0,
-        realizedProfit: 0,
-        timestamp: parseTimestamp(stream.timestamp),
-        note: stream.note ?? '',
-      }));
-    if (transactions.length > 0) {
+  await db.transaction('rw', db.tStreams, async () => {
+    await db.tStreams.clear();
+    if (streams.length > 0) {
       const now = Date.now();
-      await db.tTransactions.bulkPut(transactions.map((t) => cleanUndefined({ ...t, updatedAt: now, createdAt: now, isDeleted: 0 } as any)));
+      await db.tStreams.bulkAdd(
+        streams.map((s) => cleanUndefined({ ...toTStreamEntity(s), updatedAt: now, createdAt: now, isDeleted: 0 } as any))
+      );
     }
   });
 }
 
 /**
- * 一次性全量落盘（费率 + 股票 + 持仓/批次 + Round/事务）。
+ * 一次性全量落盘（费率 + 股票 + 持仓/批次 + Round/事务 + 做T流水池）。
  *
  * @description 在单个大事务内先清空相关表再整体写入，保证数据一致性与幂等性。
  * @param {FeeConfigRow} feeConfig - 费率配置
@@ -622,7 +665,7 @@ export async function saveAllTStreamsToDB(streams: TStreamRow[]): Promise<void> 
  * @param {TStreamRow[]} tStreams - 做T流水列表
  * @param {StockRow[]} stocks - 股票列表
  * @returns {Promise<void>}
- * @note 运行在 `rw` 大事务（6 张表）；清空会物理删除旧记录；
+ * @note 运行在 `rw` 大事务（7 张表）；清空会物理删除旧记录；
  *      所有记录统一补充当前 `createdAt` / `updatedAt` 与 `isDeleted=0`
  */
 export async function saveAllToDB(
@@ -632,7 +675,7 @@ export async function saveAllToDB(
   tStreams: TStreamRow[],
   stocks: StockRow[],
 ): Promise<void> {
-  await db.transaction('rw', [db.feeConfigs, db.stocks, db.positions, db.positionBatches, db.tRounds, db.tTransactions], async () => {
+  await db.transaction('rw', [db.feeConfigs, db.stocks, db.positions, db.positionBatches, db.tRounds, db.tTransactions, db.tStreams], async () => {
     const now = Date.now();
     await db.feeConfigs.put(cleanUndefined({ id: 1, updatedAt: now, createdAt: now, isDeleted: 0, ...feeConfig } as any));
     await db.stocks.clear();
@@ -656,6 +699,12 @@ export async function saveAllToDB(
       if (transactions.length > 0) {
         await db.tTransactions.bulkAdd(transactions);
       }
+    }
+    await db.tStreams.clear();
+    if (tStreams.length > 0) {
+      await db.tStreams.bulkAdd(
+        tStreams.map((s) => cleanUndefined({ ...toTStreamEntity(s), updatedAt: now, createdAt: now, isDeleted: 0 } as any))
+      );
     }
   });
 }

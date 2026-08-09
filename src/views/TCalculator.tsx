@@ -110,7 +110,7 @@ function StreamStatusBadge({ result }: { result: StockStreamResult }) {
  * 单个进行中做T项目卡片（核心业务卡片）。
  *
  * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
- *              累计已实现盈亏、流水明细展开、[+追加记录] 快速录入，
+ *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
  *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
  * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number }} props
  *  - result: 该标的的流水池撮合结果
@@ -129,8 +129,8 @@ function CurrentProjectCard({
   basePosition: Position | undefined;
   roundNo: number;
 }) {
-  const [showTxns, setShowTxns] = useState(false);
   const [showAppend, setShowAppend] = useState(false);
+  const removeStreamRecord = useAppStore((s) => s.removeStreamRecord);
   const transferToPosition = (fullCode: string) => ledgerService.transferToPositionService(fullCode);
   const settleShortRound = (fullCode: string) => ledgerService.settleShortRoundService(fullCode);
   const addToast = (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
@@ -296,44 +296,44 @@ function CurrentProjectCard({
       </div>
 
       {result.entries.length > 0 && (
-        <div className="pt-2">
-          <button
-            onClick={() => setShowTxns((v) => !v)}
-            className="text-xs text-blue-400 hover:text-blue-300 underline"
-          >
-            {showTxns ? '▾ 收起流水明细' : `▸ 查看流水明细（${result.entries.length} 笔）`}
-          </button>
-          {showTxns && (
-            <div className="mt-2 bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
-              {result.entries.map((entry) => (
-                <div key={entry.id} className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${entry.direction === 'buy' ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
-                        {entry.direction === 'buy' ? '买入' : '卖出'}
-                      </span>
-                      <span className="text-slate-500">{new Date(entry.timestamp).toLocaleString()}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-slate-400">
-                      <span>¥{entry.price.toFixed(3)}</span>
-                      <span>{entry.amount} 股</span>
-                      <span>手续费 ¥{entry.fee.toFixed(2)}</span>
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-slate-500">对冲/收益</div>
-                    <div className="flex flex-wrap gap-2 items-center">
-                      <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
-                      <span className={entry.realizedProfit >= 0 ? 'text-red-400' : 'text-green-400'}>
-                        {entry.realizedProfit >= 0 ? '+' : ''}{formatCurrency(entry.realizedProfit)}
-                      </span>
-                    </div>
-                    {entry.note && <div className="text-slate-500">{entry.note}</div>}
-                  </div>
+        <div className="bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
+          {result.entries.map((entry) => (
+            <div key={entry.id} className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${entry.direction === 'buy' ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
+                    {entry.direction === 'buy' ? '买入' : '卖出'}
+                  </span>
+                  <span className="text-slate-500">{new Date(entry.timestamp).toLocaleString()}</span>
                 </div>
-              ))}
+                <div className="flex flex-wrap gap-2 text-slate-400">
+                  <span>¥{entry.price.toFixed(3)}</span>
+                  <span>{entry.amount} 股</span>
+                  <span>手续费 ¥{entry.fee.toFixed(2)}</span>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-slate-500">对冲/收益</div>
+                  <button
+                    onClick={() => removeStreamRecord(entry.id)}
+                    className="text-slate-600 hover:text-red-400"
+                    aria-label="删除该笔流水"
+                    title="删除该笔流水"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
+                  <span className={entry.realizedProfit >= 0 ? 'text-red-400' : 'text-green-400'}>
+                    {entry.realizedProfit >= 0 ? '+' : ''}{formatCurrency(entry.realizedProfit)}
+                  </span>
+                </div>
+                {entry.note && <div className="text-slate-500">{entry.note}</div>}
+              </div>
             </div>
-          )}
+          ))}
         </div>
       )}
 
@@ -646,8 +646,7 @@ function ArchiveRoundCard({
  *
  * @description 组合：
  *  - 添加交易流水表单（正T买入/倒T卖出，含费用预览、超卖校验与[全部卖出]快捷键）
- *  - 当前做T项目卡片流（实时撮合状态 + 追加记录 + 划转/结算）
- *  - 流水明细列表（支持逐条删除，触发级联重算）
+ *  - 当前做T项目卡片流（实时撮合状态 + 追加记录 + 划转/结算 + 流水明细列表逐条删除）
  *  - 历史战报归档库（胜率 + 累计净收益 + 战报卡片）
  *  所有写操作均通过 ledgerService/store 落库 IndexedDB 并级联重算流水池。
  * @returns {JSX.Element} 做T账本与计算器页面视图
@@ -660,7 +659,6 @@ export default function TCalculator() {
   const tRounds = useLiveQuery(async () => await ledgerService.getTRoundsWithTransactions(), [], []) as any[];
   const addStreamRecord = (rec: TStreamRecord) => ledgerService.applyStreamRecord(rec);
   const validateSellWithPosition = useAppStore((s) => s.validateSellWithPosition);
-  const removeStreamRecord = useAppStore((s) => s.removeStreamRecord);
   const importLegacyTRecords = useAppStore((s) => s.importLegacyTRecords);
   const removeRound = useAppStore((s) => s.removeRound);
   const clearStreams = useAppStore((s) => s.clearStreams);
@@ -1028,52 +1026,6 @@ export default function TCalculator() {
           })
         )}
       </div>
-
-      {/* 流水明细（可选展开） */}
-      {results.length > 0 && (
-        <div className="card">
-          <h3>流水明细（级联重算）</h3>
-          <div className="divide-y divide-slate-700">
-            {results.flatMap((r) =>
-              r.entries.map((e) => (
-                <div key={e.id} className="py-2.5 flex items-center justify-between gap-2 text-sm">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="font-medium text-slate-200 truncate">{r.stockName}</span>
-                      <span className={`text-[11px] px-1.5 py-0.5 rounded font-bold ${e.direction === 'buy' ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
-                        {e.direction === 'buy' ? '买' : '卖'}
-                      </span>
-                      {e.direction === 'buy' && (
-                        <span className={`text-[11px] font-mono tabular-nums ${e.remaining > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                          {e.remaining > 0 ? `剩 ${e.remaining} 股待对冲` : '已对冲'}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-slate-500 font-mono tabular-nums">
-                      {e.timestamp} · ¥{e.price} × {e.amount} · 费 {e.fee.toFixed(2)}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {e.direction === 'sell' && e.matchedAmount > 0 && (
-                      <span className={`text-xs font-mono tabular-nums ${pnlColor(e.realizedProfit)}`}>
-                        {e.realizedProfit >= 0 ? '+' : ''}
-                        {e.realizedProfit.toFixed(2)}
-                      </span>
-                    )}
-                    <button
-                      onClick={() => removeStreamRecord(e.id)}
-                      className="text-xs text-slate-600 hover:text-red-400"
-                      aria-label="删除"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
 
       {/* 归档历史库 */}
       <div className="space-y-3">

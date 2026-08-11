@@ -38,6 +38,8 @@ export interface StockEntity extends BaseEntity {
   marketType: string;
   /** 证券类型 */
   securityType: string;
+  /** 快捷类型判断，直接映射费率引擎: 'stock' | 'etf' | 'bond' */
+  kind: 'stock' | 'etf' | 'bond';
   /** 行情快照 ID */
   quoteId?: string;
   /** 简称 */
@@ -345,6 +347,19 @@ export class TradingLedgerDB extends Dexie {
     });
     this.version(4).stores({
       stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, updatedAt, isDeleted',
+      positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
+      positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
+      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
+      tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
+      tStreams: 'id, fullCode, direction, timestamp, updatedAt, isDeleted',
+      accountCash: 'id, updatedAt',
+      cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
+      tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
+      feeConfigs: 'id, updatedAt',
+      longTermRecords: 'id, fullCode, type, sourceReportId, timestamp, updatedAt, isDeleted',
+    });
+    this.version(5).stores({
+      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, kind, updatedAt, isDeleted',
       positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
       positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
       tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',

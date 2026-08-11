@@ -12,7 +12,7 @@
 // New normalized storage schema for TradingLedgerDB_v3
 // ============================================================
 import Dexie, { type Table } from 'dexie';
-import type { FeeConfig } from '../utils/mathUtils';
+import { matchSecurityKind, type FeeConfig, type SecurityKind } from '../utils/mathUtils';
 import type { PositionBatch, Position, RoundTxn, TRoundArchive } from '../store';
 import type { TStreamRecord } from '../utils/tStreamEngine';
 import type { StockMeta } from '../types/stock';
@@ -280,6 +280,7 @@ function toStockEntity(stock: StockRow): StockEntity {
     pinYin: stock.pinYin,
     marketType: stock.marketType,
     securityType: stock.securityType,
+    kind: matchSecurityKind(stock.securityType, stock.code),
     quoteId: stock.quoteId,
     shortName: stock.shortName,
     unifiedCode: stock.unifiedCode,

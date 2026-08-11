@@ -7,6 +7,8 @@
  * @author 开发团队
  */
 
+import type { SecurityKind } from '../utils/mathUtils';
+
 /**
  * 行情服务返回的单条股票/标的搜索结果。
  *
@@ -63,6 +65,8 @@ export interface StockMeta {
   marketType: string;
   /** 证券类型 */
   securityType: string;
+  /** 快捷类型判断，直接映射费率引擎: 'stock' | 'etf' | 'bond' */
+  kind: SecurityKind;
   /** 行情 QuoteID（可选） */
   quoteId?: string;
   /** 简称（可选） */

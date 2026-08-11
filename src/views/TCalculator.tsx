@@ -68,24 +68,6 @@ function pnlColor(value: number): string {
 }
 
 /**
- * 判断两个 ISO 时间戳是否处于同一自然日。
- *
- * @description 比较年/月/日三个维度是否完全相同。
- * @param {string} timestampA - 第一个时间戳（ISO 字符串）
- * @param {string} timestampB - 第二个时间戳（ISO 字符串）
- * @returns {boolean} 同一自然日返回 true，否则 false
- */
-function isSameDay(timestampA: string, timestampB: string): boolean {
-  const a = new Date(timestampA);
-  const b = new Date(timestampB);
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-/**
  * 流水池状态徽章组件。
  *
  * @description 根据撮合结果状态渲染对应彩色徽章：
@@ -882,24 +864,33 @@ function CurrentProjectCard({
 /**
  * 归档历史库 Round 战报卡片。
  *
- * @description 展示已归档做T战报：Round 编号、正/倒T标签、结算类型（平仓/划转）、
+ * @description 展示已归档做T战报：Round 编号、正/倒T标签、结算类型（平仓/归并/划转）、
  *              净收益、卖出数量、融合均价、成交明细穿透；
- *              提供「删除战报」操作（划转且当天结算时可选回滚底仓）。
- * @param {{ round: TRound; onRemove: (id, options?) => void }} props
+ *              提供「删除战报」操作，自动级联撤销归并底仓数据。
+ * @param {{ round: TRound; onRemove: (id) => { ok: boolean; message?: string } }} props
  *  - round: 归档战报记录（含 transactions 明细）
- *  - onRemove: 删除回调；options.rollbackBase=true 时同步回滚底仓
+ *  - onRemove: 删除回调，返回删除结果
  * @returns {JSX.Element} 战报卡片视图
- * @note 删除属于写操作，通过 store.removeRound 落库
+ * @note 删除属于写操作，通过 store.removeRound 落库，自动处理归并回滚
  */
 function ArchiveRoundCard({
   round,
   onRemove,
 }: {
   round: NonNullable<ReturnType<typeof useAppStore.getState>['tRounds']>[number];
-  onRemove: (id: string, options?: { rollbackBase?: boolean }) => void;
+  onRemove: (id: string) => { ok: boolean; message?: string };
 }) {
   const [showTxns, setShowTxns] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const txns = round.transactions ?? [];
+
+  const hasMerge = round.transferAmount && round.transferAmount > 0;
+  const mergeLabel = round.mode === 'long' ? '正T归并' : '倒T归并';
+
+  const deleteConfirmMessage = hasMerge
+    ? `删除此战报将同步撤销归并的 ${round.transferAmount} 股持仓及对应金额（约 ¥${(round.avgPrice * round.transferAmount!).toFixed(2)}），底仓成本将重新计算，并同步删除中长期记录中对应的【归并】历史，是否确认删除？`
+    : `确认删除本条历史战报？`;
+
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-2">
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -928,6 +919,11 @@ function ArchiveRoundCard({
           ) : (
             <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.sellAmount > 0 ? (round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400') : 'bg-slate-700/15 text-slate-200'}`}>
               {round.sellAmount > 0 ? (round.win ? '盈利' : '亏损') : '平仓'}
+            </span>
+          )}
+          {hasMerge && (
+            <span className="text-xs bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded-full font-bold shrink-0">
+              {mergeLabel}
             </span>
           )}
         </div>
@@ -1010,26 +1006,28 @@ function ArchiveRoundCard({
         </div>
       )}
       <button
-        onClick={() => {
-          const sameDay = isSameDay(round.openedAt, round.closedAt);
-          if (round.settleType === 'transfer' && sameDay) {
-            if (window.confirm('当日划转战报删除将同步回滚底仓，确认删除？')) {
-              onRemove(round.id, { rollbackBase: true });
-            }
-          } else if (round.settleType === 'transfer') {
-            if (window.confirm('系统仅会移除此条做T战报，不会自动扣减当前底仓。如需修改底仓，请前往持仓页面手动调整。确认删除？')) {
-              onRemove(round.id);
-            }
-          } else {
-            if (window.confirm('确认删除本条历史战报？')) {
-              onRemove(round.id);
-            }
-          }
-        }}
+        onClick={() => setShowDeleteConfirm(true)}
         className="text-[11px] text-slate-500 hover:text-red-400 underline"
       >
         删除战报
       </button>
+
+      <ConfirmModal
+        open={showDeleteConfirm}
+        title="删除战报确认"
+        message={deleteConfirmMessage}
+        confirmLabel="确认删除"
+        cancelLabel="取消"
+        danger
+        onConfirm={() => {
+          const result = onRemove(round.id);
+          if (!result.ok && result.message) {
+            window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${result.message}` }));
+          }
+          setShowDeleteConfirm(false);
+        }}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   );
 }
@@ -1055,6 +1053,7 @@ export default function TCalculator() {
   const importLegacyTRecords = useAppStore((s) => s.importLegacyTRecords);
   const removeRound = useAppStore((s) => s.removeRound);
   const clearStreams = useAppStore((s) => s.clearStreams);
+  const longTermRecords = useAppStore((s) => s.longTermRecords);
 
   const results = useStreamResults();
 
@@ -1452,8 +1451,55 @@ export default function TCalculator() {
             {[...tRounds]
               .sort((a, b) => new Date(b.closedAt).getTime() - new Date(a.closedAt).getTime())
               .map((round) => (
-                <ArchiveRoundCard key={round.id} round={round} onRemove={(id, options) => removeRound(id, options)} />
+                <ArchiveRoundCard key={round.id} round={round} onRemove={(id) => removeRound(id)} />
               ))}
+          </div>
+        )}
+      </div>
+
+      {/* 中长期操作历史 */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-semibold text-slate-200">📋 中长期操作历史</h3>
+          {longTermRecords.length > 0 && (
+            <span className="text-xs text-slate-400">{longTermRecords.length} 条记录</span>
+          )}
+        </div>
+        {longTermRecords.length === 0 ? (
+          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
+            做T归并操作将自动生成中长期操作记录（标记为「归并」）
+          </div>
+        ) : (
+          <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+            <div className="max-h-64 overflow-y-auto divide-y divide-slate-700">
+              {[...longTermRecords]
+                .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+                .map((rec) => (
+                  <div key={rec.id} className="flex items-center justify-between px-4 py-2.5 text-xs">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-slate-300 font-medium truncate">{rec.stockName}</span>
+                      {rec.type === 'merge' ? (
+                        <span className="bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
+                          归并
+                        </span>
+                      ) : rec.type === 'buy' ? (
+                        <span className="bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
+                          加仓
+                        </span>
+                      ) : (
+                        <span className="bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
+                          减仓
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 font-mono tabular-nums text-slate-400 shrink-0">
+                      <span>{rec.amount} 股</span>
+                      <span>@ ¥{rec.price.toFixed(3)}</span>
+                      <span className="text-slate-500">{new Date(rec.timestamp).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                ))}
+            </div>
           </div>
         )}
       </div>

@@ -1,3 +1,13 @@
+/**
+ * @file vite.config.ts
+ * @description Vite 构建配置：React 插件、PWA 支持（Workbox 运行时缓存）、
+ *              开发服务器代理（腾讯 Smartbox 行情搜索 / 东方财富搜索 API）、
+ *              以及构建输出配置。
+ * @layer Config
+ * @storage_impact 无 IndexedDB 读写；仅影响构建产物与开发环境网络代理。
+ * @author 开发团队
+ */
+
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';

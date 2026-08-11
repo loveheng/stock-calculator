@@ -250,6 +250,28 @@ export interface FeeConfigEntity {
   isDeleted?: number;
 }
 
+/** 中长期操作记录实体（longTermRecords 表）。记录底仓加仓/减仓/归并操作，与短线战报联动删除。 */
+export interface LongTermRecordEntity extends BaseEntity {
+  /** 关联标的完整代码 */
+  fullCode: string;
+  /** 股票名称 */
+  stockName?: string;
+  /** 操作类型：buy / sell / merge */
+  type: 'buy' | 'sell' | 'merge';
+  /** 成交单价 */
+  price: number;
+  /** 成交数量 */
+  amount: number;
+  /** 手续费 */
+  fee: number;
+  /** 操作时间戳 */
+  timestamp: number;
+  /** 关联短线战报 id（仅 type=merge 时有值） */
+  sourceReportId?: string;
+  /** 备注 */
+  note?: string;
+}
+
 /**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
@@ -277,6 +299,9 @@ export class TradingLedgerDB extends Dexie {
   tradeNotes!: Table<TradeNoteEntity, string>;
   /** 费率配置表（单行） */
   feeConfigs!: Table<FeeConfigEntity, number>;
+
+  /** 中长期操作记录表 */
+  longTermRecords!: Table<LongTermRecordEntity, string>;
 
   /**
    * 初始化数据库结构（版本 2 的 stores 定义）。
@@ -307,6 +332,19 @@ export class TradingLedgerDB extends Dexie {
       cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
       tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
       feeConfigs: 'id, updatedAt',
+    });
+    this.version(4).stores({
+      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, updatedAt, isDeleted',
+      positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
+      positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
+      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
+      tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
+      tStreams: 'id, fullCode, direction, timestamp, updatedAt, isDeleted',
+      accountCash: 'id, updatedAt',
+      cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
+      tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
+      feeConfigs: 'id, updatedAt',
+      longTermRecords: 'id, fullCode, type, sourceReportId, timestamp, updatedAt, isDeleted',
     });
   }
 }

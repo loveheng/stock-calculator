@@ -3,9 +3,10 @@
  * @description 全局内存状态中心（Zustand 纯内存管理）：
  *              管理费率配置、做T流水池（FIFO 撮合）、Round 生命周期归档库、持仓账本与数据导入导出。
  *              v3 引入做T流水池 tStreams（FIFO 撮合引擎级联重算）；v4 引入 Round 战报归档与绝对现金流划转。
+ *              v5 重构：持久化改为 Store Action 内增量写库，彻底移除全量覆盖写。
  * @layer Store
- * @storage_impact 通过 storeInit.ts 的 saveAllToDB / loadAllFromDB 间接读写 IndexedDB 的
- *                 feeConfigs / positions / tRounds / tStreams / stocks 表（本文件维护内存态，不直接写库）。
+ * @storage_impact 通过 db/index.ts 的增量写函数直接在 Action 内写 IndexedDB；
+ *                 feeConfigs / positions / tRounds / tStreams / stocks / longTermRecords 表。
  * @author 开发团队
  */
 
@@ -13,6 +14,7 @@
 // 全局内存状态 (Zustand)
 //  - v3: 做T流水池 tStreams（FIFO 撮合）
 //  - v4: Round 生命周期归档库 tRounds + 绝对现金流划转
+//  - v5: 增量写库（移除全量覆盖写订阅）
 // ============================================================
 import Decimal from 'decimal.js';
 import { create } from 'zustand';
@@ -27,6 +29,43 @@ import {
 } from '../utils/tStreamEngine';
 import { calcTradeFees, roundTo, type FeeConfig } from '../utils/mathUtils';
 import type { StockMeta, StockSearchItem } from '../types/stock';
+import {
+  putFeeConfig,
+  putStock,
+  deleteStock as dbDeleteStock,
+  putPosition,
+  deletePositionWithBatches,
+  putPositionBatch,
+  putTRound,
+  deleteTRoundWithTransactions,
+  putTStream,
+  deleteTStream,
+  bulkDeleteTStreams,
+  putLongTermRecord,
+  deleteLongTermRecord,
+  deleteLongTermRecordsBySourceReportId,
+  safeImportAllData,
+  type FeeConfigRow,
+  type PositionRow,
+  type TRoundRow,
+  type TStreamRow,
+  type LongTermRecordRow,
+  type StockRow,
+} from '../db/index';
+import { isInitialLoadDone } from '../db/storeInit';
+
+/**
+ * 安全的增量持久化包装器：仅在 initialLoadDone 完成且 DB 可用时执行写库操作。
+ * 写库失败仅 console.error 记录，不阻断 UI 与内存状态更新。
+ */
+async function safePersist(fn: () => Promise<void>): Promise<void> {
+  if (!isInitialLoadDone()) return;
+  try {
+    await fn();
+  } catch (err) {
+    console.error('[StorePersistence] Failed to persist:', err);
+  }
+}
 
 // ---- 做T记录（旧版：买卖成对，仅保留用于统计页兼容展示） ----
 export interface TRecord {
@@ -80,6 +119,30 @@ export interface Position {
   realizedPnL?: number;
   /** 累计投入总资金（含规费，用于准确成本计算） */
   totalInvested?: number;
+}
+
+// ---- 中长期操作记录（Long-term Transaction History） ----
+// 记录底仓操作（加仓/减仓/归并），用于与短线交易归并动作联动删除
+export interface LongTermRecord {
+  id: string;
+  /** 关联标的完整代码（如 sh601318） */
+  fullCode: string;
+  /** 股票名称 */
+  stockName: string;
+  /** 操作类型：buy=加仓 / sell=减仓 / merge=归并（短线T+0归并到底仓） */
+  type: 'buy' | 'sell' | 'merge';
+  /** 成交单价（元） */
+  price: number;
+  /** 成交数量（股） */
+  amount: number;
+  /** 手续费（元） */
+  fee: number;
+  /** 操作时间戳（ISO 字符串） */
+  timestamp: string;
+  /** 关联短线战报 id（仅 type=merge 时有值，用于联动删除） */
+  sourceReportId?: string;
+  /** 备注 */
+  note?: string;
 }
 
 // ---- 归档成交明细（历史穿透查看用） ----
@@ -192,7 +255,7 @@ export interface AppStore {
   // Round 生命周期归档库（历史战报）
   tRounds: TRoundArchive[];
   addRound: (round: TRoundArchive) => void;
-  removeRound: (id: string, options?: { rollbackBase?: boolean }) => void;
+  removeRound: (id: string) => { ok: boolean; message?: string };
   clearRounds: () => void;
   /** 一键划转底仓（绝对现金流法：剩余持仓按 P_avg 平价划入；做T归零自动归档战报） */
   transferToPosition: (
@@ -212,6 +275,14 @@ export interface AppStore {
   deletePositionBatch: (positionId: string, batchId: string) => void;
   removePosition: (id: string) => void;
 
+  // 中长期操作记录
+  longTermRecords: LongTermRecord[];
+  addLongTermRecord: (record: LongTermRecord) => void;
+  removeLongTermRecord: (id: string) => void;
+  /** 根据 sourceReportId 删除对应中长期记录（级联删除用） */
+  removeLongTermRecordsBySourceReportId: (sourceReportId: string) => void;
+  clearLongTermRecords: () => void;
+
   // 全量数据导入导出
   exportData: () => AppStoreExport;
   importData: (data: AppStoreExport) => void;
@@ -227,6 +298,7 @@ export interface AppStoreExport {
   tRounds: TRoundArchive[];
   positions: Position[];
   stocks: StockMeta[];
+  longTermRecords: LongTermRecord[];
 }
 
 // ---- 默认费率配置 ----
@@ -587,40 +659,70 @@ function restoreBasePositionCost(
 }
 
 /**
- * 回滚划转底仓（transfer 结算撤销）。
+ * 回滚划转底仓（transfer 结算撤销 / 归并剥离）。
  *
- * @description 从持仓数量中扣回已划转的 transferAmount 股，按划转均价
+ * @description 从持仓数量中扣回已归并的 transferAmount 股，按归并均价
  *              avgPrice 从总成本中扣除对应金额，重算加权成本与累计投入；
- *              若持仓数量不足以划转则原样返回。
+ *              若持仓数量不足以归并剥离则返回错误信息。
+ *              同时清理该归并产生的批次记录与已实现盈亏。
  * @param {Position[]} positions - 全部持仓账本
  * @param {string} fullCode - 标的完整代码
- * @param {number} transferAmount - 需要回滚的划转股数（>0）
- * @param {number} avgPrice - 当时划转的加权均价（元）
- * @returns {Position[]} 回滚后的新持仓数组（不可变更新）
+ * @param {number} transferAmount - 需要回滚的归并股数（>0）
+ * @param {number} avgPrice - 当时归并的加权均价（元）
+ * @param {number} [transferFee] - 归并时产生的手续费（若有）
+ * @returns {{ positions: Position[]; ok: boolean; message?: string }}
+ *          回滚结果；ok=false 时 positions 为原始数组，message 为错误描述
  */
-function rollbackTransferPosition(
+export function rollbackTransferPosition(
   positions: Position[],
   fullCode: string,
   transferAmount: number,
-  avgPrice: number
-): Position[] {
-  return positions.map((p) => {
+  avgPrice: number,
+  transferFee?: number
+): { positions: Position[]; ok: boolean; message?: string } {
+  let hasError = false;
+  let errorMsg = '';
+  const nextPositions = positions.map((p) => {
     if (p.fullCode !== fullCode || p.isClosed) return p;
-    const currentAmount = p.currentAmount;
-    if (currentAmount < transferAmount) return p;
-    const currentTotal = new Decimal(p.currentCost).mul(currentAmount);
+    if (p.currentAmount < transferAmount) {
+      hasError = true;
+      errorMsg = `无法删除该战报，后续交易已消耗该归并持仓（当前底仓 ${p.currentAmount} 股 < 需剥离 ${transferAmount} 股）`;
+      return p;
+    }
+    const currentTotal = new Decimal(p.currentCost).mul(p.currentAmount);
     const rollbackTotal = new Decimal(avgPrice).mul(transferAmount);
-    const nextAmount = currentAmount - transferAmount;
+    // 归并时产生的手续费（若有），也一并从 totalInvested 中扣除
+    const rollbackFee = transferFee ?? 0;
+    const nextAmount = p.currentAmount - transferAmount;
     const nextTotal = currentTotal.minus(rollbackTotal);
     const nextCost = nextAmount > 0 ? roundTo(nextTotal.div(nextAmount).toNumber(), 3) : 0;
+    // 从 totalInvested 中精准扣除：归并时投入的资金 = avgPrice * transferAmount + rollbackFee
+    const investedDeduction = new Decimal(avgPrice).mul(transferAmount).plus(rollbackFee);
+    const nextInvested = new Decimal(p.totalInvested ?? 0).minus(investedDeduction);
+    // 清理批次中属于该归并操作的记录（按金额和数量匹配）
+    const remainingBatches = p.batches.filter((b) => {
+      if (b.type === 'add' && b.amount === transferAmount) {
+        const batchCost = b.price * b.amount + (b.fee ?? 0);
+        const deductCost = avgPrice * transferAmount + rollbackFee;
+        // 允许微小浮点误差（0.01 元以内视为同一笔）
+        return Math.abs(batchCost - deductCost) > 0.01;
+      }
+      return true;
+    });
     return {
       ...p,
       currentAmount: nextAmount,
-      currentCost: nextCost,
-      totalInvested: roundTo(nextCost * nextAmount, 2),
-      isClosed: false,
+      currentCost: nextCost > 0 ? nextCost : 0,
+      totalInvested: nextInvested.gt(0) ? roundTo(nextInvested.toNumber(), 2) : 0,
+      batches: remainingBatches,
+      isClosed: nextAmount === 0 ? true : p.isClosed,
+      closedAt: nextAmount === 0 ? new Date().toISOString() : p.closedAt,
     };
   });
+  if (hasError) {
+    return { positions, ok: false, message: errorMsg };
+  }
+  return { positions: nextPositions, ok: true };
 }
 
 /**
@@ -715,6 +817,7 @@ export const useAppStore = create<AppStore>()((set, get) => ({
       tRecords: [],
       tStreams: [],
       tRounds: [],
+      longTermRecords: [],
       positions: [],
       stocks: [],
 
@@ -722,10 +825,13 @@ export const useAppStore = create<AppStore>()((set, get) => ({
         set((state) => ({
           feeConfig: { ...state.feeConfig, ...config },
         }));
+        const merged = { ...get().feeConfig };
+        safePersist(() => putFeeConfig(merged as FeeConfigRow));
       },
 
       resetFeeConfig: (config: FeeConfig) => {
         set({ feeConfig: config });
+        safePersist(() => putFeeConfig(config as FeeConfigRow));
       },
 
       addTRecord: (record: TRecord) => {
@@ -850,6 +956,22 @@ export const useAppStore = create<AppStore>()((set, get) => ({
           };
         }
         set({ tStreams: streamsAfter, tRounds: rounds, positions: nextPositions });
+        // 增量持久化：新增流水 + 清理已结清的流水
+        safePersist(async () => {
+          await putTStream(record as unknown as TStreamRow);
+          // 若当前标的已结清，则删除该标的所有 DB 流水
+          if (cleared) {
+            const clearedIds = tStreams.filter((s) => s.fullCode === record.fullCode).map((s) => s.id);
+            if (clearedIds.length > 0) {
+              await bulkDeleteTStreams(clearedIds);
+            }
+            // 同步新归档的 Round
+            const newRounds = rounds.filter((r) => !tRounds.some((old) => old.id === r.id));
+            for (const nr of newRounds) {
+              await putTRound(nr as unknown as TRoundRow);
+            }
+          }
+        });
         return addResult;
       },
 
@@ -881,6 +1003,16 @@ export const useAppStore = create<AppStore>()((set, get) => ({
           set({ positions: nextPositions });
         }
         set({ tStreams: streams, tRounds: rounds });
+        // 增量持久化：删除流水 + 同步结清
+        safePersist(async () => {
+          await deleteTStream(id);
+          // 若结清了，删除该标的 DB 清理的流水
+          const currentStreamIds = new Set(streams.map((s) => s.id));
+          const removedIds = tStreams.filter((s) => !currentStreamIds.has(s.id)).map((s) => s.id);
+          if (removedIds.length > 0) {
+            await bulkDeleteTStreams(removedIds);
+          }
+        });
       },
 
       updateStreamRecord: (id: string, updates: Partial<TStreamRecord>) => {
@@ -911,10 +1043,17 @@ export const useAppStore = create<AppStore>()((set, get) => ({
           set({ positions: nextPositions });
         }
         set({ tStreams: streams, tRounds: rounds });
+        // 增量持久化：更新流水
+        const updated = get().tStreams.find((s) => s.id === id);
+        if (updated) {
+          safePersist(() => putTStream(updated as unknown as TStreamRow));
+        }
       },
 
       clearStreams: () => {
+        const ids = get().tStreams.map((s) => s.id);
         set({ tStreams: [] });
+        safePersist(() => bulkDeleteTStreams(ids));
       },
 
       importLegacyTRecords: () => {
@@ -958,36 +1097,103 @@ export const useAppStore = create<AppStore>()((set, get) => ({
         set((state) => ({
           tStreams: [...state.tStreams, ...converted],
         }));
+        // 增量持久化：写入所有导入的流水
+        safePersist(async () => {
+          for (const stream of converted) {
+            await putTStream(stream as unknown as TStreamRow);
+          }
+        });
         return converted.length;
       },
 
       // ---- Round 归档库 ----
       addRound: (round: TRoundArchive) => {
         set((state) => ({ tRounds: [...state.tRounds, round] }));
+        safePersist(() => putTRound(round as unknown as TRoundRow));
       },
 
-      removeRound: (id: string, options?: { rollbackBase?: boolean }) => {
-        set((state) => {
-          const round = state.tRounds.find((r) => r.id === id);
-          if (!round) return state;
-          let positions = state.positions;
-          if (options?.rollbackBase && round.settleType === 'transfer' && round.transferAmount) {
-            positions = rollbackTransferPosition(
-              state.positions,
-              round.fullCode,
-              round.transferAmount,
-              round.avgPrice
-            );
+      removeRound: (id: string) => {
+        const state = get();
+        const round = state.tRounds.find((r) => r.id === id);
+        if (!round) return { ok: false, message: '战报不存在或已被删除' };
+
+        let nextPositions = state.positions;
+        // 自动检测归并类型：任何包含 transferAmount 的战报均需剥离底仓
+        if (round.transferAmount && round.transferAmount > 0) {
+          const rollbackResult = rollbackTransferPosition(
+            state.positions,
+            round.fullCode,
+            round.transferAmount,
+            round.avgPrice
+          );
+          if (!rollbackResult.ok) {
+            return { ok: false, message: rollbackResult.message };
           }
-          return {
-            tRounds: state.tRounds.filter((r) => r.id !== id),
-            positions,
-          };
+          nextPositions = rollbackResult.positions;
+        }
+
+        set({
+          tRounds: state.tRounds.filter((r) => r.id !== id),
+          positions: nextPositions,
+          // 级联删除：同步清理该战报生成的中长期操作记录（归并标记）
+          longTermRecords: state.longTermRecords.filter(
+            (r) => r.sourceReportId !== id
+          ),
         });
+        // 增量删除 DB：Round + 交易明细 + 相关中长期记录
+        safePersist(async () => {
+          await deleteTRoundWithTransactions(id);
+          await deleteLongTermRecordsBySourceReportId(id);
+          // 同步更新受影响的持仓
+          for (const pos of nextPositions) {
+            await putPosition(pos as unknown as PositionRow);
+          }
+        });
+        return { ok: true };
       },
 
       clearRounds: () => {
+        const ids = get().tRounds.map((r) => r.id);
         set({ tRounds: [] });
+        safePersist(async () => {
+          for (const id of ids) {
+            await deleteTRoundWithTransactions(id);
+          }
+        });
+      },
+
+      // ---- 中长期操作记录 CRUD ----
+      addLongTermRecord: (record: LongTermRecord) => {
+        set((state) => ({
+          longTermRecords: [...state.longTermRecords, record],
+        }));
+        safePersist(() => putLongTermRecord(record as unknown as LongTermRecordRow));
+      },
+
+      removeLongTermRecord: (id: string) => {
+        set((state) => ({
+          longTermRecords: state.longTermRecords.filter((r) => r.id !== id),
+        }));
+        safePersist(() => deleteLongTermRecord(id));
+      },
+
+      removeLongTermRecordsBySourceReportId: (sourceReportId: string) => {
+        set((state) => ({
+          longTermRecords: state.longTermRecords.filter(
+            (r) => r.sourceReportId !== sourceReportId
+          ),
+        }));
+        safePersist(() => deleteLongTermRecordsBySourceReportId(sourceReportId));
+      },
+
+      clearLongTermRecords: () => {
+        const ids = get().longTermRecords.map((r) => r.id);
+        set({ longTermRecords: [] });
+        safePersist(async () => {
+          for (const id of ids) {
+            await deleteLongTermRecord(id);
+          }
+        });
       },
 
       // ---- 一键划转底仓（绝对现金流法） ----
@@ -1163,10 +1369,43 @@ export const useAppStore = create<AppStore>()((set, get) => ({
         };
         const newRounds = [...tRounds, round];
 
+        // 4a) 创建中长期操作记录（标记为「归并」）
+        const mergeRecord: LongTermRecord = {
+          id: generateId(),
+          fullCode,
+          stockName: stream.stockName,
+          type: 'merge',
+          price: avg,
+          amount: toTransfer,
+          fee: txnFee,
+          timestamp: now,
+          sourceReportId: round.id,
+          note: `${round.mode === 'long' ? '正T' : '倒T'}归并到底仓（Round ${round.roundNo}）`,
+        };
+        const newLongTermRecords = [...get().longTermRecords, mergeRecord];
+
         // 4) 清空该股票做T流水（Round 结束，下次买入自动开启 Round + 1）
         const streamsAfter = tStreams.filter((s) => s.fullCode !== fullCode);
 
-        set({ tStreams: streamsAfter, tRounds: newRounds, positions: newPositions });
+        set({ tStreams: streamsAfter, tRounds: newRounds, positions: newPositions, longTermRecords: newLongTermRecords });
+
+        // 增量持久化：清理流水、写入新 Round、同步持仓与中长期记录
+        safePersist(async () => {
+          // 删除已清空的做T流水
+          const clearedIds = tStreams.filter((s) => s.fullCode === fullCode).map((s) => s.id);
+          if (clearedIds.length > 0) {
+            await bulkDeleteTStreams(clearedIds);
+          }
+          // 写入新的归档 Round
+          await putTRound(round as unknown as TRoundRow);
+          // 写入中长期操作记录
+          await putLongTermRecord(mergeRecord as unknown as LongTermRecordRow);
+          // 同步受影响的持仓
+          const affectedPos = newPositions.filter((p) => p.fullCode === fullCode && !p.isClosed);
+          for (const pos of affectedPos) {
+            await putPosition(pos as unknown as PositionRow);
+          }
+        });
 
         return {
           ok: true,
@@ -1240,6 +1479,14 @@ export const useAppStore = create<AppStore>()((set, get) => ({
             : p
         );
         set({ tStreams: streamsAfter, tRounds: newRounds, positions: updatedPositions });
+        // 增量持久化：清理流水、写入新 Round
+        safePersist(async () => {
+          const clearedIds = tStreams.filter((s) => s.fullCode === fullCode).map((s) => s.id);
+          if (clearedIds.length > 0) {
+            await bulkDeleteTStreams(clearedIds);
+          }
+          await putTRound(round as unknown as TRoundRow);
+        });
         return {
           ok: true,
           message: `已结算倒T Round ${round.roundNo}，累计净收益 ¥${result.transferProfit.toFixed(2)}`,
@@ -1249,6 +1496,12 @@ export const useAppStore = create<AppStore>()((set, get) => ({
         set((state) => ({
           positions: [...state.positions, pos],
         }));
+        safePersist(async () => {
+          await putPosition(pos as unknown as PositionRow);
+          for (const batch of pos.batches) {
+            await putPositionBatch(batch, pos.id);
+          }
+        });
       },
 
       updatePosition: (id: string, pos: Partial<Position>) => {
@@ -1257,6 +1510,10 @@ export const useAppStore = create<AppStore>()((set, get) => ({
             p.id === id ? { ...p, ...pos } : p
           ),
         }));
+        const updated = get().positions.find((p) => p.id === id);
+        if (updated) {
+          safePersist(() => putPosition(updated as unknown as PositionRow));
+        }
       },
 
       addBatch: (positionId: string, batch: PositionBatch) => {
@@ -1267,6 +1524,13 @@ export const useAppStore = create<AppStore>()((set, get) => ({
               : p
           ),
         }));
+        const updated = get().positions.find((p) => p.id === positionId);
+        if (updated) {
+          safePersist(async () => {
+            await putPosition(updated as unknown as PositionRow);
+            await putPositionBatch(batch, positionId);
+          });
+        }
       },
 
       closePosition: (id: string) => {
@@ -1277,6 +1541,10 @@ export const useAppStore = create<AppStore>()((set, get) => ({
               : p
           ),
         }));
+        const closed = get().positions.find((p) => p.id === id);
+        if (closed) {
+          safePersist(() => putPosition(closed as unknown as PositionRow));
+        }
       },
 
       deletePositionBatch: (positionId: string, batchId: string) => {
@@ -1364,6 +1632,7 @@ export const useAppStore = create<AppStore>()((set, get) => ({
         set((state) => ({
           positions: state.positions.filter((p) => p.id !== id),
         }));
+        safePersist(() => deletePositionWithBatches(id));
       },
 
       exportData: () => {
@@ -1375,6 +1644,7 @@ export const useAppStore = create<AppStore>()((set, get) => ({
           tRounds: state.tRounds,
           positions: state.positions,
           stocks: state.stocks,
+          longTermRecords: state.longTermRecords,
         };
       },
 
@@ -1386,7 +1656,19 @@ export const useAppStore = create<AppStore>()((set, get) => ({
           tRounds: data.tRounds ?? [],
           positions: data.positions ?? [],
           stocks: data.stocks ?? [],
+          longTermRecords: data.longTermRecords ?? [],
         });
+        // 安全的全量增量导入：绝不调用 table.clear()
+        safePersist(() =>
+          safeImportAllData(
+            data.feeConfig as FeeConfigRow,
+            (data.positions ?? []) as unknown as PositionRow[],
+            (data.tRounds ?? []) as unknown as TRoundRow[],
+            (data.tStreams ?? []) as unknown as TStreamRow[],
+            (data.stocks ?? []) as unknown as StockRow[],
+            (data.longTermRecords ?? []) as unknown as LongTermRecordRow[],
+          )
+        );
       },
 
       exportJSON: () => {

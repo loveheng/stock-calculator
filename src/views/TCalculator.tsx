@@ -20,7 +20,7 @@ import {
   type Position,
 } from '../store';
 import { ledgerService } from '../services/ledgerService';
-import { calcTradeFees, roundTo, type FeeConfig } from '../utils/mathUtils';
+import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
 import {
   validateStreamTrade,
   createInitialState,
@@ -517,7 +517,7 @@ function CurrentProjectCard({
       setApError(apValidation.error ?? '输入无效');
       return;
     }
-    const txnFee = calcTradeFees(p, a, apDir, useAppStore.getState().feeConfig).total;
+    const txnFee = calcTradeFees(p, a, apDir, useAppStore.getState().feeConfig, matchSecurityKind('', result.fullCode.replace(/^sh|sz|bj/, ''))).total;
     const rec: TStreamRecord = {
       id: generateId(),
       timestamp: apTime,
@@ -1158,7 +1158,7 @@ export default function TCalculator() {
       return;
     }
 
-    const txnFee = calcTradeFees(p, a, direction, feeConfig).total;
+    const txnFee = calcTradeFees(p, a, direction, feeConfig, matchSecurityKind(stock.SecurityType, stock.Code)).total;
     const record: TStreamRecord = {
       id: generateId(),
       timestamp,

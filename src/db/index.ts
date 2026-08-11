@@ -51,6 +51,16 @@ export interface FeeConfigRow {
   transferRate: number;
   /** 印花税率 */
   stampRate: number;
+  /** ETF 佣金率（缺省回退到 commissionRate） */
+  etfCommissionRate?: number;
+  /** ETF 是否免五（缺省回退到 isFreeFive） */
+  etfIsFreeFive?: boolean;
+  /** ETF 最低佣金（元，缺省回退到 minCommission） */
+  etfMinCommission?: number;
+  /** ETF 过户费率（缺省回退到 transferRate；ETF 通常为 0） */
+  etfTransferRate?: number;
+  /** ETF 印花税率（缺省回退到 stampRate；ETF 通常为 0） */
+  etfStampRate?: number;
 }
 
 /** 持仓的行级视图模型（含股票名称与批次列表） */
@@ -230,6 +240,12 @@ const DEFAULT_FEE_CONFIG_ROW: FeeConfigEntity = {
   minCommission: 0.5,
   transferRate: 0.00001,
   stampRate: 0.0005,
+  // ETF 默认：佣金率同股票、免五、最低 0.2 元、免印花税、免过户费
+  etfCommissionRate: 0.00025,
+  etfIsFreeFive: true,
+  etfMinCommission: 0.2,
+  etfTransferRate: 0,
+  etfStampRate: 0,
   createdAt: Date.now(),
   updatedAt: Date.now(),
   isDeleted: 0,

@@ -74,7 +74,7 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
           <BarChart3 className="w-5 h-5 text-blue-500" />
           股票计算助手
         </h1>
-        <p className="text-xs text-slate-500 mt-1">A股交易工具</p>
+        <p className="text-xs text-slate-500 mt-1">股票交易工具</p>
       </div>
 
       <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">

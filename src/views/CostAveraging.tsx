@@ -14,7 +14,7 @@ import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'l
 import { useAppStore } from '../store';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { getPositionsWithStockInfo, getFeeConfig } from '../services/ledgerService';
-import { calcTargetCostAveraging, isValidLotSize, calcTradeFees } from '../utils/mathUtils';
+import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
 import type { Position, PositionBatch } from '../store';
 import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
@@ -245,7 +245,7 @@ function PositionLedger() {
     }
 
     // 计算买入规费
-    const buyFee = calcTradeFees(price, amount, 'buy', feeConfig);
+    const buyFee = calcTradeFees(price, amount, 'buy', feeConfig, matchSecurityKind(selectedStock?.SecurityType ?? '', selectedStock?.Code ?? ''));
     const totalFee = buyFee.total;
     const totalInvested = price * amount + totalFee;
 
@@ -387,7 +387,7 @@ function PositionLedger() {
 
     // 计算规费
     const direction = type === 'add' ? 'buy' : 'sell';
-    const tradeFee = calcTradeFees(price, amount, direction, feeConfig);
+    const tradeFee = calcTradeFees(price, amount, direction, feeConfig, matchSecurityKind('', pos.fullCode.replace(/^sh|sz|bj/, '')));
     const totalFee = tradeFee.total;
 
     // 用总资金抽回法重新计算

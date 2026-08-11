@@ -34,6 +34,7 @@ export default function FeeConfigPage() {
 
   const [localConfig, setLocalConfig] = useState<FeeConfig>({ ...(feeConfig ?? FEE_TEMPLATES['A股标准模板']) });
   const [hasChanges, setHasChanges] = useState(false);
+  const [feeTab, setFeeTab] = useState<'stock' | 'etf'>('stock');
 
   // 实时测算基准
   const [benchPrice, setBenchPrice] = useState('10');
@@ -141,6 +142,27 @@ export default function FeeConfigPage() {
           </button>
         </div>
 
+        {/* 股票/ETF Tab */}
+        <div className="flex gap-1 mb-4 bg-slate-800 rounded-lg p-1">
+          <button
+            onClick={() => setFeeTab('stock')}
+            className={`flex-1 py-1.5 text-sm rounded-md transition-colors ${
+              feeTab === 'stock' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            股票费率
+          </button>
+          <button
+            onClick={() => setFeeTab('etf')}
+            className={`flex-1 py-1.5 text-sm rounded-md transition-colors ${
+              feeTab === 'etf' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            ETF 费率
+          </button>
+        </div>
+
+        {feeTab === 'stock' && (
         <div className="space-y-3">
           <div className="form-group">
             <label>佣金率</label>
@@ -219,6 +241,86 @@ export default function FeeConfigPage() {
             </div>
           </div>
         </div>
+        )}
+
+        {feeTab === 'etf' && (
+        <div className="space-y-3">
+          <div className="form-group">
+            <label>ETF 佣金率</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                step="0.00001"
+                min="0"
+                max="0.003"
+                value={localConfig.etfCommissionRate ?? localConfig.commissionRate}
+                onChange={(e) => handleChange('etfCommissionRate', Number(e.target.value))}
+              />
+              <span className="text-xs text-slate-500">（当前 {((localConfig.etfCommissionRate ?? localConfig.commissionRate) * 100).toFixed(3)}%）</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between py-3 border-b border-slate-800">
+            <div>
+              <span className="text-sm text-slate-300">ETF 免五</span>
+              <p className="text-xs text-slate-500">
+                {localConfig.etfIsFreeFive ?? localConfig.isFreeFive ? '开启免五，可自定义最低佣金' : '关闭免五'}
+              </p>
+            </div>
+            <button
+              onClick={() => handleChange('etfIsFreeFive', !(localConfig.etfIsFreeFive ?? localConfig.isFreeFive))}
+              className={`relative w-12 h-6 rounded-full transition-colors ${
+                (localConfig.etfIsFreeFive ?? localConfig.isFreeFive) ? 'bg-blue-600' : 'bg-slate-700'
+              }`}
+            >
+              <div
+                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+                  (localConfig.etfIsFreeFive ?? localConfig.isFreeFive) ? 'translate-x-6' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+
+          <div className="form-group">
+            <label>ETF 最低佣金（元）</label>
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              value={localConfig.etfMinCommission ?? localConfig.minCommission}
+              onChange={(e) => handleChange('etfMinCommission', Number(e.target.value))}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>ETF 过户费率</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                step="0.00001"
+                min="0"
+                value={localConfig.etfTransferRate ?? localConfig.transferRate}
+                onChange={(e) => handleChange('etfTransferRate', Number(e.target.value))}
+              />
+              <span className="text-xs text-slate-500">（ETF 通常为 0）</span>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>ETF 印花税率</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                step="0.00001"
+                min="0"
+                value={localConfig.etfStampRate ?? localConfig.stampRate}
+                onChange={(e) => handleChange('etfStampRate', Number(e.target.value))}
+              />
+              <span className="text-xs text-slate-500">（ETF 通常为 0）</span>
+            </div>
+          </div>
+        </div>
+        )}
 
         {/* 保存/重置 */}
         <div className="flex gap-3 mt-4">

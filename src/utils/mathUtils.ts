@@ -15,7 +15,68 @@
 import Decimal from 'decimal.js';
 
 // 设置 Decimal 精度（金融计算保留 20 位中间精度）
+/** 根据品种类型从 FeeConfig 中提取实际使用的费率参数 */
+function resolveFeeConfig(feeConfig: FeeConfig, kind: SecurityKind) {
+  // bond 与 etf 共享免税低费逻辑
+  if (kind === 'etf' || kind === 'bond') {
+    return {
+      commissionRate: feeConfig.etfCommissionRate ?? feeConfig.commissionRate,
+      isFreeFive: feeConfig.etfIsFreeFive ?? feeConfig.isFreeFive,
+      minCommission: feeConfig.etfMinCommission ?? feeConfig.minCommission,
+      transferRate: feeConfig.etfTransferRate ?? feeConfig.transferRate,
+      stampRate: feeConfig.etfStampRate ?? feeConfig.stampRate,
+    };
+  }
+  return {
+    commissionRate: feeConfig.commissionRate,
+    isFreeFive: feeConfig.isFreeFive,
+    minCommission: feeConfig.minCommission,
+    transferRate: feeConfig.transferRate,
+    stampRate: feeConfig.stampRate,
+  };
+}
 Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
+
+/** 交易费率引擎识别的标的类型 */
+export type SecurityKind = 'stock' | 'etf' | 'bond';
+
+/**
+ * 根据腾讯 API 返回的类型标识与股票代码，精准映射到对应的费率类型。
+ *
+ * 优先级：
+ *   1. 优先根据 rawType 判断（JJ → ETF, ZQ → bond）
+ *   2. 二级保底：根据代码前缀特征兜底（51/56/58/15/16 → ETF, 11/12 → bond）
+ *   3. 默认 → stock
+ *
+ * @param rawType - 腾讯接口第 5 个字段（如 'GP-A', 'FJ', 'ZQ'），缺省时仅靠 code 前缀
+ * @param code    - 6 位数字证券代码（如 '510300', '113000', '601318'）
+ */
+export function matchSecurityKind(rawType: string = '', code: string = ''): SecurityKind {
+  const upperType = rawType.toUpperCase();
+
+  // 1. 优先根据 API 返回的 rawType 判断
+  if (upperType.startsWith('JJ')) {
+    return 'etf';
+  }
+  if (upperType.startsWith('ZQ')) {
+    return 'bond';
+  }
+
+  // 2. 二级保底：根据 A 股代码前缀特征兜底
+  //    ETF 前缀: 51, 56, 58 (沪市 ETF); 15, 16 (深市 ETF/LOF)
+  if (/^(51|56|58|15|16)/.test(code)) {
+    return 'etf';
+  }
+  //    可转债前缀: 11 (沪市); 12 (深市)
+  if (/^(11|12)/.test(code)) {
+    return 'bond';
+  }
+
+  // 3. 默认均为普通 A 股股票
+  return 'stock';
+}
+
+
 
 /**
  * 费率配置（全局税率参数）。
@@ -28,6 +89,16 @@ export interface FeeConfig {
   minCommission: number;
   transferRate: number;
   stampRate: number;
+  /** ETF 佣金率（缺省回退到 commissionRate） */
+  etfCommissionRate?: number;
+  /** ETF 是否免五（缺省回退到 isFreeFive） */
+  etfIsFreeFive?: boolean;
+  /** ETF 最低佣金（元，缺省回退到 minCommission） */
+  etfMinCommission?: number;
+  /** ETF 过户费率（缺省回退到 transferRate；ETF 通常为 0） */
+  etfTransferRate?: number;
+  /** ETF 印花税率（缺省回退到 stampRate；ETF 通常为 0） */
+  etfStampRate?: number;
 }
 
 /**
@@ -216,15 +287,17 @@ export function calcTradeFees(
   price: number,
   amount: number,
   direction: 'buy' | 'sell',
-  feeConfig: FeeConfig
+  feeConfig: FeeConfig,
+  kind?: SecurityKind
 ): TradeFees {
+  const resolved = resolveFeeConfig(feeConfig, kind ?? 'stock');
   const {
     commissionRate = 0.00025,
     isFreeFive = false,
     minCommission = 0.5,
     transferRate = 0.00001,
     stampRate = 0.0005,
-  } = feeConfig || {};
+  } = resolved;
 
   const turnover = new Decimal(price).mul(amount);
 
@@ -563,9 +636,11 @@ export function calcTargetCostAveraging(
 export function calcFeeBreakdown(
   turnover: number,
   direction: 'buy' | 'sell',
-  feeConfig: FeeConfig
+  feeConfig: FeeConfig,
+  kind?: SecurityKind
 ): TradeFees {
-  const { commissionRate = 0.00025, isFreeFive = false, minCommission = 0.5, transferRate = 0.00001, stampRate = 0.0005 } = feeConfig;
+  const resolved = resolveFeeConfig(feeConfig, kind ?? 'stock');
+  const { commissionRate = 0.00025, isFreeFive = false, minCommission = 0.5, transferRate = 0.00001, stampRate = 0.0005 } = resolved;
   const tv = new Decimal(turnover);
 
   // 印花税（仅卖出）

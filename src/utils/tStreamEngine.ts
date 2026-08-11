@@ -8,7 +8,7 @@
  */
 
 import Decimal from 'decimal.js';
-import { calcTradeFees, roundTo, type FeeConfig } from './mathUtils';
+import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from './mathUtils';
 import type {
   BasePosition,
   TMode,
@@ -840,7 +840,7 @@ export function resolveOverSellHedgeThenReverse(
   // 超出部分开启倒T
   const overQty = pendingRecord.amount - hedgedQty;
   if (overQty > 0) {
-    const overFee = calcTradeFees(pendingRecord.price, overQty, 'sell', feeConfig).total;
+    const overFee = calcTradeFees(pendingRecord.price, overQty, 'sell', feeConfig, matchSecurityKind('', pendingRecord.fullCode.replace(/^sh|sz|bj/, ''))).total;
     const overRecord: TStreamRecord = {
       ...pendingRecord,
       id: pendingRecord.id + '_reverse',
@@ -917,7 +917,7 @@ export function resolveOverBuyHedgeThenReverse(
   // 超出部分开启正T
   const overQty = pendingRecord.amount - hedgedQty;
   if (overQty > 0) {
-    const overFee = calcTradeFees(pendingRecord.price, overQty, 'buy', feeConfig).total;
+    const overFee = calcTradeFees(pendingRecord.price, overQty, 'buy', feeConfig, matchSecurityKind('', pendingRecord.fullCode.replace(/^sh|sz|bj/, ''))).total;
     const overRecord: TStreamRecord = {
       ...pendingRecord,
       id: pendingRecord.id + '_reverse',

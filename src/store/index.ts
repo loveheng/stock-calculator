@@ -27,7 +27,7 @@ import {
   type StockStreamResult,
   type SellValidation,
 } from '../utils/tStreamEngine';
-import { calcTradeFees, roundTo, type FeeConfig } from '../utils/mathUtils';
+import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
 import type { StockMeta, StockSearchItem } from '../types/stock';
 import {
   putFeeConfig,
@@ -308,6 +308,12 @@ export const DEFAULT_FEE_CONFIG: FeeConfig = {
   minCommission: 0.5,
   transferRate: 0.00001,
   stampRate: 0.0005,
+  // ETF 默认：佣金率同股票、免五、最低 0.2 元、免印花税、免过户费
+  etfCommissionRate: 0.00025,
+  etfIsFreeFive: true,
+  etfMinCommission: 0.2,
+  etfTransferRate: 0,
+  etfStampRate: 0,
 };
 
 // ---- 预设模板 ----
@@ -318,6 +324,11 @@ export const FEE_TEMPLATES: Record<string, FeeConfig> = {
     minCommission: 0.5,
     transferRate: 0.00001,
     stampRate: 0.0005,
+    etfCommissionRate: 0.00025,
+    etfIsFreeFive: true,
+    etfMinCommission: 0.2,
+    etfTransferRate: 0,
+    etfStampRate: 0,
   },
   '港股/美股免佣模板': {
     commissionRate: 0.0001,
@@ -325,6 +336,11 @@ export const FEE_TEMPLATES: Record<string, FeeConfig> = {
     minCommission: 0.5,
     transferRate: 0.000025,
     stampRate: 0.0013,
+    etfCommissionRate: 0.0001,
+    etfIsFreeFive: true,
+    etfMinCommission: 0.2,
+    etfTransferRate: 0,
+    etfStampRate: 0,
   },
 };
 
@@ -1220,7 +1236,7 @@ export const useAppStore = create<AppStore>()((set, get) => ({
         }
 
         const now = new Date().toISOString();
-        const txnFee = calcTradeFees(avg, toTransfer, 'buy', feeConfig).total;
+        const txnFee = calcTradeFees(avg, toTransfer, 'buy', feeConfig, matchSecurityKind('', fullCode.replace(/^sh|sz|bj/, ''))).total;
         let newPositions = positions;
         let created = false;
 

@@ -1,0 +1,246 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 12
+
+title 股票交易账本数据库 - 实体关系图 (UML)
+caption TradingLedgerDB_v3 — 共 11 张表
+
+' ========== 公共基础字段（抽象） ==========
+abstract class BaseEntity <<公共基础字段>> {
+  --
+  + id: string (UUID) <<主键>>
+  + createdAt: number (创建时间戳)
+  + updatedAt: number (更新时间戳)
+  + isDeleted?: number (软删除标记, 0正常/1已删)
+}
+note top of BaseEntity : 所有实体继承此基础结构
+
+' ========== 1. stocks ==========
+class stocks <<表>> {
+  + fullCode: string <<PK>> 「完整证券代码」
+  --
+  code: string (纯数字代码)
+  stockName: string (股票名称)
+  pinYin: string (拼音缩写)
+  marketType: string (市场类型 SH/SZ)
+  securityType: string (证券类型)
+  quoteId?: string (行情快照ID)
+  shortName?: string (简称)
+  unifiedCode?: string (统一代码)
+}
+note top of stocks : 股票基础信息表\n主键: fullCode
+
+' ========== 2. positions ==========
+class positions <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  fullCode: string (关联股票代码) <<FK→stocks>>
+  currentCost: number (当前加权成本/元)
+  currentAmount: number (当前持有数量/股)
+  isClosed: boolean (是否已平仓)
+  closedAt?: number (平仓时间戳)
+  totalInvested: number (累计投入金额/元)
+  realizedPnL: number (已实现盈亏/元)
+}
+note top of positions : 持仓表\n记录每只股票的底仓信息
+
+' ========== 3. positionBatches ==========
+class positionBatches <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  positionId: string (所属持仓ID) <<FK→positions>>
+  type: 'open'|'add'|'reduce' (批次类型)
+  price: number (成交单价/元)
+  amount: number (成交数量/股)
+  fee: number (手续费/元)
+  costAfter: number (操作后加权成本/元)
+  amountAfter: number (操作后持仓数量/股)
+  timestamp: number (成交时间戳)
+  note?: string (备注)
+}
+note top of positionBatches : 持仓批次明细表\n记录每次开仓/加仓/减仓操作
+
+' ========== 4. tRounds ==========
+class tRounds <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  positionId?: string (关联持仓ID) <<FK→positions>>
+  fullCode: string (股票代码) <<FK→stocks>>
+  mode: 'long'|'short' (做T方向)
+  status: 'OPENED'|'COMPLETED' (轮次状态)
+  roundNo: number (第几轮做T)
+  settleType: 'clear'|'partial' (结算方式)
+  netProfit: number (本轮净收益/元)
+  totalFees: number (累计手续费/元)
+  openedAt: number (开启时间戳)
+  closedAt?: number (关闭时间戳)
+  stockName?: string (股票名称快照)
+  buyAmount?: number (累计买入金额)
+  sellAmount?: number (累计卖出金额)
+  transferAmount?: number (划转底仓数量)
+  avgPrice?: number (加权平均价)
+  tradeCount?: number (成交笔数)
+  holdingDays?: number (持股天数)
+  win?: boolean (是否盈利)
+  lastUpdated?: number (最近活动时间)
+}
+note top of tRounds : 做T轮次表\n一次完整/进行中的做T项目
+
+' ========== 5. tTransactions ==========
+class tTransactions <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  roundId: string (所属轮次ID) <<FK→tRounds>>
+  direction: 'buy'|'sell' (成交方向)
+  price: number (成交单价/元)
+  amount: number (成交数量/股)
+  fee: number (手续费/元)
+  matchedAmount: number (被撮合对冲数量/股)
+  realizedProfit: number (已实现盈亏/元)
+  timestamp: number (成交时间戳)
+  note?: string (备注)
+}
+note top of tTransactions : 做T成交流水表\n记录Round内每笔买卖及撮合结果
+
+' ========== 6. tStreams ==========
+class tStreams <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  timestamp: string (展示时间戳)
+  fullCode: string (股票代码) <<FK→stocks>>
+  stockName: string (股票名称)
+  direction: 'buy'|'sell' (交易方向)
+  price: number (成交单价/元)
+  amount: number (成交数量/股)
+  fee: number (单边规费/元)
+  note?: string (备注)
+  quoteId?: string (行情快照ID)
+  selectedStock?: Record (选股条目快照)
+  baseDeductedAmount?: number (倒T扣减底仓数量)
+}
+note top of tStreams : 未完成做T项目流水表\n进行中Round的单边流水池
+
+' ========== 7. accountCash ==========
+class accountCash <<表>> {
+  + id: number <<PK>> 「固定为1」
+  --
+  availableCash: number (可用现金/元)
+  frozenCash: number (冻结现金/元)
+  totalDeposit: number (累计入金总额/元)
+  lastUpdated: number (最后更新时间戳)
+  createdAt: number (创建时间戳)
+  updatedAt: number (更新时间戳)
+  isDeleted?: number (软删除标记)
+}
+note top of accountCash : 现金账户表\n单行记录(id固定为1)
+
+' ========== 8. cashFlows ==========
+class cashFlows <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  type: 'deposit'|'withdraw'|'dividend'|'interest' (流水类型)
+  fullCode?: string (关联股票代码) <<FK→stocks>>
+  amount: number (金额/元,出金为负)
+  note?: string (备注)
+  timestamp: number (发生时间戳)
+}
+note top of cashFlows : 现金流水表\n入金/出金/分红/利息等资金变动
+
+' ========== 9. tradeNotes ==========
+class tradeNotes <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  roundId?: string (关联轮次ID) <<FK→tRounds>>
+  positionId?: string (关联持仓ID) <<FK→positions>>
+  tags: string (逗号分隔标签)
+  reason: string (交易原因)
+  review: string (复盘总结)
+  rating: number (评分1-5)
+  timestamp: number (笔记时间戳)
+}
+note top of tradeNotes : 交易笔记表\n做T/持仓的复盘心得
+
+' ========== 10. feeConfigs ==========
+class feeConfigs <<表>> {
+  + id: number <<PK>> 「固定为1」
+  --
+  commissionRate: number (佣金费率 如0.00025)
+  minCommission: number (最低佣金/元 如0.5)
+  isFreeFive: boolean (是否免五)
+  transferRate: number (过户费率)
+  stampRate: number (印花税率 卖出收取)
+  createdAt: number (创建时间戳)
+  updatedAt: number (更新时间戳)
+  isDeleted?: number (软删除标记)
+}
+note top of feeConfigs : 费率配置表\n单行记录(id固定为1)
+
+' ========== 11. longTermRecords ==========
+class longTermRecords <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  fullCode: string (关联标的代码) <<FK→stocks>>
+  stockName?: string (股票名称)
+  type: 'buy'|'sell'|'merge' (操作类型)
+  price: number (成交单价/元)
+  amount: number (成交数量/股)
+  fee: number (手续费/元)
+  timestamp: number (操作时间戳)
+  sourceReportId?: string (关联战报ID) <<FK→tRounds>>
+  note?: string (备注)
+}
+note top of longTermRecords : 中长期操作记录表\n底仓加仓/减仓/归并操作
+
+' ============================================
+' ========== 关系连线 ==========
+' ============================================
+
+' stocks → positions (1:N via fullCode)
+stocks ||--o{ positions : "fullCode 关联"
+note on link : 一只股票可对应多个持仓记录
+
+' positions → positionBatches (1:N via positionId)
+positions ||--o{ positionBatches : "positionId 关联"
+note on link : 一个持仓可对应多个批次
+
+' positions → tRounds (1:N via positionId)
+positions ||--o{ tRounds : "positionId 关联(可选)"
+note on link : 一个持仓可发起多个做T轮次
+
+' stocks → tRounds (1:N via fullCode)
+stocks ||--o{ tRounds : "fullCode 关联"
+note on link : 一只股票可有多轮做T
+
+' tRounds → tTransactions (1:N via roundId)
+tRounds ||--o{ tTransactions : "roundId 关联"
+note on link : 一个轮次包含多笔成交明细
+
+' stocks → tStreams (1:N via fullCode)
+stocks ||--o{ tStreams : "fullCode 关联"
+note on link : 一只股票可有多个未完成流水
+
+' stocks → cashFlows (1:N via fullCode)
+stocks ||--o{ cashFlows : "fullCode 关联(可选)"
+note on link : 分红时关联股票代码
+
+' stocks → longTermRecords (1:N via fullCode)
+stocks ||--o{ longTermRecords : "fullCode 关联"
+note on link : 一只股票可有多条中长期操作记录
+
+' tRounds → longTermRecords (1:N via sourceReportId)
+tRounds ||--o{ longTermRecords : "sourceReportId 关联(可选)"
+note on link : merge类型操作关联战报ID
+
+' tradeNotes → tRounds (1:N via roundId)
+tRounds ||--o{ tradeNotes : "roundId 关联(可选)"
+note on link : 笔记可选关联做T轮次
+
+' tradeNotes → positions (1:N via positionId)
+positions ||--o{ tradeNotes : "positionId 关联(可选)"
+note on link : 笔记可选关联持仓
+
+@enduml

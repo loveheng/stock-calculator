@@ -242,6 +242,16 @@ export interface FeeConfigEntity {
   transferRate: number;
   /** 印花税率（卖出收取） */
   stampRate: number;
+  /** ETF 佣金率（缺省回退到 commissionRate） */
+  etfCommissionRate?: number;
+  /** ETF 是否免五（缺省回退到 isFreeFive） */
+  etfIsFreeFive?: boolean;
+  /** ETF 最低佣金（元，缺省回退到 minCommission） */
+  etfMinCommission?: number;
+  /** ETF 过户费率（缺省回退到 transferRate；ETF 通常为 0） */
+  etfTransferRate?: number;
+  /** ETF 印花税率（缺省回退到 stampRate；ETF 通常为 0） */
+  etfStampRate?: number;
   /** 创建时间戳（毫秒） */
   createdAt: number;
   /** 更新时间戳（毫秒） */

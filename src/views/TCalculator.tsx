@@ -20,14 +20,31 @@ import {
   type Position,
 } from '../store';
 import { ledgerService } from '../services/ledgerService';
-import { calcTradeFees, roundTo } from '../utils/mathUtils';
+import { calcTradeFees, roundTo, type FeeConfig } from '../utils/mathUtils';
 import {
   validateStreamTrade,
+  createInitialState,
+  stepTEngine,
+  mergeLongToBase,
+  finalizeShortPartialReduce,
+  finalizeShortTransfer,
+  resolveOverSellAutoHedge,
+  resolveOverSellHedgeThenReverse,
+  resolveOverBuyAutoHedge,
+  resolveOverBuyHedgeThenReverse,
+  cancelDefenseDialog,
   type TStreamRecord,
   type StockStreamResult,
 } from '../utils/tStreamEngine';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
+import ConfirmModal from '../components/ui/ConfirmModal';
 import type { StockSearchItem } from '../types/stock';
+import type {
+  BasePosition,
+  TStepNode,
+  TSettlementCard,
+  TStateMachineState,
+} from '../types/tStrategy';
 
 /**
  * 格式化金额为人民币字符串。
@@ -106,6 +123,328 @@ function StreamStatusBadge({ result }: { result: StockStreamResult }) {
   );
 }
 
+/** 步骤节点颜色映射 */
+const STEP_COLORS: Record<string, string> = {
+  buy: 'bg-red-500/10 border-red-500/30',
+  sell: 'bg-emerald-500/10 border-emerald-500/30',
+};
+
+/** 结算标签颜色映射 */
+const SETTLE_LABEL_COLORS: Record<string, string> = {
+  green: 'bg-emerald-500/15 text-emerald-400',
+  red: 'bg-red-500/15 text-red-400',
+  blue: 'bg-blue-500/15 text-blue-400',
+  purple: 'bg-purple-500/15 text-purple-400',
+  orange: 'bg-orange-500/15 text-orange-400',
+};
+
+/**
+ * 过程节点卡片组件。
+ *
+ * @description 渲染做 T 状态机中的单步快照：动作、本步支出/回收、摩擦成本、
+ *              累计利润、当前持仓成本与数量。
+ */
+function StepNodeCard({ node }: { node: TStepNode }) {
+  const isBuy = node.direction === 'buy';
+  return (
+    <div className={`rounded-lg border p-2.5 text-xs space-y-1 ${STEP_COLORS[node.direction]}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500 font-mono tabular-nums">#{node.index}</span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+            isBuy ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'
+          }`}>
+            {isBuy ? '买入' : '卖出'}
+          </span>
+          <span className="font-mono text-slate-300 tabular-nums">{node.amount} 股</span>
+          <span className="font-mono text-blue-400 tabular-nums">¥{node.price.toFixed(3)}</span>
+        </div>
+        <span className="text-xs text-slate-500">{new Date(node.timestamp).toLocaleString()}</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+        <div>
+          <span className="text-slate-500">
+            {isBuy ? '本步支出' : '本步回收'}
+          </span>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums">
+            {isBuy
+              ? `¥${(node.netOutflow ?? 0).toFixed(2)}`
+              : `¥${(node.netInflow ?? 0).toFixed(2)}`}
+          </div>
+          <span className="text-[10px] text-slate-500">
+            {isBuy ? `(含摩擦 ${node.stepFrictionCost.toFixed(2)})` : `(扣摩擦 ${node.stepFrictionCost.toFixed(2)})`}
+          </span>
+        </div>
+        <div>
+          <span className="text-slate-500">单步摩擦</span>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums">¥{node.stepFrictionCost.toFixed(2)}</div>
+        </div>
+        <div>
+          <span className="text-slate-500">累计利润</span>
+          <div className={`font-mono font-semibold tabular-nums ${pnlColor(node.cumulativeProfit)}`}>
+            {formatCurrency(node.cumulativeProfit)}
+          </div>
+        </div>
+        <div>
+          <span className="text-slate-500">当前持仓</span>
+          <div className="font-mono font-semibold text-blue-400 tabular-nums">
+            ¥{node.currentCost.toFixed(3)}
+          </div>
+          <span className="text-[10px] text-slate-500 tabular-nums">{node.currentQuantity} 股</span>
+        </div>
+      </div>
+      {node.note && <div className="text-[10px] text-slate-500 italic">{node.note}</div>}
+    </div>
+  );
+}
+
+/**
+ * 结算卡片视图组件。
+ *
+ * @description 渲染做 T 最终结算结果：结算标签、总支出/总回收、总摩擦、
+ *              已实现利润、更新后底仓、归并/减持信息。
+ */
+function SettlementCardView({ card }: { card: TSettlementCard }) {
+  const colorClass = SETTLE_LABEL_COLORS[card.labelColor] ?? 'bg-slate-500/15 text-slate-400';
+  return (
+    <div className="rounded-lg border border-slate-600 bg-slate-800/80 p-3 space-y-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${colorClass}`}>
+          {card.label}
+        </span>
+        <span className="text-[10px] text-slate-500">{card.mode === 'long' ? '正T' : '倒T'}</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <div>
+          <span className="text-slate-500">总支出（含摩擦）</span>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums">{formatCurrency(card.totalOutflow)}</div>
+        </div>
+        <div>
+          <span className="text-slate-500">总回收（扣摩擦）</span>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums">{formatCurrency(card.totalInflow)}</div>
+        </div>
+        <div>
+          <span className="text-slate-500">总摩擦成本</span>
+          <div className="font-mono font-semibold text-red-400 tabular-nums">{formatCurrency(card.totalFrictionCost)}</div>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <div>
+          <span className="text-slate-500">已实现套利利润</span>
+          <div className={`font-mono font-bold text-sm tabular-nums ${pnlColor(card.realizedArbitrageProfit)}`}>
+            {formatCurrency(card.realizedArbitrageProfit)}
+          </div>
+        </div>
+        <div>
+          <span className="text-slate-500">更新后底仓成本</span>
+          <div className="font-mono font-semibold text-blue-400 tabular-nums">¥{card.updatedBaseCost.toFixed(3)}</div>
+        </div>
+        <div>
+          <span className="text-slate-500">最终持有数量</span>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums">{card.finalQuantity} 股</div>
+        </div>
+      </div>
+      {(card.mergeQuantity ?? 0) > 0 && (
+        <div className="flex items-center gap-3 pt-1 border-t border-slate-700">
+          <div>
+            <span className="text-slate-500">归并/减持数量</span>
+            <div className="font-mono font-semibold text-purple-400 tabular-nums">{card.mergeQuantity} 股</div>
+          </div>
+          <div>
+            <span className="text-slate-500">归并/减持金额</span>
+            <div className="font-mono font-semibold text-purple-400 tabular-nums">{formatCurrency(card.mergeAmount ?? 0)}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 超限防御弹窗组件。
+ *
+ * @description 当出现卖超或买超场景时，渲染 Modal 提供 3 个防御分支选项。
+ */
+function DefenseOverflowModal({
+  dialog,
+  onSelect,
+  onCancel,
+}: {
+  dialog: NonNullable<TStateMachineState['defenseDialog']>;
+  onSelect: (key: string) => void;
+  onCancel: () => void;
+}) {
+  if (!dialog.visible) return null;
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/60 p-4 flex items-center justify-center">
+      <div className="relative w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-700">
+          <p className="text-sm font-semibold text-slate-100">{dialog.title}</p>
+          <p className="text-xs text-slate-500 mt-1">{dialog.description}</p>
+        </div>
+        <div className="p-4 space-y-2">
+          {dialog.options.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => onSelect(opt.key)}
+              className="w-full text-left px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-sm text-slate-200 transition-colors"
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="px-4 py-2 border-t border-slate-700 flex justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-xs text-slate-500 hover:text-slate-300"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 状态机可视化面板组件。
+ *
+ * @description 接受原始流水记录，通过 stepTEngine 逐条推进状态机，
+ *              渲染步骤节点卡片、结算卡片，并管理超限防御弹窗交互。
+ */
+function TStateMachinePanel({
+  entries,
+  basePosition,
+  feeConfig,
+}: {
+  entries: TStreamRecord[];
+  basePosition: BasePosition | null;
+  feeConfig: FeeConfig | undefined;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [defenseSMCopy, setDefenseSMCopy] = useState<TStateMachineState | null>(null);
+
+  // 逐条推进状态机
+  const { smState, triggeredDefense } = useMemo(() => {
+    if (!basePosition || entries.length === 0) return { smState: null, triggeredDefense: false };
+    // 按时间升序排列流水
+    const sorted = [...entries].sort((a, b) => {
+      const ta = new Date(a.timestamp).getTime();
+      const tb = new Date(b.timestamp).getTime();
+      return ta - tb;
+    });
+
+    let state = createInitialState(basePosition);
+    let defense = false;
+    for (const entry of sorted) {
+      if (!feeConfig) break;
+      const output = stepTEngine({
+        state,
+        record: entry,
+        feeConfig,
+        basePosition,
+      });
+      state = output.newState;
+      if (output.triggeredDefense) {
+        defense = true;
+        setDefenseSMCopy(state);
+        break;
+      }
+      if (state.isClosed) break;
+    }
+    return { smState: state, triggeredDefense: defense };
+  }, [entries, basePosition, feeConfig]);
+
+  const handleDefenseSelect = (key: string) => {
+    if (!defenseSMCopy || !feeConfig) return;
+    let newState: TStateMachineState;
+    switch (key) {
+      case 'auto_hedge':
+        if (defenseSMCopy.defenseDialog?.type === 'over_sell') {
+          newState = resolveOverSellAutoHedge(defenseSMCopy);
+        } else {
+          newState = resolveOverBuyAutoHedge(defenseSMCopy);
+        }
+        break;
+      case 'hedge_then_reverse':
+        if (defenseSMCopy.defenseDialog?.type === 'over_sell') {
+          newState = resolveOverSellHedgeThenReverse(defenseSMCopy, feeConfig);
+        } else {
+          newState = resolveOverBuyHedgeThenReverse(defenseSMCopy, feeConfig);
+        }
+        break;
+      default:
+        newState = cancelDefenseDialog(defenseSMCopy);
+        break;
+    }
+    // 检查是否需要进一步处理
+    if (!newState.isClosed && newState.defenseDialog?.visible) {
+      setDefenseSMCopy(newState);
+    } else {
+      setDefenseSMCopy(newState);
+    }
+  };
+
+  const handleDefenseCancel = () => {
+    if (defenseSMCopy) {
+      setDefenseSMCopy(cancelDefenseDialog(defenseSMCopy));
+    }
+  };
+
+  if (!basePosition || entries.length === 0 || !smState || smState.steps.length === 0) return null;
+
+  return (
+    <div className="pt-1 border-t border-slate-600/50 mt-1">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="text-xs text-purple-400 hover:text-purple-300 underline"
+      >
+        {expanded
+          ? '🔼 收起状态机详情'
+          : `🔽 状态机详情（${smState.steps.length} 步${smState.isClosed ? ' · ' + (smState.settlementCard?.label ?? '已结束') : ''}）`}
+      </button>
+      {expanded && (
+        <div className="mt-2 space-y-2">
+          {/* 步骤节点卡片 */}
+          {smState.steps.map((step) => (
+            <StepNodeCard key={step.recordId} node={step} />
+          ))}
+
+          {/* 结算卡片 */}
+          {smState.settlementCard && (
+            <SettlementCardView card={smState.settlementCard} />
+          )}
+
+          {/* 防御弹窗 */}
+          {defenseSMCopy?.defenseDialog && (
+            <DefenseOverflowModal
+              dialog={defenseSMCopy.defenseDialog}
+              onSelect={handleDefenseSelect}
+              onCancel={handleDefenseCancel}
+            />
+          )}
+
+          {/* 未触发防御但有活跃弹窗 */}
+          {!triggeredDefense && smState.defenseDialog && !defenseSMCopy && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
+              ⚠️ 防御弹窗待处理：{smState.defenseDialog.type} — 请通过原有流程处理
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 单个进行中做T项目卡片（核心业务卡片）。
+ *
+ * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
+ *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
+ *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
+ * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number }} props
 /**
  * 单个进行中做T项目卡片（核心业务卡片）。
  *
@@ -124,10 +463,12 @@ function CurrentProjectCard({
   result,
   basePosition,
   roundNo,
+  feeConfig,
 }: {
   result: StockStreamResult;
   basePosition: Position | undefined;
   roundNo: number;
+  feeConfig: FeeConfig | undefined;
 }) {
   const [showAppend, setShowAppend] = useState(false);
   const [showEntries, setShowEntries] = useState(false);
@@ -382,6 +723,12 @@ function CurrentProjectCard({
           )}
         </div>
       )}
+
+      <TStateMachinePanel
+        entries={result.entries.map((e) => ({ ...e, fullCode: (e as any).fullCode ?? result.fullCode, stockName: (e as any).stockName ?? result.stockName } as TStreamRecord))}
+        basePosition={basePosition ? { cost: basePosition.currentCost, quantity: basePosition.currentAmount } : null}
+        feeConfig={feeConfig}
+      />
 
       <div className="pt-3 grid grid-cols-4 gap-2">
         <button
@@ -1067,6 +1414,7 @@ export default function TCalculator() {
                 result={r}
                 basePosition={positions.find((p) => p.fullCode === r.fullCode && !p.isClosed)}
                 roundNo={roundNo}
+                feeConfig={feeConfig}
               />
             );
           })

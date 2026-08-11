@@ -4,8 +4,8 @@
  *              先 initStore() 从 IndexedDB 水合内存 Store，再 startStorePersistence() 订阅
  *              Store 变更并持久化落库，最终挂载 React 根节点渲染 <App>。
  * @layer Utility
- * @storage_impact 启动阶段触发全量读取 IndexedDB（loadAllFromDB），并启动
- *                 随 Store 变化的节流持久化写入；涉及全部 10 张数据表。
+ * @storage_
+ *                 随 Store 变化的节流持久化写入；涉及全部 9 张数据表。
  * @author 开发团队
  */
 

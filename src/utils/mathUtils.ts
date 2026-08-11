@@ -608,3 +608,30 @@ export function calcFeeBreakdown(
 export function isValidLotSize(value: number): boolean {
   return value > 0 && value % 100 === 0;
 }
+
+/**
+ * 格式化金额为人民币显示字符串。
+ *
+ * @description 使用 Intl.NumberFormat 格式化为带 ¥ 前缀、2 位小数的金额字符串。
+ * @param {number} value - 金额数值
+ * @returns {string} 格式化后的金额字符串，如 "¥1,234.56"
+ */
+export function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+  }).format(value);
+}
+
+/**
+ * 根据盈亏数值返回对应的 Tailwind CSS 颜色类名。
+ *
+ * @description 正数为绿色（盈利），负数为红色（亏损），零为灰色。
+ * @param {number} value - 盈亏数值
+ * @returns {string} Tailwind CSS 文本颜色类名
+ */
+export function pnlColor(value: number): string {
+  if (value > 0) return 'text-emerald-400';
+  if (value < 0) return 'text-rose-400';
+  return 'text-slate-400';
+}

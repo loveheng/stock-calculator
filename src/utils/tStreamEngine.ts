@@ -1,180 +1,1021 @@
 /**
  * @file tStreamEngine.ts
- * @description 做T流水池核心撮合引擎：以「单边流水 + FIFO 双队列」模型执行
- *              正T/倒T 撮合，输出全市场持仓状态、P_avg、已实现盈亏、Round 生命周期汇总，
- *              并对外提供倒T首笔卖出的严格底仓校验。全程数据不可变（纯函数）。
+ * @description 短线 T+0 套利计算引擎：正T（先买后卖）与倒T（先卖后买）的状态机、
+ *              步骤推进、结算归并与超限防御逻辑。所有计算均为纯函数，摩擦成本
+ *              统一通过系统费率配置（FeeConfig）动态计算。
  * @layer Utility
- * @storage_impact 纯计算引擎，不读写任何存储；但 Store 层（src/store/index.ts）会以
- *                 本引擎结果为准归档 tRounds 战报、调整 positions 底仓状态。
- * @author 开发团队
+ * @storage_impact 纯计算引擎，不读写任何存储；由 Store 层驱动并持久化。
  */
 
-// ============================================================
-// 做T流水池核心撮合引擎（Round 生命周期 + 绝对现金流法）
-// ------------------------------------------------------------
-// 设计模型：
-//  - 每笔交易流水 (TStreamRecord) 只记录单边方向：buy / sell
-//  - 正做T = 先产生 buy 流水，后续 sell 流水与之 FIFO 撮合
-//  - 倒做T = 先产生 sell 流水（受底仓限制），后续 buy 流水回补
-//  - 同一股票维护两个队列：
-//      longQueue  买入待对冲（买多未卖）
-//      shortQueue 卖出待回补（倒T卖空未买回）
-//  - 撮合规则：
-//      buy  -> 优先与 shortQueue FIFO 配对（回补利润）
-//              剩余进入 longQueue
-//      sell -> 优先与 longQueue FIFO 配对（正T利润）
-//              剩余进入 shortQueue（需通过底仓校验）
-//
-//  Round 生命周期：
-//  - 以 fullCode 为一个做T项目；池从空 -> 非空 自动开启 Round X
-//  - 池持仓归零（Holding_Quantity == 0）触发 Round 归档：
-//      锁定战报（净收益/胜率/持股天数/交易笔数）-> 历史归档库 -> 重置池
-//  - 池持仓归零后下一次买入自动开启 Round + 1
-//
-//  绝对现金流法（Transfer to Base Position）：
-//  - 正T：P_avg = Σ(买入单价×买入数量) / Σ买入数量
-//  - 倒T：P_avg = [(P_base×N_sell) + Σ(后续买入单价×数量)] / (N_sell + Σ后续买入数量)
-//          （倒T首笔卖出将底仓持仓均价 P_base × 卖出数量 N_sell 并入 P_avg 加权计算池）
-//  - 归档净收益 = Σ((卖出单价 - P_avg)×卖出数量) - 系统计算总规费
-//  - 剩余持仓按 P_avg 平价划转入底仓，做T持仓归零触发归档
-// ============================================================
 import Decimal from 'decimal.js';
 import { calcTradeFees, roundTo, type FeeConfig } from './mathUtils';
-import type { StockSearchItem } from '../types/stock';
+import type {
+  BasePosition,
+  TMode,
+  TradeDirection,
+  TStepNode,
+  TSettlementCard,
+  SettlementType,
+  TStateMachineState,
+  TEngineStepInput,
+  TEngineStepOutput,
+  TStreamRecord,
+} from '../types/tStrategy';
 
-// ---- 流水池流水 ----
-export interface TStreamRecord {
-  id: string;
-  /** 时间戳（ISO 或 'YYYY-MM-DD HH:mm'），撮合按此自早至晚 FIFO 排序 */
-  timestamp: string;
-  /** 完整证券代码（含市场前缀，如 sh601318），作为流水池唯一主键 */
-  fullCode: string;
-  stockName: string;
-  /** 交易方向 */
-  direction: 'buy' | 'sell';
-  price: number;
-  /** 正数股数 */
-  amount: number;
-  /** 单边规费快照（保存时计算；每次级联重算会用系统 feeConfig 重算以联动费率） */
-  fee: number;
-  note?: string;
-  quoteId?: string;
-  selectedStock?: StockSearchItem;
-  /** 倒T首笔卖出时已从底仓扣减数量 */
-  baseDeductedAmount?: number;
+// Re-export for backward compatibility with existing code
+export type { TStreamRecord };
+
+// ──────────────────────────────────────────────
+// 辅助函数
+// ──────────────────────────────────────────────
+
+/**
+ * 创建初始状态机状态。
+ *
+ * @param basePosition - 初始底仓对象
+ * @returns 初始化的状态机状态
+ */
+export function createInitialState(basePosition: BasePosition): TStateMachineState {
+  return {
+    mode: 'long', // 默认正T，由首笔流水方向自动切换
+    basePosition: { ...basePosition },
+
+    totalBuyQuantity: 0,
+    totalBuyTurnover: 0,
+    totalBuyFriction: 0,
+
+    totalSellQuantity: 0,
+    totalSellTurnover: 0,
+    totalSellFriction: 0,
+
+    realizedProfit: 0,
+
+    currentCost: basePosition.cost,
+    currentQuantity: basePosition.quantity,
+
+    steps: [],
+    isClosed: false,
+    closeReason: null,
+    settlementCard: null,
+    defenseDialog: null,
+  };
 }
 
-// ---- 单笔流水的撮合状态 ----
+/** 是否为正T卖出可以平仓 */
+function isLongSellMatch(state: TStateMachineState, sellQty: number): boolean {
+  return state.mode === 'long' && state.totalBuyQuantity > 0 && sellQty <= state.totalBuyQuantity;
+}
+
+/** 是否正T卖超 */
+function isLongOverSell(state: TStateMachineState, sellQty: number): boolean {
+  return state.mode === 'long' && sellQty > state.totalBuyQuantity;
+}
+
+/** 是否为倒T借仓卖出 */
+function isShortInitialSell(state: TStateMachineState, direction: TradeDirection): boolean {
+  return direction === 'sell' && state.mode === 'short' && state.totalSellQuantity === 0 && state.totalBuyQuantity === 0;
+}
+
+/** 是否倒T买回可以平仓 */
+function isShortBuyBackMatch(state: TStateMachineState, buyQty: number): boolean {
+  return state.mode === 'short' && state.totalSellQuantity > 0 && buyQty <= state.totalSellQuantity;
+}
+
+/** 是否倒T买超 */
+function isShortOverBuy(state: TStateMachineState, buyQty: number): boolean {
+  return state.mode === 'short' && buyQty > state.totalSellQuantity;
+}
+
+// ──────────────────────────────────────────────
+// 步骤节点构建
+// ──────────────────────────────────────────────
+
+function buildStepNode(
+  state: TStateMachineState,
+  record: TStreamRecord,
+  stepIndex: number,
+): TStepNode {
+  const turnover = new Decimal(record.price).mul(record.amount).toNumber();
+
+  const isBuy = record.direction === 'buy';
+
+  return {
+    index: stepIndex,
+    direction: record.direction,
+    price: record.price,
+    amount: record.amount,
+    turnover: roundTo(turnover, 2),
+
+    netOutflow: isBuy ? roundTo(turnover + record.fee, 2) : null,
+    netInflow: !isBuy ? roundTo(turnover - record.fee, 2) : null,
+
+    stepFrictionCost: record.fee,
+
+    cumulativeProfit: roundTo(state.realizedProfit, 2),
+    cumulativeFrictionCost: roundTo(
+      state.totalBuyFriction + state.totalSellFriction,
+      2,
+    ),
+
+    currentCost: roundTo(state.currentCost, 3),
+    currentQuantity: state.currentQuantity,
+
+    recordId: record.id,
+    timestamp: record.timestamp,
+    note: record.note,
+  };
+}
+
+// ──────────────────────────────────────────────
+// 结算卡片构建
+// ──────────────────────────────────────────────
+
+function buildLongAutoCloseCard(state: TStateMachineState): TSettlementCard {
+  return {
+    settlementType: 'long_auto_close',
+    label: '[正T 自动结束]',
+    labelColor: 'green',
+    mode: 'long',
+
+    totalOutflow: roundTo(state.totalBuyTurnover + state.totalBuyFriction, 2),
+    totalInflow: roundTo(state.totalSellTurnover - state.totalSellFriction, 2),
+    totalFrictionCost: roundTo(state.totalBuyFriction + state.totalSellFriction, 2),
+    realizedArbitrageProfit: roundTo(state.realizedProfit, 2),
+
+    updatedBaseCost: roundTo(state.basePosition.cost, 3),
+    finalQuantity: state.basePosition.quantity,
+
+    mergeQuantity: null,
+    mergeAmount: null,
+
+    steps: [...state.steps],
+  };
+}
+
+function buildLongMergeCard(
+  state: TStateMachineState,
+  mergeQuantity: number,
+  mergeAmount: number,
+  newBaseCost: number,
+  newBaseQuantity: number,
+): TSettlementCard {
+  return {
+    settlementType: 'long_merge',
+    label: '[正T 归并]',
+    labelColor: 'blue',
+    mode: 'long',
+
+    totalOutflow: roundTo(state.totalBuyTurnover + state.totalBuyFriction, 2),
+    totalInflow: roundTo(state.totalSellTurnover - state.totalSellFriction, 2),
+    totalFrictionCost: roundTo(state.totalBuyFriction + state.totalSellFriction, 2),
+    realizedArbitrageProfit: roundTo(state.realizedProfit, 2),
+
+    updatedBaseCost: roundTo(newBaseCost, 3),
+    finalQuantity: newBaseQuantity,
+
+    mergeQuantity,
+    mergeAmount: roundTo(mergeAmount, 2),
+
+    steps: [...state.steps],
+  };
+}
+
+function buildShortAutoCloseCard(state: TStateMachineState): TSettlementCard {
+  return {
+    settlementType: 'short_auto_close',
+    label: '[倒T 自动结束]',
+    labelColor: 'red',
+    mode: 'short',
+
+    totalOutflow: roundTo(state.totalBuyTurnover + state.totalBuyFriction, 2),
+    totalInflow: roundTo(state.totalSellTurnover - state.totalSellFriction, 2),
+    totalFrictionCost: roundTo(state.totalBuyFriction + state.totalSellFriction, 2),
+    realizedArbitrageProfit: roundTo(state.realizedProfit, 2),
+
+    updatedBaseCost: roundTo(state.currentCost, 3),
+    finalQuantity: state.currentQuantity,
+
+    mergeQuantity: null,
+    mergeAmount: null,
+
+    steps: [...state.steps],
+  };
+}
+
+function buildShortPartialReduceCard(
+  state: TStateMachineState,
+  reduceQuantity: number,
+  reduceAmount: number,
+): TSettlementCard {
+  return {
+    settlementType: 'short_partial_reduce',
+    label: '[倒T 部分减持]',
+    labelColor: 'purple',
+    mode: 'short',
+
+    totalOutflow: roundTo(state.totalBuyTurnover + state.totalBuyFriction, 2),
+    totalInflow: roundTo(state.totalSellTurnover - state.totalSellFriction, 2),
+    totalFrictionCost: roundTo(state.totalBuyFriction + state.totalSellFriction, 2),
+    realizedArbitrageProfit: roundTo(state.realizedProfit, 2),
+
+    updatedBaseCost: roundTo(state.currentCost, 3),
+    finalQuantity: state.currentQuantity,
+
+    mergeQuantity: reduceQuantity,
+    mergeAmount: roundTo(reduceAmount, 2),
+
+    steps: [...state.steps],
+  };
+}
+
+function buildShortTransferCard(
+  state: TStateMachineState,
+  transferQuantity: number,
+  transferAmount: number,
+): TSettlementCard {
+  return {
+    settlementType: 'short_transfer',
+    label: '[倒T 划转]',
+    labelColor: 'orange',
+    mode: 'short',
+
+    totalOutflow: roundTo(state.totalBuyTurnover + state.totalBuyFriction, 2),
+    totalInflow: roundTo(state.totalSellTurnover - state.totalSellFriction, 2),
+    totalFrictionCost: roundTo(state.totalBuyFriction + state.totalSellFriction, 2),
+    realizedArbitrageProfit: roundTo(state.realizedProfit, 2),
+
+    updatedBaseCost: roundTo(state.currentCost, 3),
+    finalQuantity: state.currentQuantity,
+
+    mergeQuantity: transferQuantity,
+    mergeAmount: roundTo(transferAmount, 2),
+
+    steps: [...state.steps],
+  };
+}
+
+// ──────────────────────────────────────────────
+// 正T 执行逻辑
+// ──────────────────────────────────────────────
+
+/**
+ * 正T 买入（建 T）：仅计算支出，更新累积持有。
+ */
+function executeLongBuy(state: TStateMachineState, record: TStreamRecord): TStateMachineState {
+  const turnover = new Decimal(record.price).mul(record.amount).toNumber();
+
+  const newState: TStateMachineState = {
+    ...state,
+    totalBuyQuantity: state.totalBuyQuantity + record.amount,
+    totalBuyTurnover: state.totalBuyTurnover + turnover,
+    totalBuyFriction: state.totalBuyFriction + record.fee,
+    currentQuantity: state.currentQuantity + record.amount,
+    // 正T 买入不改变底仓成本，但持有数量增加
+    // currentCost 在正T中保持底仓成本不变（买入不影响底仓成本）
+    currentCost: state.currentCost,
+
+    steps: [
+      ...state.steps,
+      buildStepNode(
+        { ...state, realizedProfit: state.realizedProfit },
+        record,
+        state.steps.length + 1,
+      ),
+    ],
+  };
+
+  return newState;
+}
+
+/**
+ * 正T 卖出平仓：匹配累积买入数量，计算已实现利润。
+ * 摩擦成本全部计入做T本身的成本，按比例分摊。
+ *
+ * 利润公式：
+ * 已实现套利利润 = 总回收 - 总支出 - 总摩擦成本
+ * 其中支出与回收按匹配比例计算。
+ */
+function executeLongSell(
+  state: TStateMachineState,
+  record: TStreamRecord,
+): TStateMachineState {
+  const sellQty = record.amount;
+  const sellTurnover = new Decimal(record.price).mul(record.amount).toNumber();
+  const sellFee = record.fee;
+
+  // 按比例计算匹配部分的买出支出与买入摩擦
+  const matchRatio = new Decimal(sellQty).div(state.totalBuyQuantity);
+  const matchedBuyTurnover = matchRatio.mul(state.totalBuyTurnover).toNumber();
+  const matchedBuyFriction = matchRatio.mul(state.totalBuyFriction).toNumber();
+
+  // 已实现利润 = (卖出回收 - 卖出摩擦) - (匹配买入支出 + 匹配买入摩擦)
+  const saleProceeds = new Decimal(sellTurnover).minus(sellFee).toNumber();
+  const costBasis = new Decimal(matchedBuyTurnover).plus(matchedBuyFriction).toNumber();
+  const stepProfit = new Decimal(saleProceeds).minus(costBasis).toNumber();
+
+  const isFullyClosed = state.totalBuyQuantity === sellQty;
+  const remainingBuyQuantity = state.totalBuyQuantity - sellQty;
+  const remainingBuyTurnover = new Decimal(state.totalBuyTurnover).minus(matchedBuyTurnover).toNumber();
+  const remainingBuyFriction = new Decimal(state.totalBuyFriction).minus(matchedBuyFriction).toNumber();
+
+  const steps = [
+    ...state.steps,
+    buildStepNode(
+      {
+        ...state,
+        realizedProfit: state.realizedProfit + stepProfit,
+      },
+      record,
+      state.steps.length + 1,
+    ),
+  ];
+
+  let newState: TStateMachineState = {
+    ...state,
+    totalBuyQuantity: remainingBuyQuantity,
+    totalBuyTurnover: remainingBuyTurnover,
+    totalBuyFriction: remainingBuyFriction,
+    totalSellQuantity: state.totalSellQuantity + sellQty,
+    totalSellTurnover: state.totalSellTurnover + sellTurnover,
+    totalSellFriction: state.totalSellFriction + sellFee,
+    realizedProfit: state.realizedProfit + stepProfit,
+    currentQuantity: state.currentQuantity - sellQty,
+    steps,
+  };
+
+  // 自动结束
+  if (isFullyClosed) {
+    newState = {
+      ...newState,
+      isClosed: true,
+      closeReason: 'long_auto_close',
+      settlementCard: buildLongAutoCloseCard(newState),
+    };
+  }
+
+  return newState;
+}
+
+// ──────────────────────────────────────────────
+// 倒T 执行逻辑
+// ──────────────────────────────────────────────
+
+/**
+ * 倒T 借仓卖出：卖出底仓产生回收现金。
+ * 按移动平均法，卖出时不改变账面持仓单价成本。
+ */
+function executeShortSell(
+  state: TStateMachineState,
+  record: TStreamRecord,
+): TStateMachineState {
+  const sellQty = record.amount;
+  const sellTurnover = new Decimal(record.price).mul(record.amount).toNumber();
+  const sellFee = record.fee;
+
+  // 卖出后底仓数量减少，但单价不变（移动平均法）
+  const newBaseQuantity = state.basePosition.quantity - sellQty;
+
+  const newState: TStateMachineState = {
+    ...state,
+    totalSellQuantity: state.totalSellQuantity + sellQty,
+    totalSellTurnover: state.totalSellTurnover + sellTurnover,
+    totalSellFriction: state.totalSellFriction + sellFee,
+
+    currentQuantity: newBaseQuantity,
+    currentCost: state.basePosition.cost,
+
+    basePosition: {
+      ...state.basePosition,
+      quantity: newBaseQuantity,
+    },
+
+    steps: [
+      ...state.steps,
+      buildStepNode(
+        { ...state, realizedProfit: state.realizedProfit },
+        record,
+        state.steps.length + 1,
+      ),
+    ],
+  };
+
+  return newState;
+}
+
+/**
+ * 倒T 回补买入：移动加权更新整体持仓成本。
+ * 新持有成本 = (剩余底仓总成本 + 本次买入纯支出) / (剩余底仓数量 + 本次买入数量)
+ *
+ * 纯支出 = turnover + fee（不含卖出摩擦，摩擦成本已计入做T本身）
+ */
+function executeShortBuyBack(
+  state: TStateMachineState,
+  record: TStreamRecord,
+): TStateMachineState {
+  const buyQty = record.amount;
+  const buyTurnover = new Decimal(record.price).mul(record.amount).toNumber();
+  const buyFee = record.fee;
+
+  // 纯支出（不含摩擦那部分单独跟踪，摩擦成本只计入做T总摩擦）
+  const pureOutflow = buyTurnover;
+
+  // 剩余底仓总成本
+  const remainingBaseTotalCost = new Decimal(state.basePosition.cost).mul(
+    state.currentQuantity,
+  );
+
+  // 新持有成本 = (剩余底仓总成本 + 纯支出) / (剩余底仓数量 + 买入数量)
+  const newQuantity = state.currentQuantity + buyQty;
+  const newTotalCost = remainingBaseTotalCost.plus(pureOutflow);
+  const newCost = newQuantity > 0 ? newTotalCost.div(newQuantity).toNumber() : 0;
+
+  // 已实现利润：回补买入时，按比例确认利润
+  // 卖出回收(按比例) - 卖出摩擦(按比例) - 买入支出(按比例) - 买入摩擦(按比例)
+  const matchRatio = new Decimal(buyQty).div(state.totalSellQuantity);
+  const matchedSellTurnover = matchRatio.mul(state.totalSellTurnover).toNumber();
+  const matchedSellFriction = matchRatio.mul(state.totalSellFriction).toNumber();
+  const stepProfit = new Decimal(matchedSellTurnover)
+    .minus(matchedSellFriction)
+    .minus(pureOutflow)
+    .minus(buyFee)
+    .toNumber();
+
+  const isFullyClosed = buyQty === state.totalSellQuantity;
+  const remainingSellQuantity = state.totalSellQuantity - buyQty;
+  const remainingSellTurnover = new Decimal(state.totalSellTurnover)
+    .minus(matchedSellTurnover)
+    .toNumber();
+  const remainingSellFriction = new Decimal(state.totalSellFriction)
+    .minus(matchedSellFriction)
+    .toNumber();
+
+  const steps = [
+    ...state.steps,
+    buildStepNode(
+      {
+        ...state,
+        realizedProfit: state.realizedProfit + stepProfit,
+      },
+      record,
+      state.steps.length + 1,
+    ),
+  ];
+
+  let newState: TStateMachineState = {
+    ...state,
+    totalBuyQuantity: state.totalBuyQuantity + buyQty,
+    totalBuyTurnover: state.totalBuyTurnover + buyTurnover,
+    totalBuyFriction: state.totalBuyFriction + buyFee,
+
+    totalSellQuantity: remainingSellQuantity,
+    totalSellTurnover: remainingSellTurnover,
+    totalSellFriction: remainingSellFriction,
+
+    realizedProfit: state.realizedProfit + stepProfit,
+
+    currentQuantity: newQuantity,
+    currentCost: roundTo(newCost, 3),
+
+    basePosition: {
+      ...state.basePosition,
+      cost: roundTo(newCost, 3),
+      quantity: newQuantity,
+    },
+
+    steps,
+  };
+
+  // 自动结束（完全回补）
+  if (isFullyClosed) {
+    newState = {
+      ...newState,
+      isClosed: true,
+      closeReason: 'short_auto_close',
+      settlementCard: buildShortAutoCloseCard(newState),
+    };
+  } else {
+    // 部分回补后，未补满部分为减持
+    // 减持确认：未回补的部分直接确认已实现，已买回部分已锁定新持仓成本
+    // 剩下的卖出数量就是减持量
+  }
+
+  return newState;
+}
+
+// ──────────────────────────────────────────────
+// 防御弹窗构建
+// ──────────────────────────────────────────────
+
+function buildOverSellDefense(state: TStateMachineState, record: TStreamRecord): TStateMachineState {
+  const overSellQty = record.amount - state.totalBuyQuantity;
+
+  return {
+    ...state,
+    defenseDialog: {
+      visible: true,
+      type: 'over_sell',
+      title: '正T 卖出数量超出累积买入量',
+      description: `当前正T累积买入 ${state.totalBuyQuantity} 股，您尝试卖出 ${record.amount} 股，超出 ${overSellQty} 股。请选择处理方式：`,
+      options: [
+        {
+          key: 'auto_hedge',
+          label: `选项 A：自动对冲已有正T ${state.totalBuyQuantity} 股并结清`,
+          action: 'auto_hedge',
+        },
+        {
+          key: 'hedge_then_start_reverse',
+          label: `选项 B：结清正T ${state.totalBuyQuantity} 股，超出 ${overSellQty} 股自动开启倒T`,
+          action: 'hedge_then_start_reverse',
+        },
+        {
+          key: 'cancel',
+          label: '选项 C：返回修改',
+          action: 'cancel',
+        },
+      ],
+      pendingRecord: { ...record },
+    },
+  };
+}
+
+function buildOverBuyDefense(state: TStateMachineState, record: TStreamRecord): TStateMachineState {
+  const overBuyQty = record.amount - state.totalSellQuantity;
+
+  return {
+    ...state,
+    defenseDialog: {
+      visible: true,
+      type: 'over_buy',
+      title: '倒T 买入数量超出借仓卖出量',
+      description: `当前倒T借仓卖出 ${state.totalSellQuantity} 股，您尝试买入 ${record.amount} 股，超出 ${overBuyQty} 股。请选择处理方式：`,
+      options: [
+        {
+          key: 'auto_hedge',
+          label: `选项 A：自动对冲已借出 ${state.totalSellQuantity} 股并结清`,
+          action: 'auto_hedge',
+        },
+        {
+          key: 'hedge_then_start_reverse',
+          label: `选项 B：结清倒T ${state.totalSellQuantity} 股，超出 ${overBuyQty} 股自动开启正T`,
+          action: 'hedge_then_start_reverse',
+        },
+        {
+          key: 'cancel',
+          label: '选项 C：返回修改',
+          action: 'cancel',
+        },
+      ],
+      pendingRecord: { ...record },
+    },
+  };
+}
+
+// ──────────────────────────────────────────────
+// 主入口：单步推进
+// ──────────────────────────────────────────────
+
+/**
+ * 单步推进做 T 状态机。
+ *
+ * @description 根据当前状态机状态与新流水记录，计算下一步状态。
+ *              自动处理正T/倒T的模式切换、利润计算、结算归并与超限防御。
+ * @param input - 包含当前状态、新流水记录、费率配置与底仓
+ * @returns 更新后的状态、是否触发防御弹窗、是否需要归并等信息
+ */
+export function stepTEngine(input: TEngineStepInput): TEngineStepOutput {
+  const { state, record, feeConfig, basePosition } = input;
+
+  // 确保底仓信息同步
+  const syncedState: TStateMachineState = {
+    ...state,
+    basePosition: { ...basePosition },
+  };
+
+  // ── 首笔流水：自动确定模式 ──
+  if (syncedState.totalBuyQuantity === 0 && syncedState.totalSellQuantity === 0) {
+    if (record.direction === 'buy') {
+      syncedState.mode = 'long';
+    } else {
+      syncedState.mode = 'short';
+    }
+  }
+
+  // ── 根据模式与方向分发 ──
+  if (syncedState.mode === 'long') {
+    if (record.direction === 'buy') {
+      // 正T 买入建仓
+      const newState = executeLongBuy(syncedState, record);
+      return {
+        newState,
+        triggeredDefense: false,
+        needsMergeToBase: false,
+        mergeInfo: null,
+      };
+    } else {
+      // 正T 卖出
+      if (isLongOverSell(syncedState, record.amount)) {
+        // 触发超卖防御弹窗
+        const newState = buildOverSellDefense(syncedState, record);
+        return {
+          newState,
+          triggeredDefense: true,
+          needsMergeToBase: false,
+          mergeInfo: null,
+        };
+      }
+      // 正常卖出平仓
+      const newState = executeLongSell(syncedState, record);
+      return {
+        newState,
+        triggeredDefense: false,
+        needsMergeToBase: false,
+        mergeInfo: null,
+      };
+    }
+  } else {
+    // 倒T 模式
+    if (record.direction === 'sell') {
+      // 倒T 卖出借仓
+      const newState = executeShortSell(syncedState, record);
+      return {
+        newState,
+        triggeredDefense: false,
+        needsMergeToBase: false,
+        mergeInfo: null,
+      };
+    } else {
+      // 倒T 买入回补
+      if (isShortOverBuy(syncedState, record.amount)) {
+        // 触发超买防御弹窗
+        const newState = buildOverBuyDefense(syncedState, record);
+        return {
+          newState,
+          triggeredDefense: true,
+          needsMergeToBase: false,
+          mergeInfo: null,
+        };
+      }
+      // 正常买入回补
+      const newState = executeShortBuyBack(syncedState, record);
+      return {
+        newState,
+        triggeredDefense: false,
+        needsMergeToBase: false,
+        mergeInfo: null,
+      };
+    }
+  }
+}
+
+/**
+ * 正T 归并底仓：将未平仓的买入持仓按纯成交金额与数量合并到底仓。
+ *
+ * @description 摩擦成本不重复计算，底仓只吸收纯成交金额与数量进行加权。
+ * @param state - 当前状态机状态（正T模式，有未平仓买入）
+ * @param basePosition - 当前底仓
+ * @returns 归并后的状态、更新后的底仓信息
+ */
+export function mergeLongToBase(
+  state: TStateMachineState,
+  basePosition: BasePosition,
+): {
+  newState: TStateMachineState;
+  newBasePosition: BasePosition;
+} {
+  const mergeQuantity = state.totalBuyQuantity;
+  const mergeTurnover = state.totalBuyTurnover;
+
+  if (mergeQuantity <= 0) {
+    return {
+      newState: { ...state },
+      newBasePosition: { ...basePosition },
+    };
+  }
+
+  // 底仓只吸收纯成交金额与数量进行加权，不重复计算摩擦成本
+  const oldBaseTotalCost = new Decimal(basePosition.cost).mul(basePosition.quantity);
+  const newBaseQuantity = basePosition.quantity + mergeQuantity;
+  const newBaseTotalCost = oldBaseTotalCost.plus(mergeTurnover);
+  const newBaseCost = newBaseQuantity > 0
+    ? newBaseTotalCost.div(newBaseQuantity).toNumber()
+    : 0;
+
+  const newBasePosition: BasePosition = {
+    cost: roundTo(newBaseCost, 3),
+    quantity: newBaseQuantity,
+  };
+
+  const newState: TStateMachineState = {
+    ...state,
+    totalBuyQuantity: 0,
+    totalBuyTurnover: 0,
+    totalBuyFriction: 0,
+    currentQuantity: newBaseQuantity,
+    currentCost: roundTo(newBaseCost, 3),
+    basePosition: { ...newBasePosition },
+    isClosed: true,
+    closeReason: 'long_merge',
+    settlementCard: buildLongMergeCard(
+      state,
+      mergeQuantity,
+      mergeTurnover,
+      newBaseCost,
+      newBaseQuantity,
+    ),
+  };
+
+  return { newState, newBasePosition };
+}
+
+/**
+ * 倒T 部分减持：未回补部分直接确认减持，已买回部分锁定加权后的新持仓成本。
+ *
+ * @description 剩余卖出数量对应的就是减持部分，直接确认。
+ * @param state - 当前状态机状态（倒T模式，有未回补卖出）
+ * @returns 结算后的状态
+ */
+export function finalizeShortPartialReduce(
+  state: TStateMachineState,
+): TStateMachineState {
+  const reduceQuantity = state.totalSellQuantity;
+  const reduceTurnover = state.totalSellTurnover;
+  const reduceFriction = state.totalSellFriction;
+
+  // 减持部分已确认利润（在之前的步骤中已按比例计算）
+  // 这里只需结算剩余状态
+
+  const newState: TStateMachineState = {
+    ...state,
+    totalSellQuantity: 0,
+    totalSellTurnover: 0,
+    totalSellFriction: 0,
+    isClosed: true,
+    closeReason: 'short_partial_reduce',
+    settlementCard: buildShortPartialReduceCard(
+      state,
+      reduceQuantity,
+      reduceTurnover - reduceFriction,
+    ),
+  };
+
+  return newState;
+}
+
+/**
+ * 倒T 划转到底仓。
+ *
+ * @description 完成对倒T剩余持仓的划转处理，更新底仓。
+ */
+export function finalizeShortTransfer(
+  state: TStateMachineState,
+  transferQuantity: number,
+  transferAmount: number,
+): TStateMachineState {
+  const newState: TStateMachineState = {
+    ...state,
+    isClosed: true,
+    closeReason: 'short_transfer',
+    settlementCard: buildShortTransferCard(state, transferQuantity, transferAmount),
+  };
+
+  return newState;
+}
+
+/**
+ * 处理正T 超卖防御 - 选项 A：自动对冲已有正T数量并结清
+ */
+export function resolveOverSellAutoHedge(
+  state: TStateMachineState,
+): TStateMachineState {
+  const pendingRecord = state.defenseDialog?.pendingRecord;
+  if (!pendingRecord) return state;
+
+  // 只对冲已有正T买入数量
+  const hedgedQty = state.totalBuyQuantity;
+  const hedgedRecord: TStreamRecord = {
+    ...pendingRecord,
+    amount: hedgedQty,
+  };
+
+  // 重新计算摩擦成本（使用实际对冲数量）
+  // fee 已经在原 record 中按比例对应，这里简化处理
+  const ratio = hedgedQty / pendingRecord.amount;
+  hedgedRecord.fee = roundTo(pendingRecord.fee * ratio, 2);
+
+  const result = executeLongSell(
+    { ...state, defenseDialog: null },
+    hedgedRecord,
+  );
+
+  return {
+    ...result,
+    defenseDialog: null,
+  };
+}
+
+/**
+ * 处理正T 超卖防御 - 选项 B：结清正T，超出部分自动开启倒T
+ */
+export function resolveOverSellHedgeThenReverse(
+  state: TStateMachineState,
+  feeConfig: FeeConfig,
+): TStateMachineState {
+  const pendingRecord = state.defenseDialog?.pendingRecord;
+  if (!pendingRecord) return state;
+
+  // 对冲已有正T部分
+  const hedgedQty = state.totalBuyQuantity;
+  const ratio = hedgedQty / pendingRecord.amount;
+  const hedgedRecord: TStreamRecord = {
+    ...pendingRecord,
+    amount: hedgedQty,
+    fee: roundTo(pendingRecord.fee * ratio, 2),
+  };
+
+  let newState = executeLongSell(
+    { ...state, defenseDialog: null },
+    hedgedRecord,
+  );
+
+  // 超出部分开启倒T
+  const overQty = pendingRecord.amount - hedgedQty;
+  if (overQty > 0) {
+    const overFee = calcTradeFees(pendingRecord.price, overQty, 'sell', feeConfig).total;
+    const overRecord: TStreamRecord = {
+      ...pendingRecord,
+      id: pendingRecord.id + '_reverse',
+      amount: overQty,
+      fee: overFee,
+    };
+
+    // 开启倒T模式
+    newState = {
+      ...newState,
+      mode: 'short',
+      isClosed: false,
+      closeReason: null,
+      settlementCard: null,
+    };
+
+    newState = executeShortSell(newState, overRecord);
+  }
+
+  return newState;
+}
+
+/**
+ * 处理倒T 超买防御 - 选项 A：自动对冲已借出数量并结清
+ */
+export function resolveOverBuyAutoHedge(
+  state: TStateMachineState,
+): TStateMachineState {
+  const pendingRecord = state.defenseDialog?.pendingRecord;
+  if (!pendingRecord) return state;
+
+  const hedgedQty = state.totalSellQuantity;
+  const ratio = hedgedQty / pendingRecord.amount;
+  const hedgedRecord: TStreamRecord = {
+    ...pendingRecord,
+    amount: hedgedQty,
+    fee: roundTo(pendingRecord.fee * ratio, 2),
+  };
+
+  const result = executeShortBuyBack(
+    { ...state, defenseDialog: null },
+    hedgedRecord,
+  );
+
+  return {
+    ...result,
+    defenseDialog: null,
+  };
+}
+
+/**
+ * 处理倒T 超买防御 - 选项 B：结清倒T，超出部分自动开启正T
+ */
+export function resolveOverBuyHedgeThenReverse(
+  state: TStateMachineState,
+  feeConfig: FeeConfig,
+): TStateMachineState {
+  const pendingRecord = state.defenseDialog?.pendingRecord;
+  if (!pendingRecord) return state;
+
+  const hedgedQty = state.totalSellQuantity;
+  const ratio = hedgedQty / pendingRecord.amount;
+  const hedgedRecord: TStreamRecord = {
+    ...pendingRecord,
+    amount: hedgedQty,
+    fee: roundTo(pendingRecord.fee * ratio, 2),
+  };
+
+  let newState = executeShortBuyBack(
+    { ...state, defenseDialog: null },
+    hedgedRecord,
+  );
+
+  // 超出部分开启正T
+  const overQty = pendingRecord.amount - hedgedQty;
+  if (overQty > 0) {
+    const overFee = calcTradeFees(pendingRecord.price, overQty, 'buy', feeConfig).total;
+    const overRecord: TStreamRecord = {
+      ...pendingRecord,
+      id: pendingRecord.id + '_reverse',
+      amount: overQty,
+      fee: overFee,
+    };
+
+    // 开启正T模式
+    newState = {
+      ...newState,
+      mode: 'long',
+      isClosed: false,
+      closeReason: null,
+      settlementCard: null,
+    };
+
+    newState = executeLongBuy(newState, overRecord);
+  }
+
+  return newState;
+}
+
+/**
+ * 取消防御弹窗（选项 C：返回修改）
+ */
+export function cancelDefenseDialog(state: TStateMachineState): TStateMachineState {
+  return {
+    ...state,
+    defenseDialog: null,
+  };
+}
+
+// Re-export for backward compatibility - the old processStockStream and processAllStreams
+// These are kept to maintain compatibility with existing store code that references them
+
+/** @deprecated Use stepTEngine instead */
 export interface StreamEntry {
   id: string;
   timestamp: string;
   direction: 'buy' | 'sell';
   price: number;
   amount: number;
-  /** 重算后的单边规费 */
   fee: number;
-  /** 该笔与对方队列撮合（对冲掉）的数量 */
   matchedAmount: number;
-  /** 该笔贡献的已实现盈亏（FIFO 口径：买入流水撮合=溢价利润；卖出流水撮合=价差利润） */
   realizedProfit: number;
-  /** 该笔买入流水剩余待对冲数量（卖出流水恒为 0） */
   remaining: number;
-  /** 是否完全结清（待对冲数量归零） */
   closed: boolean;
-  /** 备注 */
   note?: string;
 }
 
 export type StreamStatus = 'PENDING' | 'PARTIAL' | 'CLEARED' | 'SHORT_PENDING';
 
-// ---- 单只股票的流水池撮合结果 ----
+/** @deprecated Use TStateMachineState instead */
 export interface StockStreamResult {
   fullCode: string;
   stockName: string;
-  /** 累计已实现做T净收益（FIFO 精确撮合，实时口径） */
   realizedPnL: number;
-  /** 累计已实现摩擦成本（已完成撮合的买卖规费） */
   realizedFee: number;
-  /** 当前待对冲持仓量（longQueue 总量 - shortQueue 总量） */
   netPendingAmount: number;
-  /** 待对冲加权买入价（Σ价×量 / Σ量，不含费）—— 严格按需求公式 */
   weightedBuyCost: number;
-  /** 待对冲加权买入总成本（含买入规费） */
   pendingTotalCost: number;
-  /** 待对冲数量中正在等待回补的卖出量（倒T裸卖量） */
   shortPendingAmount: number;
-  /** 倒T首笔裸卖数量（作为归档恢复底仓的基准） */
   initialShortSellQty?: number;
-  /** 该 Round 模式：正T / 倒T */
   mode: 'long' | 'short';
-  /** 状态：完全结清 | 部分对冲 (剩余X股) | 待对冲 | 倒T待回补 */
   status: StreamStatus;
-  /** 该股票全部流水（按时间戳自早至晚有序） */
   entries: StreamEntry[];
-  /** 最近一次卖出后的剩余待对冲量（用于持仓清零 Toast 判断） */
   lastSellRemaining: number;
-  /** 最近一次卖出后是否完全结清（用于持仓清零 Toast 判断） */
   lastSellCleared: boolean;
   lastClosedAt?: string;
-
-  // ================= Round 生命周期汇总（绝对现金流法） =================
-  /** 本 Round 是否已开启（池内有流水） */
   roundStarted: boolean;
-  /** 本 Round 开启时间（第一笔流水时间戳） */
   openedAt?: string;
-  /** 本 Round 加权均价 P_avg：正T = Σ(买入单价×买入数量)/Σ买入数量；
-   * 倒T（先卖后买）= [(P_base×N_sell) + Σ(后续买入单价×数量)] / (N_sell + Σ后续买入数量)，底仓成本并入加权池 */
   avgPrice: number;
-  /** 本 Round 总买入数量 */
   buyAmount: number;
-  /** 本 Round 总买入金额 */
   buyTotal: number;
-  /** 本 Round 总卖出数量（含未回补裸卖） */
   sellAmount: number;
-  /** 本 Round 总卖出金额 */
   sellValue: number;
-  /** 已对冲卖出数量（已实现的卖出） */
   realizedSellAmount: number;
-  /** 已对冲卖出金额 */
   realizedSellValue: number;
-  /** 本 Round 已发生总规费（系统费率实时联动重算） */
   totalFee: number;
-  /** 绝对现金流法净收益 = Σ(已对冲卖价×卖量) - P_avg×已对冲卖量 - 总规费 */
   transferProfit: number;
-  /** 本 Round 全部卖出按各自成本基准（倒T首卖=P_base，其余=P_avg）计算的成本总额 */
   sellCostTotal: number;
-  /** 已实现（已对冲）卖出的成本基准总额 */
   realizedSellCost: number;
-  /** 倒T首笔卖出继承的底仓持仓均价 P_base（仅当 Round 以倒T首卖开启且有底仓成本时） */
   firstSellCostBasis?: number;
-  /** 倒T成本继承：并入 P_avg 加权计算池的底仓卖出数量 N_sell */
   inheritedBaseAmount?: number;
-  /** 交易笔数 */
   tradeCount: number;
-  /** 持股天数（开启至最后交易，至少 1 天） */
   holdingDays: number;
 }
 
-// ---- 超卖校验结果 ----
 export interface SellValidation {
   valid: boolean;
-  /** 当前最大可卖数量 */
   maxSellable: number;
   error?: string;
-  /** 倒T首笔卖出时是否因缺少底仓持仓而校验失败 */
   missingPosition?: boolean;
-  /** 是否为倒T首笔卖出（触发严格底仓校验） */
   isFirstSell?: boolean;
 }
 
 /**
- * 按时间戳比较两条流水先后顺序（FIFO 排序回调）。
- *
- * @description 先比较时间戳毫秒值（NaN 视为最早/最晚兜底），保证排序稳定唯一。
- * @param {string} a - 第一条流水时间戳
- * @param {string} b - 第二条流水时间戳
- * @returns {number} 负数表示 a 更早；0 相等；正数表示 b 更早
- * @note 纯函数；供 processStockStream 内部对流水按时间序撮合使用
+ * @deprecated Old time comparison - kept for backward compat
  */
 export function compareByTimestamp(a: string, b: string): number {
   const ta = new Date(a).getTime();
@@ -184,455 +1025,223 @@ export function compareByTimestamp(a: string, b: string): number {
   return ta - tb;
 }
 
+// ──────────────────────────────────────────────
+// Backward-compatible stubs for old engine API
+// These keep existing store/UI code compiling while
+// the refactored engine is integrated.
+// Old signatures from v3 store: processAllStreams(rawStreams, feeConfig, Map<string, number>),
+// processStockStream(sorted, feeConfig, number|undefined, skipFifo?, baseCostOverride?),
+// validateStreamTrade(StreamResult|null, baseAmount, direction, price, amount, isFirstSell?)
+// ──────────────────────────────────────────────
+
 /**
- * 持股天数：自开启至结束（至少 1 天）
+ * @deprecated Use stepTEngine instead. Old FIFO engine kept for compatibility.
+ * Old signature: processAllStreams(rawStreams, feeConfig, Map<string, number>)
+ * where Map values are average cost (just a number, not an object).
  */
-function calcHoldingDays(open: string | undefined, close: string | undefined): number {
-  if (!open || !close) return 0;
-  const o = new Date(open).getTime();
-  const c = new Date(close).getTime();
-  if (Number.isNaN(o) || Number.isNaN(c)) return 0;
-  return Math.max(1, Math.ceil((c - o) / 86400000));
+export function processAllStreams(
+  rawStreams: TStreamRecord[],
+  feeConfig: FeeConfig,
+  baseCostsMap?: Map<string, number>,
+): StockStreamResult[] {
+  // Group by fullCode
+  const grouped = new Map<string, TStreamRecord[]>();
+  for (const s of rawStreams) {
+    if (!s.fullCode) continue;
+    const arr = grouped.get(s.fullCode) || [];
+    arr.push(s);
+    grouped.set(s.fullCode, arr);
+  }
+
+  const results: StockStreamResult[] = [];
+  for (const [fullCode, streams] of grouped) {
+    // Sort by timestamp
+    const sorted = [...streams].sort((a, b) => compareByTimestamp(a.timestamp, b.timestamp));
+    const baseCostVal = baseCostsMap?.get(fullCode);
+    const run = processStockStream(
+      sorted,
+      feeConfig,
+      baseCostVal ?? 0,
+    );
+    results.push(run);
+  }
+  return results;
 }
 
 /**
- * 计算单只股票的流水池撮合结果（Round 引擎核心）。
- *
- * @description 将全部流水按时间序 FIFO 撮合：buy 优先回补 shortQueue，剩余进 longQueue；
- *              sell 优先对冲 longQueue，剩余进 shortQueue（受底仓数量约束）。
- *              维护每笔流水的 matchedAmount / realizedProfit / remaining，
- *              输出 P_avg（绝对现金流法）、transferProfit、持股天数与 Round 状态机。
- * @param {TStreamRecord[]} records - 该标的全部流水（任意顺序，内部按时间戳排序）
- * @param {FeeConfig} feeConfig - 全局费率配置（每次级联重算联动最新费率）
- * @param {number} [baseCost] - 底仓持仓均价 P_base（供倒T首笔卖出并入 P_avg 加权池）
- * @returns {StockStreamResult} 撮合结果（持仓状态、P_avg、已实现盈亏、Round 汇总等）
- * @note 纯函数；不修改入参 records，不写任何存储
+ * @deprecated Use stepTEngine instead. Old sequential processor kept for compatibility.
+ * Old signature: processStockStream(sorted, feeConfig, baseCost?: number, skipFifo?: boolean, baseCostOverride?: number)
  */
 export function processStockStream(
-  records: TStreamRecord[],
+  sorted: TStreamRecord[],
   feeConfig: FeeConfig,
-  baseCost?: number
+  baseCost?: number,
+  _skipFifo?: boolean,
+  _baseCostOverride?: number,
 ): StockStreamResult {
-  const sorted = [...records].sort((a, b) => compareByTimestamp(a.timestamp, b.timestamp));
+  const fullCode = sorted.length > 0 ? sorted[0].fullCode : '';
+  const stockName = sorted.length > 0 ? sorted[0].stockName : '';
 
-  // 待对冲买入队列：FIFO 槽位，amount 为剩余未对冲数量
-  // 加权成本：总成本（含买入规费）/ 总数量的精确值，用 Decimal 保持
-  const longQueue: Array<{
-    id: string;
-    timestamp: string;
-    price: number;
-    amount: number;
-    fee: number;
-    totalCost: Decimal; // Σ(价×量) + 买入规费
-    totalAmount: number;
-    note?: string;
-  }> = [];
+  const baseCostVal = baseCost ?? 0;
 
-  // 待回补卖出队列（倒T裸卖）：slot 记录卖出价与净回款
-  const shortQueue: Array<{
-    id: string;
-    timestamp: string;
-    price: number;
-    amount: number; // 待回补数量
-    fee: number;
-    netProceeds: Decimal; // 卖出总额 - 卖出规费
-    note?: string;
-  }> = [];
+  // Use new engine to compute results
+  const stateFrom = createInitialState({ cost: baseCostVal, quantity: 0 });
+
+  let state = stateFrom;
+  let mode: 'long' | 'short' = 'long';
+  let roundStarted = false;
+  let openedAt: string | undefined;
 
   const entries: StreamEntry[] = [];
-  let realizedPnL = 0;
-  let realizedFee = 0;
-  let totalFeeAccumulated = 0; // 全部已产生流水规费（含未撮合部分）
-  let lastSellRemaining = 0;
-  let lastSellCleared = false;
-  let lastClosedAt: string | undefined;
-  // ---- 倒T首卖成本继承：第一笔卖出使用底仓持仓均价 P_base 作为对冲成本基准 ----
-  let firstSellId: string | undefined;
-
-  // ---- 倒T底仓成本并入 P_avg 加权计算池 ----
-  // 倒T（先卖后买）：首笔卖出时把 (P_base × N_sell) 作为初始基准填入 P_avg 池，
-  // 后续买入按标准公式平滑合成：
-  //   P_avg = [(P_base × N_sell) + Σ(后续买入单价 × 后续买入数量)] / (N_sell + Σ后续买入数量)
-  let inheritedBaseQty = 0;
-  let inheritedBaseTotal = 0;
-  let initialShortSellQty = 0;
-  if (
-    sorted.length > 0 &&
-    sorted[0].direction === 'sell' &&
-    baseCost !== undefined &&
-    baseCost > 0
-  ) {
-    const firstBuyIndex = sorted.findIndex((r) => r.direction === 'buy');
-    const shortSlice = firstBuyIndex === -1 ? sorted : sorted.slice(0, firstBuyIndex);
-    initialShortSellQty = shortSlice.reduce((sum, r) => sum + (r.direction === 'sell' ? r.amount : 0), 0);
-    inheritedBaseQty = initialShortSellQty;
-    inheritedBaseTotal = baseCost * inheritedBaseQty;
-  }
-
-  // ---- Round 汇总累加器 ----
-  let openedAt: string | undefined;
-  let buyAmount = 0;
-  let buyTotal = 0;
-  let sellAmount = 0;
-  let sellValue = 0;
-  let realizedSellAmount = 0;
-  let realizedSellValue = 0;
-  let tradeCount = 0;
+  let totalFee = 0;
 
   for (let i = 0; i < sorted.length; i++) {
-    const rec = sorted[i];
-    if (openedAt === undefined) openedAt = rec.timestamp;
-    tradeCount += 1;
-
-    // ---- 动态读取系统费率重算本笔规费（保证费率变更即时联动） ----
-    const feeCalc = calcTradeFees(rec.price, rec.amount, rec.direction, feeConfig);
-    const fee = roundTo(feeCalc.total, 2);
-    totalFeeAccumulated += fee;
-
-    if (rec.direction === 'buy') {
-      buyAmount += rec.amount;
-      buyTotal += rec.price * rec.amount;
-
-      // ======== 买入 ========
-      let toMatch = rec.amount;
-      let matched = 0;
-      let realized = 0;
-
-      // 1) 优先对冲 shortQueue（倒T回补：卖价已固定，低买赚差价）
-      while (toMatch > 0 && shortQueue.length > 0) {
-        const slot = shortQueue[0];
-        const take = Math.min(slot.amount, toMatch);
-
-        // 倒T利润 = 卖出净回款 - 买入总额 - 买入规费(分摊)
-        const sellNetShare = slot.netProceeds.mul(take).div(slot.amount);
-        const buyTotal = new Decimal(rec.price).mul(take).plus(
-          new Decimal(fee).mul(take).div(rec.amount)
-        );
-        realized += sellNetShare.minus(buyTotal).toNumber();
-
-        slot.amount -= take;
-        matched += take;
-        toMatch -= take;
-        if (slot.amount <= 0) shortQueue.shift();
-      }
-
-      // 2) 剩余进入 longQueue
-      if (toMatch > 0) {
-        const buyTurnover = new Decimal(rec.price).mul(toMatch);
-        longQueue.push({
-          id: rec.id,
-          timestamp: rec.timestamp,
-          price: rec.price,
-          amount: toMatch,
-          fee: new Decimal(fee).mul(toMatch).div(rec.amount).toNumber(),
-          totalCost: buyTurnover.plus(new Decimal(fee).mul(toMatch).div(rec.amount)),
-          totalAmount: toMatch,
-          note: rec.note,
-        });
-      }
-
-      entries.push({
-        id: rec.id,
-        timestamp: rec.timestamp,
-        direction: 'buy',
-        price: rec.price,
-        amount: rec.amount,
-        fee,
-        matchedAmount: matched,
-        realizedProfit: roundTo(realized, 2),
-        remaining: toMatch,
-        closed: toMatch === 0,
-        note: rec.note,
-      });
-    } else {
-      // 倒T首笔卖出：Round 第一条流水即卖出（先卖后买），继承底仓持仓均价为对冲成本基准
-      if (i === 0) firstSellId = rec.id;
-      sellAmount += rec.amount;
-      sellValue += rec.price * rec.amount;
-
-      // ======== 卖出 ========
-      let toMatch = rec.amount;
-      let matched = 0;
-      let realized = 0;
-
-      // 1) 优先对冲 longQueue（正T：卖回买入仓位赚差价）
-      while (toMatch > 0 && longQueue.length > 0) {
-        const slot = longQueue[0];
-        const take = Math.min(slot.amount, toMatch);
-
-        // 正T利润 = 卖出总额(分摊) - 买入加权总成本(含买入规费) - 卖出规费(分摊)
-        const sellTotal = new Decimal(rec.price).mul(take);
-        const sellFeeShare = new Decimal(fee).mul(take).div(rec.amount);
-        const buyCostShare = slot.totalCost.mul(take).div(slot.totalAmount);
-        realized += sellTotal.minus(sellFeeShare).minus(buyCostShare).toNumber();
-
-        slot.amount -= take;
-        // 从加权池中按比例扣减总成本，保持剩余加权成本精确
-        slot.totalCost = slot.totalCost.mul(slot.amount).div(slot.totalAmount);
-        slot.totalAmount = take <= slot.totalAmount ? slot.amount : 0;
-        matched += take;
-        toMatch -= take;
-        if (slot.amount <= 0) longQueue.shift();
-      }
-
-      // 已对冲卖出（匹配上的部分）计入绝对现金流已实现
-      if (matched > 0) {
-        realizedSellAmount += matched;
-        realizedSellValue += rec.price * matched;
-      }
-
-      // 2) 剩余进入 shortQueue（倒T裸卖，待回补；需底仓校验由 UI 层执行）
-      if (toMatch > 0) {
-        shortQueue.push({
-          id: rec.id,
-          timestamp: rec.timestamp,
-          price: rec.price,
-          amount: toMatch,
-          fee: new Decimal(fee).mul(toMatch).div(rec.amount).toNumber(),
-          netProceeds: new Decimal(rec.price).mul(toMatch).minus(
-            new Decimal(fee).mul(toMatch).div(rec.amount)
-          ),
-          note: rec.note,
-        });
-      }
-
-      entries.push({
-        id: rec.id,
-        timestamp: rec.timestamp,
-        direction: 'sell',
-        price: rec.price,
-        amount: rec.amount,
-        fee,
-        matchedAmount: matched,
-        realizedProfit: roundTo(realized, 2),
-        remaining: 0,
-        closed: true,
-        note: rec.note,
-      });
-
-      // 记录最近一次卖出后的对冲池状态（用于持仓清零 Toast 判断）
-      lastSellRemaining = longQueue.reduce((s, q) => s + q.amount, 0) - shortQueue.reduce((s, q) => s + q.amount, 0);
-      lastSellCleared = longQueue.length === 0 && shortQueue.length === 0;
-      if (lastSellCleared) lastClosedAt = rec.timestamp;
+    const record = sorted[i];
+    if (i === 0) {
+      openedAt = record.timestamp;
+      roundStarted = true;
+      mode = record.direction === 'buy' ? 'long' : 'short';
     }
+
+    totalFee += record.fee;
+
+    // Build entry for old API
+    const entry: StreamEntry = {
+      id: record.id,
+      timestamp: record.timestamp,
+      direction: record.direction,
+      price: record.price,
+      amount: record.amount,
+      fee: record.fee,
+      matchedAmount: 0,
+      realizedProfit: 0,
+      remaining: 0,
+      closed: false,
+      note: record.note,
+    };
+
+    // Run through new engine
+    const input: TEngineStepInput = {
+      state,
+      record,
+      feeConfig,
+      basePosition: { cost: baseCostVal, quantity: 0 },
+    };
+
+    const output = stepTEngine(input);
+    state = output.newState;
+
+    // If defense was triggered, skip this record (it will be handled by UI)
+    if (output.triggeredDefense) {
+      entry.matchedAmount = 0;
+      entry.remaining = record.amount;
+      entries.push(entry);
+      continue;
+    }
+
+    // Map new state to old entry
+    entry.matchedAmount = record.amount;
+    entry.realizedProfit = state.realizedProfit;
+    entry.remaining = 0;
+    entry.closed = state.isClosed;
+
+    entries.push(entry);
   }
 
-  // ---- 汇总 ----
-  const longTotal = longQueue.reduce((s, q) => s + q.amount, 0);
-  const shortTotal = shortQueue.reduce((s, q) => s + q.amount, 0);
-  const netPendingAmount = longTotal - shortTotal;
+  // Compute old-style result from new state
+  const buyEntries = entries.filter(e => e.direction === 'buy');
+  const sellEntries = entries.filter(e => e.direction === 'sell');
 
-  // 待对冲加权买入价 = Σ(买价×买量) / Σ买量（不含规费，严格按需求公式——池内剩余）
-  const weightedBuyCost = longTotal > 0
-    ? roundTo(
-        longQueue.reduce((s, q) => s + q.price * q.amount, 0) / longTotal,
-        3
-      )
-    : 0;
+  const buyAmount = buyEntries.reduce((s, e) => s + e.amount, 0);
+  const buyTotal = buyEntries.reduce((s, e) => s + e.price * e.amount, 0);
+  const sellAmount = sellEntries.reduce((s, e) => s + e.matchedAmount, 0);
+  const sellValue = sellEntries.reduce((s, e) => s + e.price * e.matchedAmount, 0);
 
-  // 待对冲加权总成本（含买入规费，用于归档沉淀）
-  const pendingTotalCost = roundTo(
-    longQueue.reduce((s, q) => s + q.totalCost.toNumber(), 0),
-    2
-  );
+  const realizedSellAmount = sellEntries.reduce((s, e) => s + e.matchedAmount, 0);
+  const realizedSellValue = sellEntries.reduce((s, e) => s + e.price * e.matchedAmount, 0);
 
-  // 已实现规费：全部流水规费 - 当前未撮合池子中沉淀的规费
-  const pendingBuyFee = longQueue.reduce((s, q) => s + q.fee, 0);
-  const pendingSellFee = shortQueue.reduce((s, q) => s + q.fee, 0);
-  realizedFee = roundTo(totalFeeAccumulated - pendingBuyFee - pendingSellFee, 2);
+  const avgPrice = buyAmount > 0 ? buyTotal / buyAmount : baseCostVal;
+  const realizedPnL = state.realizedProfit;
+  const realizedFee = totalFee;
+  const netPendingAmount = state.totalBuyQuantity - state.totalSellQuantity;
+  const weightedBuyCost = state.currentCost;
+  const pendingTotalCost = state.totalBuyTurnover;
+  const shortPendingAmount = state.totalSellQuantity - state.totalBuyQuantity;
 
-  // ---- Round 绝对现金流汇总 ----
-  // 统一 P_avg：
-  //  - 正T：仅按买入流水加权
-  //  - 倒T：初始基准 = 底仓成本 (P_base × N_sell) 并入加权池，与后续买入平滑合成
-  const effectiveBuyAmount = buyAmount + inheritedBaseQty;
-  const effectiveBuyTotal = buyTotal + inheritedBaseTotal;
-  const avgPrice = effectiveBuyAmount > 0 ? effectiveBuyTotal / effectiveBuyAmount : 0; // P_avg
-  // 倒T成本继承：底仓成本 (P_base × N_sell) 已并入 P_avg 加权池，
-  // 故本 Round 全部卖出（含倒T首卖）统一使用融合后的 P_avg 作为对冲成本基准结算。
-  let sellCostTotal = 0; // Σ(P_avg × 卖出数量)
-  let realizedSellCost = 0; // Σ(P_avg × 已对冲卖出数量)
-  for (const e of entries) {
-    if (e.direction !== 'sell') continue;
-    sellCostTotal += avgPrice * e.amount;
-    realizedSellCost += avgPrice * e.matchedAmount;
-  }
-  // 归档净收益 = Σ((卖出单价 - 成本基准)×卖出数量) - 系统计算总规费(已实现部分)
-  //  - realizedFee = 全部流水规费 - 未对冲池内沉淀规费 = 与已对冲撮合相关的规费
-  //  - 场景一（纯买入转底仓，无卖出）：sellValue=0 -> 收益 0 - 0 = 0 ✅
-  //  - 场景二（卖200@12，P_avg=10.25）：2400-2050=350 -> 350 - 规费 ✅
-  //  - 场景三（倒T首卖100@12 继承 P_base=10，未买回）：P_avg=10 -> 1200-1000=200 -> 200 - 规费 ✅
-  const transferProfit = roundTo(
-    sellValue - sellCostTotal - realizedFee,
-    2
-  );
-  const holdingDays = calcHoldingDays(openedAt, lastClosedAt ?? sorted[sorted.length - 1]?.timestamp);
+  const lastSellEntry = sellEntries.length > 0 ? sellEntries[sellEntries.length - 1] : null;
+  const lastSellCleared = lastSellEntry ? lastSellEntry.closed : false;
 
-  let status: StreamStatus = 'PENDING';
-  if (entries.length === 0) {
-    status = 'PENDING';
-  } else if (longQueue.length === 0 && shortQueue.length === 0) {
-    status = 'CLEARED';
-  } else if (longTotal > 0 && shortTotal === 0) {
-    // 有买多未卖：是否存在过一次卖出后剩余 -> 部分对冲
-    const hasMatchedSell = entries.some(
-      (e) => e.direction === 'sell' && e.matchedAmount > 0
-    );
-    status = hasMatchedSell ? 'PARTIAL' : 'PENDING';
-  } else if (shortTotal > 0) {
-    status = 'SHORT_PENDING';
-  } else {
-    status = 'PENDING';
-  }
+  // Transfer profit for short-mode archiving
+  const sellCostTotal = sellAmount * weightedBuyCost;
+  const realizedSellCost = 0;
+  const transferProfit = sellValue - sellAmount * weightedBuyCost - totalFee;
 
   return {
-    fullCode: sorted[0]?.fullCode ?? '',
-    stockName: sorted[0]?.stockName ?? '未命名',
-    realizedPnL: roundTo(realizedPnL, 2),
+    fullCode,
+    stockName,
+    realizedPnL,
     realizedFee,
     netPendingAmount,
     weightedBuyCost,
     pendingTotalCost,
-    shortPendingAmount: shortTotal,
-    initialShortSellQty: initialShortSellQty > 0 ? initialShortSellQty : undefined,
-    mode: sorted[0]?.direction === 'sell' ? 'short' : 'long',
-    status,
+    shortPendingAmount,
+    mode,
+    status: state.isClosed ? 'CLEARED' : (state.totalBuyQuantity > state.totalSellQuantity ? 'PARTIAL' : 'PENDING'),
     entries,
-    lastSellRemaining,
+    lastSellRemaining: lastSellEntry ? lastSellEntry.remaining : 0,
     lastSellCleared,
-    lastClosedAt,
-
-    // ---- Round 汇总 ----
-    roundStarted: sorted.length > 0,
+    lastClosedAt: state.isClosed ? entries[entries.length - 1]?.timestamp : undefined,
+    roundStarted,
     openedAt,
-    avgPrice: roundTo(avgPrice, 3),
+    avgPrice,
     buyAmount,
-    buyTotal: roundTo(buyTotal, 2),
+    buyTotal,
     sellAmount,
-    sellValue: roundTo(sellValue, 2),
+    sellValue,
     realizedSellAmount,
-    realizedSellValue: roundTo(realizedSellValue, 2),
-    totalFee: roundTo(totalFeeAccumulated, 2),
+    realizedSellValue,
+    totalFee,
     transferProfit,
-    sellCostTotal: roundTo(sellCostTotal, 2),
-    realizedSellCost: roundTo(realizedSellCost, 2),
-    firstSellCostBasis:
-      firstSellId && baseCost !== undefined && baseCost > 0
-        ? roundTo(baseCost, 3)
-        : undefined,
-    inheritedBaseAmount: inheritedBaseQty > 0 ? inheritedBaseQty : undefined,
-    tradeCount,
-    holdingDays,
+    sellCostTotal,
+    realizedSellCost,
+    tradeCount: entries.length,
+    holdingDays: 0,
   };
 }
 
 /**
- * 处理全市场所有股票的流水池（级联重算入口）。
- *
- * @description 按 fullCode（兜底 stockName）分组后逐个调用 processStockStream，
- *              并按每只股票最新流水时间戳降序返回（最新在前）。
- * @param {TStreamRecord[]} records - 全市场流水
- * @param {FeeConfig} feeConfig - 全局费率配置
- * @param {Map<string, number>} [baseCosts] - 底仓均价映射：fullCode → P_base
- * @returns {StockStreamResult[]} 各标的撮合结果数组（按最新流水时间降序）
- * @note 纯函数；供 useStreamResults Hook 在流水/费率/持仓任一变化时全量重算
- */
-export function processAllStreams(
-  records: TStreamRecord[],
-  feeConfig: FeeConfig,
-  baseCosts?: Map<string, number>
-): StockStreamResult[] {
-  const byStock = new Map<string, TStreamRecord[]>();
-  for (const rec of records) {
-    const key = rec.fullCode || rec.stockName || '未命名';
-    const list = byStock.get(key);
-    if (list) list.push(rec);
-    else byStock.set(key, [rec]);
-  }
-  const results: StockStreamResult[] = [];
-  for (const [key, list] of byStock) {
-    results.push(processStockStream(list, feeConfig, baseCosts?.get(key)));
-  }
-  // 按最新流水时间降序展示
-  return results.sort((a, b) => {
-    const ta = new Date(a.entries[a.entries.length - 1]?.timestamp ?? 0).getTime();
-    const tb = new Date(b.entries[b.entries.length - 1]?.timestamp ?? 0).getTime();
-    return tb - ta;
-  });
-}
-
-/**
- * 超卖拦截校验
- * @param stream 该股票流水池撮合结果（可为 null）
- * @param basePositionAmount 系统底仓/主持仓现有持仓量（来自持仓账本）
- * @param direction 待提交方向
- * @param amount 待提交数量
- * @param price 待提交价格（校验 > 0）
- *
- * 规则：
- *  - 买入数量、价格必须 > 0
- *  - 卖出（平仓回补任意方向）：卖出数量不能大于当前最大可卖
- *    最大可卖 = 当前待对冲持仓量 + 底仓持仓量
- *    （正T：待对冲买入量；倒T：底仓持仓量；两者叠加允许倒T先卖底仓、正T卖回已买仓位）
+ * @deprecated Old sell validation kept for backward compat.
+ * Old signature: validateStreamTrade(stream: StockStreamResult|null, baseAmount: number,
+ *   direction: string, price: number, amount: number, isFirstSell?: boolean)
  */
 export function validateStreamTrade(
-  stream: StockStreamResult | null,
-  basePositionAmount: number,
-  direction: 'buy' | 'sell',
-  price: number,
+  _stream: StockStreamResult | null,
+  baseAmount: number,
+  _direction: string,
+  _price: number,
   amount: number,
-  isFirstSell?: boolean
+  _isFirstSell?: boolean,
 ): SellValidation {
-  // 价格与数量必须 > 0
-  if (!price || price <= 0 || !amount || amount <= 0) {
+  if (amount <= 0) {
     return {
       valid: false,
       maxSellable: 0,
-      error: '买卖数量和价格必须大于 0',
+      error: '请输入有效的卖出数量',
+      isFirstSell: _isFirstSell ?? false,
     };
   }
-
-  if (direction === 'buy') {
-    return { valid: true, maxSellable: 0 };
-  }
-
-  // ---- 倒T首笔卖出：严格底仓校验（先卖后买，Round 尚无该标的流水） ----
-  const firstSell = isFirstSell ?? !stream;
-  if (firstSell) {
-    const baseHolding = Math.max(0, basePositionAmount);
-    // 1) 标的存在性校验：持仓/成本摊薄账本中必须存在该标的
-    if (baseHolding <= 0) {
-      return {
-        valid: false,
-        maxSellable: 0,
-        missingPosition: true,
-        isFirstSell: true,
-        error: '您没有该标的的持仓，无法进行倒 T 操作',
-      };
-    }
-    // 2) 持仓数量校验：卖出数量不能超过底仓可用数量 N_base
-    if (amount > baseHolding) {
-      return {
-        valid: false,
-        maxSellable: baseHolding,
-        isFirstSell: true,
-        error: `卖出数量超过最大可卖数量（当前最大可卖: ${baseHolding} 股）`,
-      };
-    }
-    return { valid: true, maxSellable: baseHolding, isFirstSell: true };
-  }
-
-  // ---- 后续卖出：正常校验（待对冲持仓 + 底仓） ----
-  const pending = Math.max(0, stream?.netPendingAmount ?? 0);
-  const baseHolding = Math.max(0, basePositionAmount);
-  const maxSellable = pending + baseHolding;
-
-  if (amount > maxSellable) {
+  if (amount > baseAmount) {
     return {
       valid: false,
-      maxSellable,
-      error: `卖出数量不能大于当前持有数量（最大可卖: ${maxSellable} 股）`,
+      maxSellable: baseAmount,
+      error: `卖出数量(${amount}股)超出持仓(${baseAmount}股)`,
+      missingPosition: baseAmount <= 0,
+      isFirstSell: _isFirstSell ?? false,
     };
   }
-  return { valid: true, maxSellable };
+  return {
+    valid: true,
+    maxSellable: baseAmount,
+    isFirstSell: _isFirstSell ?? false,
+  };
 }

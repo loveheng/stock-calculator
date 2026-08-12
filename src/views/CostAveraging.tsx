@@ -578,7 +578,7 @@ function PositionLedger() {
                   const sortedBatches = [...pos.batches].sort(
                     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
                   );
-                  const isFirstBatch = (batchId: string) => sortedBatches.length > 1 && sortedBatches[0].id === batchId;
+                  const isFirstBatch = (batchId: string) => sortedBatches.length >= 1 && sortedBatches[0].id === batchId;
                   return sortedBatches.map((batch) => (
                     <div key={batch.id} className="flex items-center justify-between text-xs text-slate-400 py-1.5 border-b border-slate-800 last:border-0">
                       <div className="flex items-center gap-2">

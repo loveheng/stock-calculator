@@ -14,7 +14,9 @@ import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'l
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
 import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults } from '../store';
+import { recalculatePosition } from '../utils/calculator';
 import type { Position, PositionBatch } from '../store';
+import type { PositionBatchEntity } from '../db/schema';
 import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
@@ -186,6 +188,34 @@ function ClearPositionModal({
       </div>
     </div>
   );
+}
+
+/**
+ * 将 Store 层批次（PositionBatch，timestamp 为 ISO 字符串）转换为
+ * `recalculatePosition` 所需的实体批次（PositionBatchEntity，timestamp 为毫秒时间戳）。
+ *
+ * @description 仅做字段形状/单位对齐，不做任何计算口径转换；存量 `'close'` 类型
+ *              批次按建仓账本语义防御性归并为减仓（reduce），`fee` 缺省兜底为 0。
+ * @param batch Store 层批次履历
+ * @param positionId 所属持仓 id
+ * @returns 实体批次（recalculatePosition 只读取 type/price/amount/fee/timestamp）
+ */
+function toEntityBatch(batch: PositionBatch, positionId: string): PositionBatchEntity {
+  return {
+    id: batch.id,
+    positionId,
+    type: batch.type === 'close' ? 'reduce' : batch.type,
+    price: batch.price,
+    amount: batch.amount,
+    fee: batch.fee ?? 0,
+    costAfter: batch.costAfter,
+    amountAfter: batch.amountAfter,
+    timestamp: new Date(batch.timestamp).getTime(),
+    note: batch.note,
+    // recalculatePosition 不读取审计时间戳，此处仅作类型占位
+    createdAt: 0,
+    updatedAt: 0,
+  };
 }
 
 /**
@@ -489,15 +519,18 @@ function PositionLedger() {
       ) : null}
 
       {activePositions.map((pos) => {
-        const snap = recomputePositionSnapshot(pos.batches);
+        // 用 recalculatePosition 从批次履历重建权威快照：
+        // 动态保本价 / 做T落袋利润 / 实际净投入现金 / 初始建仓均价
+        const snap = recalculatePosition(pos.batches.map((b) => toEntityBatch(b, pos.id)));
 
         // 现价模拟
         const cpStr = currentPrices[pos.id] || '';
         const cp = Number(cpStr);
-        const hasPrice = cp > 0 && pos.currentAmount > 0;
-        const floatPnL = hasPrice ? (cp - pos.currentCost) * pos.currentAmount : 0;
-        const floatPnLPercent = hasPrice && pos.currentCost > 0 ? ((cp - pos.currentCost) / pos.currentCost) * 100 : 0;
-        const breakevenPercent = hasPrice && pos.currentCost > 0 ? ((pos.currentCost / cp - 1) * 100) : 0;
+        const hasPrice = cp > 0 && snap.currentAmount > 0;
+        const floatPnL = hasPrice ? (cp - snap.currentCost) * snap.currentAmount : 0;
+        const floatPnLPercent = hasPrice && snap.currentCost > 0 ? ((cp - snap.currentCost) / snap.currentCost) * 100 : 0;
+        // 回本所需涨幅 = (动态保本价 - 现价) / 现价 × 100%；现价高于保本价时为负（已回本）
+        const requiredRisePercent = hasPrice && snap.currentCost > 0 ? ((snap.currentCost - cp) / cp) * 100 : 0;
 
         return (
           <div key={pos.id} className="p-4 bg-slate-900 rounded-lg border border-slate-700">
@@ -539,8 +572,12 @@ function PositionLedger() {
                   <span className={floatPnLPercent >= 0 ? 'text-red-400' : 'text-green-400'}>
                     {floatPnLPercent >= 0 ? '+' : ''}{floatPnLPercent.toFixed(2)}%
                   </span>
-                  <span className="text-slate-500">
-                    解套需涨 {breakevenPercent >= 0 ? '+' : ''}{breakevenPercent.toFixed(2)}%
+                  {/* 回本所需涨幅：相对动态保本价的缺口，做T/加仓后会实时更新 */}
+                  <span className="flex items-center gap-1">
+                    <span className="text-slate-500">回本所需涨幅</span>
+                    <span className={`font-medium ${requiredRisePercent > 0 ? 'text-amber-300' : 'text-green-400'}`}>
+                      {requiredRisePercent > 0 ? `+${requiredRisePercent.toFixed(2)}%` : '已回本'}
+                    </span>
                   </span>
                 </div>
               )}
@@ -548,21 +585,23 @@ function PositionLedger() {
 
             <div className="grid grid-cols-2 gap-3 text-sm mb-3">
               <div>
-                <span className="text-slate-500">成本价（含规费）</span>
-                <p className="text-slate-200 font-medium">¥{pos.currentCost.toFixed(3)}</p>
+                <span className="text-slate-500">保本单价（动态成本）</span>
+                <p className="text-slate-200 font-medium">¥{snap.currentCost.toFixed(3)}</p>
+                <p className="text-[10px] text-slate-600 leading-tight mt-0.5">初始均价：¥{snap.initialCost.toFixed(3)}</p>
               </div>
               <div>
                 <span className="text-slate-500">持仓数量</span>
-                <p className="text-slate-200 font-medium">{pos.currentAmount.toLocaleString()}股</p>
+                <p className="text-slate-200 font-medium">{snap.currentAmount.toLocaleString()}股</p>
               </div>
               <div>
-                <span className="text-slate-500">已实现盈亏</span>
-                <p className={`font-medium ${snap.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {snap.realizedPnL >= 0 ? '+' : ''}¥{snap.realizedPnL.toFixed(2)}
+                <span className="text-slate-500">做T / 调仓落袋利润 🔥</span>
+                <p className={`font-medium ${snap.accumulatedTPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {snap.accumulatedTPnL >= 0 ? '+' : ''}¥{snap.accumulatedTPnL.toFixed(2)}
                 </p>
+                <p className="text-[10px] text-slate-600 leading-tight mt-0.5">已折抵本金</p>
               </div>
               <div>
-                <span className="text-slate-500">累计投入</span>
+                <span className="text-slate-500">实际净投入现金</span>
                 <p className="text-slate-200 font-medium">¥{snap.totalInvested.toFixed(2)}</p>
               </div>
             </div>

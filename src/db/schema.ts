@@ -69,6 +69,10 @@ export interface PositionEntity extends BaseEntity {
   totalInvested: number;
   /** 已实现盈亏（元） */
   realizedPnL: number;
+  /** 累计做 T 落袋净利润（元）。每次减仓净拿回现金减去对应股数初始建仓成本后的差额累计；存量数据可能缺省 */
+  accumulatedTPnL?: number;
+  /** 初始建仓均价（元）：所有纯买入动作（open/add）按数量加权的含规费均价，未折算做T收益；存量数据可能缺省 */
+  initialCost?: number;
 }
 
 /** 持仓批次实体（positionBatches 表）。记录每次开仓/加仓/减仓操作对成本与数量的影响。 */

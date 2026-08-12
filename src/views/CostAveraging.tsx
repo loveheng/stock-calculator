@@ -3,6 +3,7 @@
  * @description 成本分摊与持仓管理：Tab1 多批次建仓实盘账本 —— 建仓/加仓/减仓/结仓
  *              全生命周期、批次成本计算（含规费）、重复建仓拦截、清仓自动结仓归档；
  *              Tab2 目标成本推算 —— 输入现持仓成本/数量与目标均价，反推需补仓的数量与金额。
+ *              现价展示接入腾讯实时行情：交易时段每 5 秒刷新，非交易时段打开时刷新一次。
  * @layer UI
  * @storage_impact 读写 positions、batches 表（addPosition/addBatch/closePosition/
  *                 updatePosition/deletePositionBatch/removePosition）；读取 settings 费率。
@@ -20,6 +21,7 @@ import type { PositionBatchEntity } from '../db/schema';
 import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
+import { useLiveQuotes } from '../hooks/useLiveQuotes';
 
 /**
  * 加/减仓表单弹窗组件。
@@ -219,6 +221,18 @@ function toEntityBatch(batch: PositionBatch, positionId: string): PositionBatchE
 }
 
 /**
+ * 格式化腾讯行情接口的更新时间（yyyyMMddHHmmss → MM-DD HH:mm:ss）。
+ *
+ * @param {string} updateTime - 行情接口返回的更新时间，如 20260812161440
+ * @returns {string} 格式化后的时间文本；格式不符时原样返回
+ */
+function formatQuoteTime(updateTime: string): string {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(updateTime);
+  if (!m) return updateTime;
+  return `${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}`;
+}
+
+/**
  * Tab1 多批次建仓实盘账本组件。
  *
  * @description 管理持仓全生命周期：
@@ -258,9 +272,6 @@ function PositionLedger() {
 
   // 清仓自动结仓弹窗
   const [clearPosition, setClearPosition] = useState<{ positionId: string; realizedPnL: number; totalInvested: number } | null>(null);
-
-  // 现价模拟（每个持仓ID -> 当前输入现价）
-  const [currentPrices, setCurrentPrices] = useState<Record<string, string>>({});
 
   // 新建建仓
   const handleOpenPosition = () => {
@@ -451,8 +462,23 @@ function PositionLedger() {
   const activePositions = positions.filter((p) => !p.isClosed);
   const closedPositions = positions.filter((p) => p.isClosed);
 
+  // 实时行情：交易时段每 5 秒刷新、非交易时段打开时刷新一次、跨时段切换自动切换策略
+  const { quotes, isTrading, lastUpdated } = useLiveQuotes(activePositions.map((p) => p.fullCode).filter(Boolean));
+
   return (
     <div className="space-y-4">
+      {/* 实时行情状态 */}
+      <div className="flex items-center justify-between px-1 text-xs">
+        <span className={isTrading ? 'text-blue-400 font-medium' : 'text-slate-500'}>
+          {isTrading ? '● 交易时段 · 行情每 5 秒自动刷新' : '○ 非交易时段 · 打开时刷新一次'}
+        </span>
+        {lastUpdated !== null && (
+          <span className="text-slate-600">
+            行情更新于 {new Date(lastUpdated).toLocaleTimeString('zh-CN', { hour12: false })}
+          </span>
+        )}
+      </div>
+
       {/* 新建建仓 */}
       <div className="p-4 bg-slate-900 rounded-lg">
         <h4 className="text-xs font-medium text-slate-400 mb-3">新建建仓</h4>
@@ -523,9 +549,9 @@ function PositionLedger() {
         // 动态保本价 / 做T落袋利润 / 实际净投入现金 / 初始建仓均价
         const snap = recalculatePosition(pos.batches.map((b) => toEntityBatch(b, pos.id)));
 
-        // 现价模拟
-        const cpStr = currentPrices[pos.id] || '';
-        const cp = Number(cpStr);
+        // 实时现价（来自腾讯行情接口，交易时段每 5 秒刷新）
+        const live = quotes[pos.fullCode] ?? null;
+        const cp = live?.currentPrice ?? 0;
         const hasPrice = cp > 0 && snap.currentAmount > 0;
         const floatPnL = hasPrice ? (cp - snap.currentCost) * snap.currentAmount : 0;
         const floatPnLPercent = hasPrice && snap.currentCost > 0 ? ((cp - snap.currentCost) / snap.currentCost) * 100 : 0;
@@ -553,17 +579,24 @@ function PositionLedger() {
               </div>
             </div>
 
-            {/* 现价模拟输入 */}
-            <div className="mb-3 flex items-center gap-2">
+            {/* 实时行情（腾讯 qt.gtimg.cn，交易时段每 5 秒刷新） */}
+            <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
               <span className="text-xs text-slate-500">当前现价</span>
-              <input
-                type="number"
-                step="0.001"
-                placeholder="输入模拟现价..."
-                value={currentPrices[pos.id] || ''}
-                onChange={(e) => setCurrentPrices({ ...currentPrices, [pos.id]: e.target.value })}
-                className="w-28 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500"
-              />
+              {live ? (
+                <>
+                  <span className={`text-sm font-bold ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    ¥{live.currentPrice.toFixed(3)}
+                  </span>
+                  <span className={`text-xs ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    {live.changePercent >= 0 ? '+' : ''}{live.changePercent.toFixed(2)}%
+                  </span>
+                  <span className="text-[10px] text-slate-600">
+                    行情 {formatQuoteTime(live.updateTime)}
+                  </span>
+                </>
+              ) : (
+                <span className="text-sm text-slate-600">— 暂无行情数据</span>
+              )}
               {hasPrice && (
                 <div className="flex items-center gap-3 text-xs">
                   <span className={floatPnL >= 0 ? 'text-red-400' : 'text-green-400'}>

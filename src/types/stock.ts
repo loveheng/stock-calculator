@@ -1,7 +1,8 @@
 /**
  * @file stock.ts
  * @description 股票基础类型定义：行情服务搜索返回的标的条目（StockSearchItem）、
- *              应用内规范化元数据（StockMeta）与搜索接口响应结构（StockSearchResponse）。
+ *              应用内规范化元数据（StockMeta）、腾讯实时行情摘要（StockQuoteSummary）
+ *              与搜索接口响应结构（StockSearchResponse）。
  * @layer DAO（类型层）
  * @storage_impact 纯类型定义，无运行时代码，不读写任何存储。
  * @author 开发团队
@@ -73,6 +74,51 @@ export interface StockMeta {
   shortName?: string;
   /** 统一编码（可选） */
   unifiedCode?: string;
+}
+
+/**
+ * 腾讯实时行情接口（qt.gtimg.cn）返回的核心行情摘要。
+ *
+ * @description 由原始 ~ 分隔载荷裁剪而来：已剔除内外盘（索引 7、8）与
+ *              买一~卖五五档挂单（索引 9~28），仅保留核心行情字段；
+ *              数值字段由字符串统一转为 number。字段命名遵循行情接口
+ *              约定，其中 fullCode 为 6 位数字证券代码（不含市场前缀）。
+ */
+export interface StockQuoteSummary {
+  /** 股票名称 */
+  stockName: string;
+  /** 股票代码（6 位数字证券代码，不含市场前缀） */
+  fullCode: string;
+  /** 最新现价 */
+  currentPrice: number;
+  /** 昨收价 */
+  lastClose: number;
+  /** 今开价 */
+  openPrice: number;
+  /** 成交量（手） */
+  volume: number;
+  /** 数据更新时间（yyyyMMddHHmmss） */
+  updateTime: string;
+  /** 涨跌额 */
+  changeAmount: number;
+  /** 涨跌幅（%） */
+  changePercent: number;
+  /** 最高价 */
+  highPrice: number;
+  /** 最低价 */
+  lowPrice: number;
+  /** 成交额（万元） */
+  turnoverAmount: number;
+  /** 换手率（%） */
+  turnoverRatio: number;
+  /** 动态市盈率 */
+  peRatio: number;
+  /** 总市值（亿元） */
+  marketCap: number;
+  /** 流通市值（亿元） */
+  circulatingCap: number;
+  /** 市净率 */
+  pbRatio: number;
 }
 
 /**

@@ -1,13 +1,38 @@
+/**
+ * @file CostAveraging.tsx
+ * @description 成本分摊与持仓管理：Tab1 多批次建仓实盘账本 —— 建仓/加仓/减仓/结仓
+ *              全生命周期、批次成本计算（含规费）、重复建仓拦截、清仓自动结仓归档；
+ *              Tab2 目标成本推算 —— 输入现持仓成本/数量与目标均价，反推需补仓的数量与金额。
+ * @layer UI
+ * @storage_impact 读写 positions、batches 表（addPosition/addBatch/closePosition/
+ *                 updatePosition/deletePositionBatch/removePosition）；读取 settings 费率。
+ * @author 开发团队
+ */
+
 import React, { useState } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
-import { calcTargetCostAveraging, isValidLotSize, calcTradeFees } from '../utils/mathUtils';
+import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
+import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults } from '../store';
 import type { Position, PositionBatch } from '../store';
 import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 
-// ---- 加/减仓表单弹窗 ----
+/**
+ * 加/减仓表单弹窗组件。
+ *
+ * @description 弹出式表单：输入单价/数量/备注，内置校验
+ *              （加仓需 100 整数倍；减仓不可超过当前持仓且需 100 整数倍），
+ *              校验通过后回调 onConfirm(price, amount, note)。
+ * @param {{ open: boolean; title: string; position: Position; onConfirm: (price, amount, note) => void; onCancel: () => void }} props
+ *  - open: 是否显示弹窗
+ *  - title: 弹窗标题（含「减仓」字样时启用减仓校验与文案）
+ *  - position: 目标持仓（用于减仓上限校验）
+ *  - onConfirm: 确认回调（参数为价格/数量/备注）
+ *  - onCancel: 取消回调
+ * @returns {JSX.Element | null} 弹窗视图；open=false 时返回 null
+ */
 function BatchFormModal({
   open,
   title,
@@ -101,7 +126,20 @@ function BatchFormModal({
   );
 }
 
-// ---- 清仓自动结案弹窗 ----
+/**
+ * 清仓自动结仓确认弹窗组件。
+ *
+ * @description 当建仓批次全部卖出（持股归零）时弹出，展示本次建仓周期最终
+ *              已实现净盈亏与收益率，询问是否将该持仓标记为「已结仓」归档。
+ * @param {{ open: boolean; stockName: string; realizedPnL: number; totalInvested: number; onConfirm: () => void; onCancel: () => void }} props
+ *  - open: 是否显示弹窗
+ *  - stockName: 标的名称（展示用）
+ *  - realizedPnL: 已实现净盈亏
+ *  - totalInvested: 原始投入总额（用于计算收益率）
+ *  - onConfirm: 确认结仓回调
+ *  - onCancel: 暂不归档回调
+ * @returns {JSX.Element | null} 弹窗视图；open=false 时返回 null
+ */
 function ClearPositionModal({
   open,
   stockName,
@@ -135,14 +173,14 @@ function ClearPositionModal({
           {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%
         </p>
         <p className="text-xs text-slate-500 mb-4">
-          是否将其标记为【已结案】归档？
+          是否将其标记为【已结仓】归档？
         </p>
         <div className="flex gap-2">
           <button onClick={onCancel} className="btn btn-outline btn-block text-sm">
             暂不归档
           </button>
           <button onClick={onConfirm} className="btn btn-primary btn-block text-sm">
-            确认结案
+            确认结仓
           </button>
         </div>
       </div>
@@ -150,9 +188,26 @@ function ClearPositionModal({
   );
 }
 
-// ---- Tab 1: 多批次建仓实盘账本 ----
+/**
+ * Tab1 多批次建仓实盘账本组件。
+ *
+ * @description 管理持仓全生命周期：
+ *  - 新建建仓（股票搜索/手工输入，含规费计入成本、重复建仓拦截）
+ *  - 加仓/减仓（批次成本实时重算，减仓按先进先出销减）
+ *  - 清仓自动结仓弹窗、手动结仓、删除批次/删除标的
+ *  - 展开卡片查看批次履历与目标成本达成的补仓提示
+ * @returns {JSX.Element} 建仓账本视图
+ * @note 所有写操作委托 useAppStore（addPosition/addBatch/closePosition/
+ *       updatePosition/deletePositionBatch/removePosition）落库 IndexedDB；
+ *       数据源从 Store 读取（由 useLoadCoreData 按需加载）。
+ */
 function PositionLedger() {
-  const { positions, addPosition, addBatch, closePosition, updatePosition, deletePositionBatch, removePosition, feeConfig } = useAppStore();
+  const { addPosition, addBatch, closePosition, deletePositionBatch, removePosition } = useAppStore();
+  const positions = useAppStore((s) => s.positions);
+  const feeConfig = useAppStore((s) => s.feeConfig);
+  // 结仓资格校验所需：做T战报 + 全市场撮合结果（进行中 Round 检测）
+  const tRounds = useAppStore((s) => s.tRounds);
+  const streamResults = useStreamResults();
 
   const [selectedStock, setSelectedStock] = useState<StockSearchItem | null>(null);
   const [stockName, setStockName] = useState('');
@@ -163,13 +218,15 @@ function PositionLedger() {
   const [dupAlert, setDupAlert] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null);
+  // 结仓被阻止提示（仍有未卖出持仓 或 该标的存在进行中的做T轮次）
+  const [closeBlockAlert, setCloseBlockAlert] = useState<string | null>(null);
   const [deleteBatchConfirm, setDeleteBatchConfirm] = useState<{ positionId: string; batchId: string } | null>(null);
   const [deleteTickerConfirm, setDeleteTickerConfirm] = useState<string | null>(null);
 
   // 加/减仓弹窗
   const [batchForm, setBatchForm] = useState<{ positionId: string; type: 'add' | 'reduce' } | null>(null);
 
-  // 清仓自动结案弹窗
+  // 清仓自动结仓弹窗
   const [clearPosition, setClearPosition] = useState<{ positionId: string; realizedPnL: number; totalInvested: number } | null>(null);
 
   // 现价模拟（每个持仓ID -> 当前输入现价）
@@ -192,7 +249,7 @@ function PositionLedger() {
     }
 
     // 计算买入规费
-    const buyFee = calcTradeFees(price, amount, 'buy', feeConfig);
+    const buyFee = calcTradeFees(price, amount, 'buy', feeConfig, matchSecurityKind(selectedStock?.SecurityType ?? '', selectedStock?.Code ?? ''));
     const totalFee = buyFee.total;
     const totalInvested = price * amount + totalFee;
 
@@ -230,97 +287,6 @@ function PositionLedger() {
     setOpenNote('');
   };
 
-  // 计算真实成本（含规费）
-  const calcRealCost = (pos: Position): number => {
-    let totalInvested = 0;
-    let totalAmount = 0;
-    const sorted = [...pos.batches].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    for (const batch of sorted) {
-      const qty = Math.abs(batch.amount);
-      const batchFee = batch.fee || 0;
-      if (batch.amount > 0) {
-        const cost = batch.price * qty + batchFee;
-        totalInvested += cost;
-        totalAmount += qty;
-      } else {
-        if (totalAmount > 0) {
-          const costBasisPerShare = totalInvested / totalAmount;
-          totalInvested -= costBasisPerShare * qty;
-        }
-        totalAmount -= qty;
-        if (totalAmount <= 0) {
-          totalInvested = 0;
-          totalAmount = 0;
-        }
-      }
-    }
-    return totalAmount > 0 ? totalInvested / totalAmount : 0;
-  };
-
-  // 计算累计已实现盈亏
-  const calcRealizedPnL = (pos: Position): number => {
-    let totalInvested = 0;
-    let totalAmount = 0;
-    let realizedPnL = 0;
-    const sorted = [...pos.batches].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    for (const batch of sorted) {
-      const qty = Math.abs(batch.amount);
-      const batchFee = batch.fee || 0;
-      if (batch.amount > 0) {
-        const cost = batch.price * qty + batchFee;
-        totalInvested += cost;
-        totalAmount += qty;
-      } else {
-        if (totalAmount > 0) {
-          const costBasisPerShare = totalInvested / totalAmount;
-          const costBasisOfSold = costBasisPerShare * qty;
-          const netProceeds = batch.price * qty - batchFee;
-          realizedPnL += netProceeds - costBasisOfSold;
-          totalInvested -= costBasisOfSold;
-        }
-        totalAmount -= qty;
-        if (totalAmount <= 0) {
-          totalInvested = 0;
-          totalAmount = 0;
-        }
-      }
-    }
-    return realizedPnL;
-  };
-
-  // 计算累计投入总资金（含规费）
-  const calcTotalInvested = (pos: Position): number => {
-    let totalInvested = 0;
-    let totalAmount = 0;
-    const sorted = [...pos.batches].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    for (const batch of sorted) {
-      const qty = Math.abs(batch.amount);
-      const batchFee = batch.fee || 0;
-      if (batch.amount > 0) {
-        const cost = batch.price * qty + batchFee;
-        totalInvested += cost;
-        totalAmount += qty;
-      } else {
-        if (totalAmount > 0) {
-          const costBasisPerShare = totalInvested / totalAmount;
-          totalInvested -= costBasisPerShare * qty;
-        }
-        totalAmount -= qty;
-        if (totalAmount <= 0) {
-          totalInvested = 0;
-          totalAmount = 0;
-        }
-      }
-    }
-    return totalInvested;
-  };
-
   // 加仓/减仓（通过弹窗）
   const handleBatch = (positionId: string, type: 'add' | 'reduce') => {
     const pos = positions.find((p) => p.id === positionId);
@@ -334,39 +300,14 @@ function PositionLedger() {
 
     // 计算规费
     const direction = type === 'add' ? 'buy' : 'sell';
-    const tradeFee = calcTradeFees(price, amount, direction, feeConfig);
+    const tradeFee = calcTradeFees(price, amount, direction, feeConfig, matchSecurityKind('', pos.fullCode.replace(/^sh|sz|bj/, '')));
     const totalFee = tradeFee.total;
 
-    // 用总资金抽回法重新计算
-    const sorted = [...pos.batches].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    let totalInvested = 0;
-    let totalAmount = 0;
-    let realizedPnL = 0;
-
-    for (const batch of sorted) {
-      const qty = Math.abs(batch.amount);
-      const batchFee = batch.fee || 0;
-      if (batch.amount > 0) {
-        const cost = batch.price * qty + batchFee;
-        totalInvested += cost;
-        totalAmount += qty;
-      } else {
-        if (totalAmount > 0) {
-          const costBasisPerShare = totalInvested / totalAmount;
-          const costBasisOfSold = costBasisPerShare * qty;
-          const netProceeds = batch.price * qty - batchFee;
-          realizedPnL += netProceeds - costBasisOfSold;
-          totalInvested -= costBasisOfSold;
-        }
-        totalAmount -= qty;
-        if (totalAmount <= 0) {
-          totalInvested = 0;
-          totalAmount = 0;
-        }
-      }
-    }
+    // 用总资金抽回法重新计算（与 recomputePositionSnapshot 同口径）
+    const snap = recomputePositionSnapshot(pos.batches);
+    let totalInvested = snap.totalInvested;
+    let totalAmount = snap.currentAmount;
+    let realizedPnL = snap.realizedPnL;
 
     // 应用新操作
     let newCost: number;
@@ -408,8 +349,10 @@ function PositionLedger() {
       fee: totalFee,
     };
 
-    addBatch(positionId, batch);
-    updatePosition(positionId, {
+    // 批次与快照更新在同一 action 内原子合并、单次落库。
+    // 旧写法（addBatch 先写旧快照 + updatePosition 再写新快照）会产生两次异步写，
+    // Dexie 同 tick 内先执行隐式 put、后执行显式 db.transaction，旧快照必然最后覆盖新值 → 总是旧值。
+    addBatch(positionId, batch, {
       currentCost: newCost,
       currentAmount: newAmount,
       realizedPnL: newRealizedPnL,
@@ -422,23 +365,39 @@ function PositionLedger() {
     if (type === 'reduce' && newAmount <= 0) {
       const finalPnL = newRealizedPnL;
       const finalInvested = totalInvested; // 减仓前的总投入
-      setClearPosition({
-        positionId,
-        realizedPnL: finalPnL,
-        totalInvested: finalInvested,
-      });
+      // 清仓到 0 同样执行结仓资格校验：无未卖出持仓 且 该标的无进行中的做T轮次
+      // → 自动完结归档；否则保留清仓弹窗，由用户自行决定是否手动结仓。
+      if (!getCloseBlockReason(pos, streamResults, tRounds, newAmount)) {
+        closePosition(positionId);
+      } else {
+        setClearPosition({
+          positionId,
+          realizedPnL: finalPnL,
+          totalInvested: finalInvested,
+        });
+      }
     }
   };
 
-  // 确认清仓结案
+  // 确认清仓结仓
   const handleClearConfirm = () => {
     if (!clearPosition) return;
     closePosition(clearPosition.positionId);
     setClearPosition(null);
   };
 
-  // 完结建仓
+  // 完结建仓（确认弹窗回调）
   const handleClose = (id: string) => {
+    const pos = positions.find((p) => p.id === id);
+    if (!pos) return;
+    // 结仓资格校验：仍有未卖出的持有数量 或 该标的存在进行中的做T轮次 → 弹框阻止结仓。
+    // 按钮点击时已预检，此处兜底防止确认弹窗打开期间数据（如新增做T流水）发生变化。
+    const blockReason = getCloseBlockReason(pos, streamResults, tRounds);
+    if (blockReason) {
+      setCloseBlockAlert(blockReason);
+      setCloseConfirmId(null);
+      return;
+    }
     closePosition(id);
     setCloseConfirmId(null);
   };
@@ -446,6 +405,8 @@ function PositionLedger() {
   // 删除单笔批次
   const handleDeleteBatch = () => {
     if (!deleteBatchConfirm) return;
+    // 批次删除与快照重算由 Store 的 deletePositionBatch 原子完成：
+    // 按剩余批次履历重新计算 currentCost/currentAmount/realizedPnL/totalInvested 并单次落库。
     deletePositionBatch(deleteBatchConfirm.positionId, deleteBatchConfirm.batchId);
     setDeleteBatchConfirm(null);
   };
@@ -523,19 +484,12 @@ function PositionLedger() {
       {activePositions.length === 0 ? (
         <div className="text-center py-8">
           <p className="text-slate-500 text-sm mb-3">当前无进行中持仓</p>
-          <button onClick={() => {
-            document.getElementById('new-position-input')?.focus();
-          }} className="btn btn-primary btn-sm">
-            <Plus className="w-4 h-4" />
-            新建建仓
-          </button>
+          
         </div>
       ) : null}
 
       {activePositions.map((pos) => {
-        const realCost = calcRealCost(pos);
-        const realPnL = calcRealizedPnL(pos);
-        const totalInv = calcTotalInvested(pos);
+        const snap = recomputePositionSnapshot(pos.batches);
 
         // 现价模拟
         const cpStr = currentPrices[pos.id] || '';
@@ -603,13 +557,13 @@ function PositionLedger() {
               </div>
               <div>
                 <span className="text-slate-500">已实现盈亏</span>
-                <p className={`font-medium ${realPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {realPnL >= 0 ? '+' : ''}¥{realPnL.toFixed(2)}
+                <p className={`font-medium ${snap.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {snap.realizedPnL >= 0 ? '+' : ''}¥{snap.realizedPnL.toFixed(2)}
                 </p>
               </div>
               <div>
                 <span className="text-slate-500">累计投入</span>
-                <p className="text-slate-200 font-medium">¥{totalInv.toFixed(2)}</p>
+                <p className="text-slate-200 font-medium">¥{snap.totalInvested.toFixed(2)}</p>
               </div>
             </div>
 
@@ -620,8 +574,19 @@ function PositionLedger() {
               <button onClick={() => handleBatch(pos.id, 'reduce')} className="btn btn-outline btn-sm flex-1">
                 <X className="w-3 h-3" />减仓
               </button>
-              <button onClick={() => setCloseConfirmId(pos.id)} className="btn btn-outline btn-sm flex-1">
-                <Archive className="w-3 h-3" />结案
+              <button
+                onClick={() => {
+                  // 点击结仓先做资格校验：有未卖出持仓或进行中的做T轮次 → 弹框阻止，不进入确认弹窗
+                  const blockReason = getCloseBlockReason(pos, streamResults, tRounds);
+                  if (blockReason) {
+                    setCloseBlockAlert(blockReason);
+                    return;
+                  }
+                  setCloseConfirmId(pos.id);
+                }}
+                className="btn btn-outline btn-sm flex-1"
+              >
+                <Archive className="w-3 h-3" />结仓
               </button>
             </div>
 
@@ -640,7 +605,7 @@ function PositionLedger() {
                   const sortedBatches = [...pos.batches].sort(
                     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
                   );
-                  const isFirstBatch = (batchId: string) => sortedBatches.length > 1 && sortedBatches[0].id === batchId;
+                  const isFirstBatch = (batchId: string) => sortedBatches.length >= 1 && sortedBatches[0].id === batchId;
                   return sortedBatches.map((batch) => (
                     <div key={batch.id} className="flex items-center justify-between text-xs text-slate-400 py-1.5 border-b border-slate-800 last:border-0">
                       <div className="flex items-center gap-2">
@@ -650,7 +615,7 @@ function PositionLedger() {
                           batch.type === 'reduce' ? 'bg-red-500/20 text-red-400' :
                           'bg-slate-500/20 text-slate-400'
                         }`}>
-                          {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结案'}
+                          {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结仓'}
                         </span>
                         <span>¥{batch.price.toFixed(3)}</span>
                         <span>× {Math.abs(batch.amount)}股</span>
@@ -719,7 +684,7 @@ function PositionLedger() {
         />
       )}
 
-      {/* 清仓自动结案弹窗 */}
+      {/* 清仓自动结仓弹窗 */}
       {clearPosition && (
         <ClearPositionModal
           open={true}
@@ -731,12 +696,22 @@ function PositionLedger() {
         />
       )}
 
-      {/* 结案确认 */}
+      {/* 结仓被阻止提示 */}
+      <ConfirmModal
+        open={closeBlockAlert !== null}
+        title="无法完结持仓"
+        message={closeBlockAlert ?? ''}
+        confirmText="知道了"
+        onConfirm={() => setCloseBlockAlert(null)}
+        onCancel={() => setCloseBlockAlert(null)}
+      />
+
+      {/* 结仓确认 */}
       <ConfirmModal
         open={closeConfirmId !== null}
         title="完结建仓"
-        message="确认完结该持仓？结案后该持仓将归档到已结案列表。"
-        confirmText="确认结案"
+        message="确认完结该持仓？结仓后该持仓将归档到已结仓列表。"
+        confirmText="确认结仓"
         onConfirm={() => closeConfirmId && handleClose(closeConfirmId)}
         onCancel={() => setCloseConfirmId(null)}
       />
@@ -766,7 +741,14 @@ function PositionLedger() {
   );
 }
 
-// ---- Tab 2: 目标成本推算 ----
+/**
+ * Tab2 目标成本推算组件。
+ *
+ * @description 输入当前持仓成本/数量与目标均价，结合费率模板，
+ *              反推需补仓的数量与金额，并同步测算补仓后的总成本与规费明细。
+ * @returns {JSX.Element} 目标成本推算视图
+ * @note 纯计算展示，不产生任何 IndexedDB 写入
+ */
 function TargetCostCalculator() {
   const [currentCost, setCurrentCost] = useState('');
   const [currentAmount, setCurrentAmount] = useState('');
@@ -929,21 +911,27 @@ function TargetCostCalculator() {
   );
 }
 
-// ---- 主组件 ----
+/**
+ * 成本分摊与持仓管理主页面组件。
+ *
+ * @description 提供「多批次建仓实盘账本」与「目标成本推算」双 Tab 切换容器。
+ * @returns {JSX.Element} 成本分摊页面视图
+ * @note 页面挂载即通过 Store 读取 positions/batches（由 useLoadCoreData 按需加载）
+ */
 export default function CostAveraging() {
   const [tab, setTab] = useState<'ledger' | 'target'>('ledger');
 
   return (
     <div className="page-container">
       <div className="card">
-        <h3>成本摊薄计算器</h3>
+        <h3>仓位管理</h3>
 
         <div className="tab-bar">
           <button
             className={`tab-btn ${tab === 'ledger' ? 'active' : ''}`}
             onClick={() => setTab('ledger')}
           >
-            多批次建仓账本
+            建仓
           </button>
           <button
             className={`tab-btn ${tab === 'target' ? 'active' : ''}`}
@@ -956,6 +944,7 @@ export default function CostAveraging() {
         <div className="tab-content">
           {tab === 'ledger' ? <PositionLedger /> : <TargetCostCalculator />}
         </div>
+
       </div>
     </div>
   );

@@ -1,3 +1,12 @@
+/**
+ * @file ChangeRate.tsx
+ * @description 涨跌幅计算器：支持「涨跌幅 → 目标价」（模式A）与「目标价 → 涨跌幅」（模式B）
+ *              两种换算，并内置主板 ±10% / 科创创业 ±20% 涨跌停阶梯推算（连续 N 日）。
+ * @layer UI
+ * @storage_impact 纯计算页面，不读写 IndexedDB；仅调用 mathUtils 纯函数。
+ * @author 开发团队
+ */
+
 import React, { useMemo, useState } from 'react';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 import { calcChangeRate, calcTargetPrice, calcLadder } from '../utils/mathUtils';
@@ -20,22 +29,50 @@ const BOARD_OPTIONS: BoardOption[] = [
   { key: 'custom', label: '自定义', rate: null },
 ];
 
-/** 过滤非数字字符（允许小数点，仅允许首个负号，用于涨跌幅输入） */
+/**
+ * 过滤非数字字符，用于涨跌幅输入。
+ *
+ * @description 允许数字、小数点与首个负号；过滤其余字符并保证仅保留一个小数点。
+ * @param {string} value - 用户原始输入字符串
+ * @returns {string} 清洗后的合法涨跌幅字符串（如 "-12.5"）
+ */
 const sanitizeSignedDecimal = (value: string): string =>
   value
     .replace(/[^\d.\-]/g, '')
     .replace(/(?!^)-/g, '')
     .replace(/(\..*)\./g, '$1');
 
-/** 过滤非数字字符（仅数字与小数点，用于价格/数值输入） */
+/**
+ * 过滤非数字字符，用于价格/数值输入。
+ *
+ * @description 仅保留数字与小数点，且最多保留一个小数点。
+ * @param {string} value - 用户原始输入字符串
+ * @returns {string} 清洗后的合法数值字符串（如 "10.25"）
+ */
 const sanitizeDecimal = (value: string): string =>
   value
     .replace(/[^\d.]/g, '')
     .replace(/(\..*)\./g, '$1');
 
-/** 过滤非数字字符（仅正整数，用于天数输入） */
+/**
+ * 过滤非数字字符，用于天数/整数输入。
+ *
+ * @description 仅保留数字字符，过滤所有非数字。
+ * @param {string} value - 用户原始输入字符串
+ * @returns {string} 清洗后的纯数字字符串（如 "3"）
+ */
 const sanitizeInteger = (value: string): string => value.replace(/[^\d]/g, '');
 
+/**
+ * 涨跌幅计算器页面组件。
+ *
+ * @description 提供两种换算模式：
+ *  - 模式 A：输入涨跌幅百分比 → 输出目标价格
+ *  - 模式 B：输入目标价格 → 输出涨跌幅百分比
+ *  支持切换主板/科创/创业板的涨跌停预设，并可推算连续 N 日涨跌停阶梯价。
+ * @returns {JSX.Element} 涨跌幅计算器视图
+ * @note 纯计算 UI，无任何存储读写
+ */
 export default function ChangeRate() {
   // 公共输入：基准价格
   const [basePrice, setBasePrice] = useState('');

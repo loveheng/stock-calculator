@@ -1,13 +1,21 @@
+/**
+ * @file ConfirmModal.tsx
+ * @description 通用确认弹窗组件：显示标题、消息和确认/取消按钮。
+ * @layer UI
+ * @storage_impact 纯展示组件，不读写任何存储。
+ */
+
 import React from 'react';
-import { AlertTriangle, X } from 'lucide-react';
 
 interface ConfirmModalProps {
   open: boolean;
   title: string;
   message: string;
+  confirmLabel?: string;
   confirmText?: string;
-  cancelText?: string;
+  cancelLabel?: string;
   danger?: boolean;
+  variant?: 'danger' | 'primary' | 'warning';
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -16,40 +24,44 @@ export default function ConfirmModal({
   open,
   title,
   message,
-  confirmText = '确认',
-  cancelText = '取消',
+  confirmLabel,
+  confirmText,
+  cancelLabel = '取消',
   danger = false,
+  variant,
   onConfirm,
   onCancel,
 }: ConfirmModalProps) {
   if (!open) return null;
 
+  const resolvedVariant = variant ?? (danger ? 'danger' : 'primary');
+  const resolvedConfirmLabel = confirmLabel ?? confirmText ?? '确认';
+
+  const variantStyles: Record<string, string> = {
+    danger: 'bg-red-600 hover:bg-red-500',
+    primary: 'bg-blue-600 hover:bg-blue-500',
+    warning: 'bg-yellow-600 hover:bg-yellow-500',
+  };
+
+  const btnStyle = variantStyles[resolvedVariant] || variantStyles.primary;
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
-      <div className="relative bg-slate-800 rounded-xl border border-slate-700 shadow-2xl max-w-sm w-full p-6 animate-[fadeInUp_0.2s_ease-out]">
-        <div className="flex items-center gap-3 mb-4">
-          <div className={`p-2 rounded-full ${danger ? 'bg-red-500/20' : 'bg-blue-500/20'}`}>
-            <AlertTriangle className={`w-5 h-5 ${danger ? 'text-red-400' : 'text-blue-400'}`} />
-          </div>
-          <h3 className="text-base font-semibold text-slate-200">{title}</h3>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-slate-800 border border-slate-600 rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl">
+        <h3 className="text-lg font-bold text-white mb-2">{title}</h3>
+        <p className="text-sm text-slate-400 mb-5 whitespace-pre-wrap">{message}</p>
+        <div className="flex gap-3 justify-end">
           <button
             onClick={onCancel}
-            className="ml-auto p-1 rounded-lg hover:bg-slate-700 text-slate-500"
+            className="px-4 py-2 rounded-xl text-sm font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors"
           >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <p className="text-sm text-slate-400 mb-6 leading-relaxed">{message}</p>
-        <div className="flex gap-3 justify-end">
-          <button onClick={onCancel} className="btn btn-outline btn-sm">
-            {cancelText}
+            {cancelLabel}
           </button>
           <button
             onClick={onConfirm}
-            className={`btn btn-sm ${danger ? 'btn-danger' : 'btn-primary'}`}
+            className={`px-4 py-2 rounded-xl text-sm font-medium text-white transition-colors ${btnStyle}`}
           >
-            {confirmText}
+            {resolvedConfirmLabel}
           </button>
         </div>
       </div>

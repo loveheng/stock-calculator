@@ -1,3 +1,14 @@
+/**
+ * @file Home.tsx
+ * @description 首页仪表盘：聚合展示做T总览（实时已实现收益/待对冲持仓/底仓状态）、
+ *              近 N 日收益趋势、持仓分布、账户现金流（现金/总资产）与做T异动预警。
+ *              数据来源：useStreamResults（流水池撮合引擎）+ Store positions（持仓账本）。
+ * @layer UI
+ * @storage_impact 只读消费：positions（底仓持仓）、tStreams（流水池）与 cashTransactions（现金账户）；
+ *                 不直接写入任何 IndexedDB 表，跳转类操作委托各功能页完成。
+ * @author 开发团队
+ */
+
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -13,7 +24,7 @@ import {
   AlertTriangle,
   ArrowRight,
 } from 'lucide-react';
-import { useAppStore, useStreamResults } from '../store';
+import { useStreamResults, useAppStore } from '../store';
 import { roundTo } from '../utils/mathUtils';
 import type { StockStreamResult } from '../utils/tStreamEngine';
 
@@ -36,10 +47,21 @@ interface AlertItem {
   amount: number;
 }
 
+/**
+ * 首页仪表盘组件。
+ *
+ * @description 组合 Store positions 与流水池：
+ *               - 计算总持仓市值、现金余额与总资产
+ *               - 汇总做T实时收益（transferProfit 口径）
+ *               - 按 1d/7d/30d/all 时间维度过滤收益趋势
+ *               - 生成做T异动预警条目（如倒数第二持仓归零、大额收益等）
+ * @returns {JSX.Element} 首页仪表盘视图
+ * @note 本组件仅读不写；所有写操作（开T/归档/调整底仓）跳转到对应页面完成
+ */
 export default function Home() {
   const navigate = useNavigate();
-  const { positions, tRounds } = useAppStore();
   const streamResults = useStreamResults();
+  const positions = useAppStore((s) => s.positions);
 
   // ---- 时间筛选状态 ----
   const [timeRange, setTimeRange] = useState<TimeRange>('7d');
@@ -288,15 +310,25 @@ export default function Home() {
   const [alertIndex, setAlertIndex] = useState(0);
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // 清理定时器的辅助函数
+  const clearAlertTimer = useCallback(() => {
+    if (alertTimerRef.current !== null) {
+      clearInterval(alertTimerRef.current);
+      alertTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
-    if (alertItems.length === 0) return;
+    clearAlertTimer();
+    if (alertItems.length === 0) {
+      setAlertIndex(0);
+      return;
+    }
     alertTimerRef.current = setInterval(() => {
       setAlertIndex((prev) => (prev + 1) % alertItems.length);
     }, 4000);
-    return () => {
-      if (alertTimerRef.current) clearInterval(alertTimerRef.current);
-    };
-  }, [alertItems.length]);
+    return clearAlertTimer;
+  }, [alertItems.length, clearAlertTimer]);
 
   const currentAlert =
     alertItems.length > 0 ? alertItems[alertIndex % alertItems.length] : null;
@@ -532,7 +564,7 @@ export default function Home() {
             <Wallet className="h-4 w-4 text-emerald-400" />
           </div>
           <span className="text-sm font-semibold text-slate-200">
-            开启仓位
+            仓位统计
           </span>
           <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
             全量统计

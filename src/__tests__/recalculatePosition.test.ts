@@ -2,7 +2,7 @@
  * @file recalculatePosition.test.ts
  * @description 单元测试：持仓统计与做T对冲核心算法 recalculatePosition。
  *              覆盖空履历 / 纯建仓 / 加仓摊薄 / 做T高抛（不触发传统已实现亏损）/
- *              低吸高抛整轮（整轮配对：落袋 = 高抛净拿回 - 回补总成本）/
+ *              正T整轮与倒T整轮（整轮/对冲对配：落袋 = 高抛净回款 - 低吸买入总成本）/
  *              割肉减仓 / 清仓平仓 / 平仓后再开仓 / 乱序输入 /
  *              正负数量约定 / 超卖保护 / 多轮做T整轮累计 等口径。
  * @layer Test
@@ -97,22 +97,21 @@ describe('recalculatePosition', () => {
     expect(snap.isClosed).toBe(0);
   });
 
-  // 5. 低吸高抛整轮：买回后 initialCost 刷新，落袋利润按初始均价口径累计
-  test('低吸高抛整轮：做T利润累计、成本口径为纯买入加权均价', () => {
+  // 5. 正T整轮（先低吸加仓、后高抛减仓，等量股数恢复）：整轮落袋 = 高抛净回款 - 低吸买入总成本
+  test('正T整轮：加仓后卖出等量股，落袋=高抛净回款-低吸买入总成本', () => {
     const snap = recalculatePosition([
       createBatch({ id: 'open', timestamp: T1, price: 40, amount: 1000, fee: 5 }),
       createBatch({ id: 'add', timestamp: T2, type: 'add', price: 39, amount: 200, fee: 2 }),
       createBatch({ id: 'reduce', timestamp: T3, type: 'reduce', price: 41, amount: 200, fee: 2 }),
     ]);
-    // 低吸后 initialCost = (40005 + 39*200+2) / 1200 = 47807/1200 ≈ 39.8392
-    const initialCost = 47807 / 1200;
-    // 高抛：净拿回 = 41*200-2 = 8198；成本 = 39.8392*200 ≈ 7967.83；落袋 ≈ 230.17
-    expect(snap.initialCost).toBeCloseTo(initialCost, 3);
-    expect(snap.accumulatedTPnL).toBeCloseTo(8198 - initialCost * 200, 2);
+    // 高抛净回款 = 41*200-2 = 8198；低吸总成本 = 39*200+2 = 7802；整轮落袋 = +396
+    expect(snap.accumulatedTPnL).toBeCloseTo(8198 - 7802, 2);
     expect(snap.realizedPnL).toBe(0);
     expect(snap.currentAmount).toBe(1000);
     expect(snap.totalInvested).toBeCloseTo(47807 - 8198, 2); // 39609
     expect(snap.currentCost).toBeCloseTo(39609 / 1000, 3);
+    // 低吸腿属于做T轮次而非底仓：initialCost 保持首次建仓含规费均价，不因做T腿刷新
+    expect(snap.initialCost).toBeCloseTo(40.005, 3);
   });
 
   // 6. 割肉减仓：卖价跌破初始均价时，传统已实现盈亏才记亏损
@@ -268,4 +267,22 @@ describe('recalculatePosition', () => {
     expect(snap.initialCost).toBeCloseTo(201362.34 / 8200, 3);
     expect(snap.isClosed).toBe(0);
   });
+  // 15. 用户回归：建仓 → 低吸加仓 → 高抛减仓（等量恢复股数），做T落袋 = +74.06
+  test('用户回归：做T/调仓落袋利润 +74.06（正T整轮对配，不再误按底仓均价割肉）', () => {
+    const snap = recalculatePosition([
+      createBatch({ id: 'open', timestamp: T1, price: 24.55, amount: 8200, fee: 52.34 }),
+      createBatch({ id: 'add', timestamp: T2, type: 'add', price: 17.15, amount: 100, fee: 5.02 }),
+      createBatch({ id: 'reduce', timestamp: T3, type: 'reduce', price: 18, amount: -100, fee: 5.92 }),
+    ]);
+    // 高抛净回款 = 18*100-5.92 = 1794.08；低吸总成本 = 17.15*100+5.02 = 1720.02；整轮落袋 = +74.06
+    expect(snap.accumulatedTPnL).toBeCloseTo(1794.08 - 1720.02, 2); // +74.06
+    expect(snap.realizedPnL).toBe(0);
+    expect(snap.currentAmount).toBe(8200); // 股数恢复
+    expect(snap.totalInvested).toBeCloseTo(201288.28, 2);
+    expect(snap.currentCost).toBeCloseTo(24.547, 3);
+    // 低吸腿为做T轮次而非底仓：底仓均价保持首次建仓含规费均价
+    expect(snap.initialCost).toBeCloseTo(201362.34 / 8200, 3);
+    expect(snap.isClosed).toBe(0);
+  });
 });
+

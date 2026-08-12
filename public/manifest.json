@@ -1,6 +1,6 @@
 {
-  "name": "股票做T账本与成本计算器",
-  "short_name": "做T账本",
+  "name": "股票账本与成本计算器",
+  "short_name": "股记",
   "start_url": "/",
   "display": "standalone",
   "theme_color": "#1677ff",

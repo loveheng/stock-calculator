@@ -101,7 +101,13 @@ export interface TRoundArchive {
   lastTouched?: string;
   /** @deprecated 兼容旧版 DB 字段名，应使用 `lastTouched` */
   lastUpdated?: number;
-  transactions: RoundTxn[];
+  /**
+   * 做T成交明细（含撮合配对与划转记录）。
+   * 可选：列表加载器只返回轮次摘要（不含明细），展开「查看成交明细」时
+   * 才通过 fetchTransactionsByRoundId 按需查询 tTransactions 表。
+   * 写入路径（归档/结算/导入）必须携带完整明细以保证持久化。
+   */
+  transactions?: RoundTxn[];
 }
 
 // ---- 中长期操作记录 ----

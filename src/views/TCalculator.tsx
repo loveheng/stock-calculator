@@ -18,6 +18,7 @@ import {
   generateId,
   type Position,
   type LongTermRecord,
+  type RoundTxn,
 } from '../store';
 import { ledgerService } from '../services/ledgerService';
 import type { LongTermRecordRow } from '../db/index';
@@ -870,7 +871,7 @@ function CurrentProjectCard({
  *              净收益、卖出数量、融合均价、成交明细穿透；
  *              提供「删除战报」操作，自动级联撤销归并底仓数据。
  * @param {{ round: TRound; onRemove: (id) => { ok: boolean; message?: string } }} props
- *  - round: 归档战报记录（含 transactions 明细）
+ *  - round: 归档战报记录（列表加载为轮次摘要，不含明细；展开「查看成交明细」时按需查询）
  *  - onRemove: 删除回调，返回删除结果
  * @returns {JSX.Element} 战报卡片视图
  * @note 删除属于写操作，通过 store.removeRound 落库，自动处理归并回滚
@@ -884,7 +885,26 @@ function ArchiveRoundCard({
 }) {
   const [showTxns, setShowTxns] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const txns = round.transactions ?? [];
+  // 成交明细按需加载：列表加载器只返回轮次摘要（不含 transactions），
+  // 首次展开时才查询 IndexedDB（fetchTransactionsByRoundId）
+  const [txns, setTxns] = useState<RoundTxn[]>([]);
+  const [txnsLoading, setTxnsLoading] = useState(false);
+  const txnsLoadedRef = useRef(false);
+  const toggleTxns = () => {
+    if (showTxns) {
+      setShowTxns(false);
+      return;
+    }
+    setShowTxns(true);
+    if (txnsLoadedRef.current) return;
+    txnsLoadedRef.current = true;
+    setTxnsLoading(true);
+    ledgerService
+      .fetchTransactionsByRoundId(round.id)
+      .then((list) => setTxns(list))
+      .catch(() => setTxns([]))
+      .finally(() => setTxnsLoading(false));
+  };
 
   const hasMerge = round.transferAmount && round.transferAmount > 0;
   const mergeLabel = round.mode === 'long' ? '正T归并' : '倒T归并';
@@ -962,17 +982,21 @@ function ArchiveRoundCard({
           划转底仓：{round.transferAmount} 股 @ ¥{(round.avgPrice ?? 0).toFixed(3)}
         </div>
       )}
-      {txns.length > 0 && (
-        <div>
-          <button
-            onClick={() => setShowTxns((v) => !v)}
-            className="text-[11px] text-blue-400 hover:text-blue-300 underline"
-          >
-            {showTxns ? '▾ 收起成交明细' : `▸ 查看成交明细（${txns.length} 笔）`}
-          </button>
-          {showTxns && (
-            <div className="mt-2 space-y-1 bg-slate-900 rounded-lg p-2 max-h-48 overflow-y-auto">
-              {txns.map((t) => (
+      <div>
+        <button
+          onClick={toggleTxns}
+          className="text-[11px] text-blue-400 hover:text-blue-300 underline"
+        >
+          {showTxns
+            ? '▾ 收起成交明细'
+            : `▸ 查看成交明细（${txns.length > 0 ? txns.length : round.tradeCount ?? 0} 笔）`}
+        </button>
+        {showTxns && (
+          <div className="mt-2 space-y-1 bg-slate-900 rounded-lg p-2 max-h-48 overflow-y-auto">
+            {txnsLoading ? (
+              <div className="text-[11px] text-slate-500 py-1">成交明细加载中…</div>
+            ) : txns.length > 0 ? (
+              txns.map((t) => (
                 <div
                   key={t.id}
                   className="flex items-center justify-between gap-2 text-[11px] text-slate-400"
@@ -1002,11 +1026,13 @@ function ArchiveRoundCard({
                       ))}
                   </span>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+              ))
+            ) : (
+              <div className="text-[11px] text-slate-500 py-1">暂无成交明细</div>
+            )}
+          </div>
+        )}
+      </div>
       <button
         onClick={() => setShowDeleteConfirm(true)}
         className="text-[11px] text-slate-500 hover:text-red-400 underline"

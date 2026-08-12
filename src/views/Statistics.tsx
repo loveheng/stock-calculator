@@ -14,6 +14,7 @@ import { Search, X, ChevronDown, ChevronUp, BarChart3, Wallet, Loader2 } from 'l
 import { useStreamResults, useAppStore } from '../store';
 import type { Position, PositionBatch, RoundTxn } from '../store';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
+import { ledgerService } from '../services/ledgerService';
 import type { StreamEntry } from '../utils/tStreamEngine';
 import { searchStocks } from '../services/stockService';
 import type { StockSearchItem } from '../types/stock';
@@ -102,6 +103,11 @@ export default function Statistics() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [positionFilter, setPositionFilter] = useState<PositionFilter>('all');
   const [visibleCount, setVisibleCount] = useState(10);
+
+  // 已归档卡片成交明细按需加载缓存（key 为卡片 id：`archived-${roundId}`）：
+  // 列表加载只带轮次摘要，展开「查看做T流水细节」时才查询 tTransactions
+  const [archivedTxns, setArchivedTxns] = useState<Record<string, RoundTxn[]>>({});
+  const [txnsLoadingIds, setTxnsLoadingIds] = useState<Set<string>>(new Set());
 
   // ---- 搜索 debounce 定时器引用 ----
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -217,7 +223,7 @@ export default function Statistics() {
         win: round.win,
         openedAt: round.openedAt,
         closedAt: round.closedAt,
-        entries: round.transactions,
+        entries: round.transactions ?? [],
       });
     }
 
@@ -292,6 +298,29 @@ export default function Statistics() {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setExpandedIds(next);
+    // 已归档卡片成交明细按需加载：首次展开时才查询，按卡片 id 缓存复用
+    const card = allCards.find((c) => c.id === id);
+    if (
+      card &&
+      card.source === 'archived' &&
+      next.has(id) &&
+      !archivedTxns[card.id] &&
+      !txnsLoadingIds.has(id)
+    ) {
+      const roundId = card.id.replace(/^archived-/, '');
+      setTxnsLoadingIds((prev) => new Set(prev).add(id));
+      ledgerService
+        .fetchTransactionsByRoundId(roundId)
+        .then((list) => setArchivedTxns((prev) => ({ ...prev, [card.id]: list })))
+        .catch(() => setArchivedTxns((prev) => ({ ...prev, [card.id]: [] })))
+        .finally(() =>
+          setTxnsLoadingIds((prev) => {
+            const nextSet = new Set(prev);
+            nextSet.delete(id);
+            return nextSet;
+          })
+        );
+    }
   };
 
   // ---- 仓位筛选 ----
@@ -614,6 +643,13 @@ export default function Statistics() {
               <>
                 {visibleCards.map((card) => {
                   const isActive = card.status === 'open';
+                  // 已归档卡片：成交明细按需加载（首次展开时才查询，缓存于 archivedTxns）
+                  const detailEntries =
+                    card.source === 'active' ? card.entries : archivedTxns[card.id] ?? [];
+                  const detailCount =
+                    card.source === 'active'
+                      ? card.entries.length
+                      : archivedTxns[card.id]?.length ?? card.tradeCount ?? 0;
                   // 状态 badge
                   let statusLabel = isActive ? '进行中' : '已完成';
                   let statusStyle = isActive
@@ -682,7 +718,7 @@ export default function Statistics() {
                           <span className="flex items-center gap-2">
                             <span>查看做T流水细节</span>
                             <span className="text-xs text-slate-500">
-                              ({card.entries.length} 条)
+                              ({detailCount} 条)
                             </span>
                           </span>
                           {expandedIds.has(card.id) ? (
@@ -693,7 +729,13 @@ export default function Statistics() {
                         </button>
                         {expandedIds.has(card.id) && (
                           <div className="mt-3 space-y-3 border-t border-slate-800 pt-3">
-                            {card.entries.map((entry, idx) => {
+                            {card.source === 'archived' && txnsLoadingIds.has(card.id) && (
+                              <div className="flex items-center gap-2 text-xs text-slate-400">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                成交明细加载中…
+                              </div>
+                            )}
+                            {detailEntries.map((entry, idx) => {
                               const dir = entry.direction;
                               const dirLabel = dir === 'buy' ? '买入' : dir === 'sell' ? '卖出' : '划转';
                               const dirColor = dir === 'buy' ? 'text-red-300' : dir === 'sell' ? 'text-green-300' : 'text-slate-300';
@@ -739,6 +781,13 @@ export default function Statistics() {
                                 </div>
                               );
                             })}
+                            {card.source === 'archived' &&
+                              !txnsLoadingIds.has(card.id) &&
+                              detailEntries.length === 0 && (
+                                <div className="text-xs text-slate-500">
+                                  暂无成交明细
+                                </div>
+                              )}
                           </div>
                         )}
                       </div>

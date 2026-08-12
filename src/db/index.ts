@@ -21,6 +21,7 @@ import type { PositionBatch, Position, RoundTxn, TRoundArchive } from '../store'
 import type { TStreamRecord } from '../utils/tStreamEngine';
 import type { StockMeta } from '../types/stock';
 import { ulid } from 'ulid';
+import { cleanUndefined } from './cleanUndefined';
 import {
   db as tradingDb,
   type AccountCashEntity,
@@ -95,25 +96,6 @@ export type LongTermRecordRow = LongTermRecord;
 
 /** 全局数据库实例（别名转发自 ./schema） */
 export const db = tradingDb;
-
-/**
- * 递归剔除对象中的 undefined 字段。
- *
- * @description 防止 undefined 字段引发 IndexedDB 结构化克隆序列化错误；所有写库前必须调用。
- *              内部使用 `(obj as any)[key]` 是 JS 运行时反射的标准模式，无法避免。
- * @param {T} obj - 任意对象
- * @returns {T} 剔除 undefined 字段后的新对象
- */
-function cleanUndefined<T extends object>(obj: T): T {
-  const result: Record<string, any> = {};
-  for (const key of Object.keys(obj)) {
-    const val = (obj as any)[key];
-    if (val !== undefined) {
-      result[key] = val;
-    }
-  }
-  return result as T;
-}
 
 /**
  * 生成全局唯一 ID。
@@ -749,6 +731,8 @@ export async function fetchOpenRoundsWithTransactions(): Promise<TRoundRow[]> {
 
 /**
  * 分页查询已完成的 Round（status === 'COMPLETED'）。
+ * 只返回轮次摘要（不含 transactions 明细）；成交明细在 UI 展开
+ * 「查看成交明细」时通过 fetchTransactionsByRoundId 按需查询。
  */
 export async function fetchCompletedRoundsPage(
   page: number,
@@ -767,32 +751,27 @@ export async function fetchCompletedRoundsPage(
     ? await db.stocks.where('fullCode').anyOf(relevantFullCodes).toArray()
     : [];
   const stockMap = new Map(stocks.map((s) => [s.fullCode, s]));
-  const items: TRoundRow[] = [];
-  for (const r of entities) {
-    const txns = await fetchTransactionsByRoundId(r.id);
-    items.push({
-      id: r.id,
-      positionId: r.positionId,
-      fullCode: r.fullCode,
-      stockName: stockMap.get(r.fullCode)?.stockName ?? r.fullCode,
-      roundNo: r.roundNo,
-      mode: r.mode,
-      settleType: r.settleType === 'partial' ? 'transfer' : 'clear',
-      transactions: txns,
-      netProfit: r.netProfit,
-      fees: r.totalFees,
-      sellAmount: r.sellAmount ?? 0,
-      transferAmount: r.transferAmount,
-      avgPrice: r.avgPrice ?? 0,
-      buyAmount: r.buyAmount ?? 0,
-      tradeCount: r.tradeCount ?? 0,
-      holdingDays: r.holdingDays ?? 0,
-      win: r.win ?? false,
-      openedAt: new Date(r.openedAt).toISOString(),
-      closedAt: r.closedAt ? new Date(r.closedAt).toISOString() : '',
-      lastUpdated: r.lastUpdated,
-    });
-  }
+  const items: TRoundRow[] = entities.map((r) => ({
+    id: r.id,
+    positionId: r.positionId,
+    fullCode: r.fullCode,
+    stockName: stockMap.get(r.fullCode)?.stockName ?? r.fullCode,
+    roundNo: r.roundNo,
+    mode: r.mode,
+    settleType: r.settleType === 'partial' ? 'transfer' : 'clear',
+    netProfit: r.netProfit,
+    fees: r.totalFees,
+    sellAmount: r.sellAmount ?? 0,
+    transferAmount: r.transferAmount,
+    avgPrice: r.avgPrice ?? 0,
+    buyAmount: r.buyAmount ?? 0,
+    tradeCount: r.tradeCount ?? 0,
+    holdingDays: r.holdingDays ?? 0,
+    win: r.win ?? false,
+    openedAt: new Date(r.openedAt).toISOString(),
+    closedAt: r.closedAt ? new Date(r.closedAt).toISOString() : '',
+    lastUpdated: r.lastUpdated,
+  }));
   return { items, total, page, pageSize, hasMore: page * pageSize < total };
 }
 
@@ -934,9 +913,17 @@ export async function replacePositionBatches(positionId: string, batches: Positi
 }
 
 // ---- 做T Round ----
-/** 新增/更新单个 Round */
+/** 新增/更新单个 Round（同一事务内连同其成交明细整体落库：先删后写 tTransactions） */
 export async function putTRound(round: TRoundRow): Promise<void> {
-  await db.tRounds.put(cleanUndefined(withTimestamps(toRoundEntity(round))));
+  await db.transaction('rw', db.tRounds, db.tTransactions, async () => {
+    await db.tRounds.put(cleanUndefined(withTimestamps(toRoundEntity(round))));
+    await db.tTransactions.where({ roundId: round.id }).delete();
+    const txns = round.transactions ?? [];
+    if (txns.length > 0) {
+      const now = Date.now();
+      await db.tTransactions.bulkPut(txns.map((t) => cleanUndefined({ ...toTransactionEntity(t, round.id), updatedAt: now, createdAt: now, isDeleted: 0 })));
+    }
+  });
 }
 
 /** 删除单个 Round 及其所有交易明细 */
@@ -1033,11 +1020,16 @@ export async function completeRoundWithMerge(
   mergeRecord: LongTermRecordRow,
   positions: PositionRow[],
 ): Promise<void> {
-  await db.transaction('rw', db.tStreams, db.tRounds, db.longTermRecords, db.positions, async () => {
+  await db.transaction('rw', db.tStreams, db.tRounds, db.tTransactions, db.longTermRecords, db.positions, async () => {
     if (streamIds.length > 0) {
       await db.tStreams.bulkDelete(streamIds);
     }
     await db.tRounds.put(cleanUndefined(withTimestamps(toRoundEntity(round))));
+    const txns = round.transactions ?? [];
+    if (txns.length > 0) {
+      const now = Date.now();
+      await db.tTransactions.bulkPut(txns.map((t) => cleanUndefined({ ...toTransactionEntity(t, round.id), updatedAt: now, createdAt: now, isDeleted: 0 })));
+    }
     await db.longTermRecords.put(cleanUndefined(withTimestamps(toLongTermRecordEntity(mergeRecord))));
     for (const pos of positions) {
       await db.positions.put(cleanUndefined(withTimestamps(toPositionEntity(pos))));
@@ -1055,11 +1047,16 @@ export async function completeRoundClear(
   streamIds: string[],
   round: TRoundRow,
 ): Promise<void> {
-  await db.transaction('rw', db.tStreams, db.tRounds, async () => {
+  await db.transaction('rw', db.tStreams, db.tRounds, db.tTransactions, async () => {
     if (streamIds.length > 0) {
       await db.tStreams.bulkDelete(streamIds);
     }
     await db.tRounds.put(cleanUndefined(withTimestamps(toRoundEntity(round))));
+    const txns = round.transactions ?? [];
+    if (txns.length > 0) {
+      const now = Date.now();
+      await db.tTransactions.bulkPut(txns.map((t) => cleanUndefined({ ...toTransactionEntity(t, round.id), updatedAt: now, createdAt: now, isDeleted: 0 })));
+    }
   });
 }
 
@@ -1119,7 +1116,7 @@ export async function safeImportAllData(
     const newRoundIds = new Set(tRounds.map((r) => r.id));
     if (tRounds.length > 0) {
       await db.tRounds.bulkPut(tRounds.map((r) => cleanUndefined({ ...toRoundEntity(r), updatedAt: now, createdAt: now, isDeleted: 0 })));
-      const allTxns = tRounds.flatMap((r) => r.transactions.map((t) => cleanUndefined({ ...toTransactionEntity(t, r.id), updatedAt: now, createdAt: now, isDeleted: 0 })));
+      const allTxns = tRounds.flatMap((r) => (r.transactions ?? []).map((t) => cleanUndefined({ ...toTransactionEntity(t, r.id), updatedAt: now, createdAt: now, isDeleted: 0 })));
       for (const rid of tRounds.map((r) => r.id)) {
         await db.tTransactions.where({ roundId: rid }).delete();
       }

@@ -185,11 +185,17 @@ async function safePersist(fn: () => Promise<void>) {
 | **增量写入** | `putFeeConfig`, `putStock`, `bulkPutStocks`, `putPosition`, `putPositionWithBatches`, `putPositionBatch`, `addBatchToPosition`, `replacePositionBatches`, `putTRound`, `putTransaction`, `replaceRoundTransactions`, `putTStream`, `putLongTermRecord` |
 | **精确删除** | `deleteStock`, `deletePositionWithBatches`, `deletePositionBatch`, `deleteTRoundWithTransactions`, `deleteTStream`, `bulkDeleteTStreams`, `deleteLongTermRecord`, `deleteLongTermRecordsBySourceReportId`, `deleteRoundWithCascade` |
 | **级联结算** | `completeRoundWithMerge`（划转底仓）, `completeRoundClear`（清仓结算） |
-| **查询/分页** | `fetchBatchesByPositionId`, `fetchClosedPositionsPage`, `fetchAllClosedPositions`, `fetchOpenRoundsWithTransactions`, `fetchCompletedRoundsPage`, `fetchAllCompletedRounds`, `fetchTransactionsByRoundId`, `fetchAllLongTermRecords` |
+| **查询/分页** | `fetchBatchesByPositionId`, `fetchClosedPositionsPage`, `fetchAllClosedPositions`, `fetchOpenRoundsWithTransactions`（进行中 Round，含明细）, `fetchCompletedRoundsPage`（已完成 Round，仅摘要，不含明细）, `fetchAllCompletedRounds`（导出用，含明细）, `fetchTransactionsByRoundId`（明细按需查询）, `fetchAllLongTermRecords` |
 | **安全导入** | `safeImportAllData` — 逐表批量 upsert + 清理残留记录，绝不调用 clear() |
 
 > 写库前统一经 `cleanUndefined()` 剔除 undefined 字段（IndexedDB 结构化克隆不允许 undefined）。
 > `Row` 类型（PositionRow/TRoundRow/...）与 Store 类型同源（type 别名），改一处全局生效。
+>
+> **Round 成交明细按需加载**：列表加载器（`fetchCompletedRoundsPage` → `useArchivedRounds`）只返回轮次摘要
+> （含 `tradeCount` 等汇总字段，不含 `transactions`）；UI 展开「查看成交明细」时才通过
+> `fetchTransactionsByRoundId` 按需查询 `tTransactions` 表。写入路径（`putTRound` / `completeRoundClear` /
+> `completeRoundWithMerge` / `safeImportAllData`）负责把明细持久化到 `tTransactions`，保证按需加载有据可查；
+> `fetchAllCompletedRounds`（导出用）仍返回完整明细。
 
 ### 4.3 `store/` — Zustand 全局状态（三文件分工）
 

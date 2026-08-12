@@ -13,7 +13,7 @@ import React, { useState } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
-import { recomputePositionSnapshot } from '../store';
+import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults } from '../store';
 import type { Position, PositionBatch } from '../store';
 import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
@@ -205,6 +205,9 @@ function PositionLedger() {
   const { addPosition, addBatch, closePosition, deletePositionBatch, removePosition } = useAppStore();
   const positions = useAppStore((s) => s.positions);
   const feeConfig = useAppStore((s) => s.feeConfig);
+  // 结案资格校验所需：做T战报 + 全市场撮合结果（进行中 Round 检测）
+  const tRounds = useAppStore((s) => s.tRounds);
+  const streamResults = useStreamResults();
 
   const [selectedStock, setSelectedStock] = useState<StockSearchItem | null>(null);
   const [stockName, setStockName] = useState('');
@@ -215,6 +218,8 @@ function PositionLedger() {
   const [dupAlert, setDupAlert] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null);
+  // 结案被阻止提示（仍有未卖出持仓 或 该标的存在进行中的做T轮次）
+  const [closeBlockAlert, setCloseBlockAlert] = useState<string | null>(null);
   const [deleteBatchConfirm, setDeleteBatchConfirm] = useState<{ positionId: string; batchId: string } | null>(null);
   const [deleteTickerConfirm, setDeleteTickerConfirm] = useState<string | null>(null);
 
@@ -360,11 +365,17 @@ function PositionLedger() {
     if (type === 'reduce' && newAmount <= 0) {
       const finalPnL = newRealizedPnL;
       const finalInvested = totalInvested; // 减仓前的总投入
-      setClearPosition({
-        positionId,
-        realizedPnL: finalPnL,
-        totalInvested: finalInvested,
-      });
+      // 清仓到 0 同样执行结案资格校验：无未卖出持仓 且 该标的无进行中的做T轮次
+      // → 自动完结归档；否则保留清仓弹窗，由用户自行决定是否手动结案。
+      if (!getCloseBlockReason(pos, streamResults, tRounds, newAmount)) {
+        closePosition(positionId);
+      } else {
+        setClearPosition({
+          positionId,
+          realizedPnL: finalPnL,
+          totalInvested: finalInvested,
+        });
+      }
     }
   };
 
@@ -375,8 +386,18 @@ function PositionLedger() {
     setClearPosition(null);
   };
 
-  // 完结建仓
+  // 完结建仓（确认弹窗回调）
   const handleClose = (id: string) => {
+    const pos = positions.find((p) => p.id === id);
+    if (!pos) return;
+    // 结案资格校验：仍有未卖出的持有数量 或 该标的存在进行中的做T轮次 → 弹框阻止结案。
+    // 按钮点击时已预检，此处兜底防止确认弹窗打开期间数据（如新增做T流水）发生变化。
+    const blockReason = getCloseBlockReason(pos, streamResults, tRounds);
+    if (blockReason) {
+      setCloseBlockAlert(blockReason);
+      setCloseConfirmId(null);
+      return;
+    }
     closePosition(id);
     setCloseConfirmId(null);
   };
@@ -558,7 +579,18 @@ function PositionLedger() {
               <button onClick={() => handleBatch(pos.id, 'reduce')} className="btn btn-outline btn-sm flex-1">
                 <X className="w-3 h-3" />减仓
               </button>
-              <button onClick={() => setCloseConfirmId(pos.id)} className="btn btn-outline btn-sm flex-1">
+              <button
+                onClick={() => {
+                  // 点击结案先做资格校验：有未卖出持仓或进行中的做T轮次 → 弹框阻止，不进入确认弹窗
+                  const blockReason = getCloseBlockReason(pos, streamResults, tRounds);
+                  if (blockReason) {
+                    setCloseBlockAlert(blockReason);
+                    return;
+                  }
+                  setCloseConfirmId(pos.id);
+                }}
+                className="btn btn-outline btn-sm flex-1"
+              >
                 <Archive className="w-3 h-3" />结案
               </button>
             </div>
@@ -668,6 +700,16 @@ function PositionLedger() {
           onCancel={() => setClearPosition(null)}
         />
       )}
+
+      {/* 结案被阻止提示 */}
+      <ConfirmModal
+        open={closeBlockAlert !== null}
+        title="无法完结持仓"
+        message={closeBlockAlert ?? ''}
+        confirmText="知道了"
+        onConfirm={() => setCloseBlockAlert(null)}
+        onCancel={() => setCloseBlockAlert(null)}
+      />
 
       {/* 结案确认 */}
       <ConfirmModal

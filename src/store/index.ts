@@ -80,7 +80,7 @@ export type {
   AppStore,
 } from './types';
 export { EXPORT_VERSION } from './types';
-export { generateId, buildBasePositionCosts, recomputePositionSnapshot, rollbackTransferPosition, useStreamResults } from './utils';
+export { generateId, buildBasePositionCosts, recomputePositionSnapshot, getCloseBlockReason, rollbackTransferPosition, useStreamResults } from './utils';
 export type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 
 let persistError: string | null = null;

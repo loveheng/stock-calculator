@@ -88,10 +88,10 @@ export function recomputePositionSnapshot(batches: PositionBatch[]): {
 }
 
 /**
- * 结案资格校验：判断持仓当前是否可以完结归档（手动结案 / 清仓自动结案共用）。
+ * 结仓资格校验：判断持仓当前是否可以完结归档（手动结仓 / 清仓自动结仓共用）。
  *
- * @description 返回不可结案的原因（字符串），满足结案条件时返回 null。判定条件：
- *  1. 仍持有未卖出的数量（剩余持股 > 0），需全部卖出后才能结案；
+ * @description 返回不可结仓的原因（字符串），满足结仓条件时返回 null。判定条件：
+ *  1. 仍持有未卖出的数量（剩余持股 > 0），需全部卖出后才能结仓；
  *  2. 该标的存在进行中的做T轮次 —— 撮合结果（processAllStreams）中该标的
  *     status 非 CLEARED（流水池尚未完全配对结算），或 tRounds 中存在
  *     未完结（OPENED / 无 closedAt）的做T战报。
@@ -101,7 +101,7 @@ export function recomputePositionSnapshot(batches: PositionBatch[]): {
  * @param tRounds 做T战报归档（进行中 OPENED / 已归档 COMPLETED）
  * @param remainingAmountOverride 剩余持股覆盖值：默认按 pos 批次履历重建当前数量；
  *        在「减仓清仓到 0」场景可显式传入 0，跳过数量校验只看做T轮次
- * @returns 不可结案原因字符串；满足结案条件时返回 null
+ * @returns 不可结仓原因字符串；满足结仓条件时返回 null
  */
 export function getCloseBlockReason(
   pos: Position,
@@ -111,7 +111,7 @@ export function getCloseBlockReason(
 ): string | null {
   const remaining = remainingAmountOverride ?? recomputePositionSnapshot(pos.batches).currentAmount;
   if (remaining > 0) {
-    return `该持仓还有 ${remaining} 股未卖出，需全部卖出后才能结案。`;
+    return `该持仓还有 ${remaining} 股未卖出，需全部卖出后才能结仓。`;
   }
 
   const hasOpenTRound =
@@ -122,7 +122,7 @@ export function getCloseBlockReason(
         (r.status === 'OPENED' || (r.status === undefined && !r.closedAt)),
     );
   if (hasOpenTRound) {
-    return '该标的仍有进行中的做T轮次，请先结算或归档后再结案。';
+    return '该标的仍有进行中的做T轮次，请先结算或归档后再结仓。';
   }
 
   return null;

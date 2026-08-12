@@ -484,12 +484,7 @@ function PositionLedger() {
       {activePositions.length === 0 ? (
         <div className="text-center py-8">
           <p className="text-slate-500 text-sm mb-3">当前无进行中持仓</p>
-          <button onClick={() => {
-            document.getElementById('new-position-input')?.focus();
-          }} className="btn btn-primary btn-sm">
-            <Plus className="w-4 h-4" />
-            新建建仓
-          </button>
+          
         </div>
       ) : null}
 

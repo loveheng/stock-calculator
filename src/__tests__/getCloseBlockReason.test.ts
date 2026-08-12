@@ -1,7 +1,7 @@
 /**
  * @file getCloseBlockReason.test.ts
- * @description 单元测试：验证结案资格校验（未卖出持仓 + 进行中的做T轮次），
- *              覆盖手动结案阻止 / 清仓到0自动结案 / 不同标的隔离等场景。
+ * @description 单元测试：验证结仓资格校验（未卖出持仓 + 进行中的做T轮次），
+ *              覆盖手动结仓阻止 / 清仓到0自动结仓 / 不同标的隔离等场景。
  * @layer Test
  * @storage_impact 纯函数测试，不读写任何存储。
  */
@@ -130,14 +130,14 @@ describe('getCloseBlockReason', () => {
     expect(reason).toContain('未卖出');
   });
 
-  // 2. 清仓到 0 且无做T轮次 → 可自动结案
-  test('清仓到 0 且无做T轮次：返回 null（可结案）', () => {
+  // 2. 清仓到 0 且无做T轮次 → 可自动结仓
+  test('清仓到 0 且无做T轮次：返回 null（可结仓）', () => {
     const pos = createPosition({ currentAmount: 0, batches: CLEARED_BATCHES });
     expect(getCloseBlockReason(pos, [], [])).toBeNull();
   });
 
   // 3. 清仓到 0 但流水池该标的存在进行中的撮合（PENDING/PARTIAL/SHORT_PENDING）→ 阻止
-  test('该标的存在进行中的撮合结果：阻止结案', () => {
+  test('该标的存在进行中的撮合结果：阻止结仓', () => {
     const pos = createPosition({ currentAmount: 0, batches: CLEARED_BATCHES });
     for (const status of ['PENDING', 'PARTIAL', 'SHORT_PENDING'] as const) {
       const reason = getCloseBlockReason(pos, [createStreamResult(status)], []);
@@ -147,34 +147,34 @@ describe('getCloseBlockReason', () => {
   });
 
   // 4. 流水池已有 CLEARED 记录（做T已完成，仅残留流水）→ 不阻止
-  test('该标的撮合结果已 CLEARED（轮次完成）：可结案', () => {
+  test('该标的撮合结果已 CLEARED（轮次完成）：可结仓', () => {
     const pos = createPosition({ currentAmount: 0, batches: CLEARED_BATCHES });
     expect(getCloseBlockReason(pos, [createStreamResult('CLEARED')], [])).toBeNull();
   });
 
   // 5. tRounds 存在 OPENED 战报 → 阻止
-  test('该标的存在 OPENED 战报：阻止结案', () => {
+  test('该标的存在 OPENED 战报：阻止结仓', () => {
     const pos = createPosition({ currentAmount: 0, batches: CLEARED_BATCHES });
     const reason = getCloseBlockReason(pos, [], [createRound({ status: 'OPENED', closedAt: undefined })]);
     expect(reason).not.toBeNull();
     expect(reason).toContain('做T');
   });
 
-  // 6. tRounds 仅 COMPLETED 战报 → 可结案
-  test('该标的仅存在已完结（COMPLETED）战报：可结案', () => {
+  // 6. tRounds 仅 COMPLETED 战报 → 可结仓
+  test('该标的仅存在已完结（COMPLETED）战报：可结仓', () => {
     const pos = createPosition({ currentAmount: 0, batches: CLEARED_BATCHES });
     expect(getCloseBlockReason(pos, [], [createRound()])).toBeNull();
   });
 
-  // 7. 内存态已归档战报（无 status 字段但 closedAt 已设置）→ 可结案
-  test('内存态已归档战报（无 status 但带 closedAt）：可结案', () => {
+  // 7. 内存态已归档战报（无 status 字段但 closedAt 已设置）→ 可结仓
+  test('内存态已归档战报（无 status 但带 closedAt）：可结仓', () => {
     const pos = createPosition({ currentAmount: 0, batches: CLEARED_BATCHES });
     const archived = createRound({ status: undefined, closedAt: '2026-01-03T00:00:00.000Z' });
     expect(getCloseBlockReason(pos, [], [archived])).toBeNull();
   });
 
   // 8. 无 status 且无 closedAt 的战报（导入的进行中轮次）→ 阻止
-  test('无 status 且无 closedAt 的战报：视为进行中，阻止结案', () => {
+  test('无 status 且无 closedAt 的战报：视为进行中，阻止结仓', () => {
     const pos = createPosition({ currentAmount: 0, batches: CLEARED_BATCHES });
     const openRound = createRound({ status: undefined, closedAt: undefined });
     const reason = getCloseBlockReason(pos, [], [openRound]);
@@ -183,7 +183,7 @@ describe('getCloseBlockReason', () => {
   });
 
   // 9. 其他标的的做T流水/战报不影响本标的
-  test('其他标的的做T流水/战报不影响本标的结案', () => {
+  test('其他标的的做T流水/战报不影响本标的结仓', () => {
     const pos = createPosition({ currentAmount: 0, batches: CLEARED_BATCHES });
     const otherResult = createStreamResult('PENDING', { fullCode: 'sz000001', stockName: '平安银行' });
     const otherRound = createRound({ id: 'round-other', fullCode: 'sz000001', stockName: '平安银行', status: 'OPENED', closedAt: undefined });

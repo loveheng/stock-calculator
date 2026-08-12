@@ -41,7 +41,7 @@ const timeTabs: Array<{ value: TimeFilter; label: string }> = [
 const positionTabs: Array<{ value: PositionFilter; label: string }> = [
   { value: 'all', label: '全部仓位' },
   { value: 'open', label: '进行中仓位' },
-  { value: 'closed', label: '已结案仓位' },
+  { value: 'closed', label: '已结仓仓位' },
 ];
 
 // ---- 统一卡片数据类型（合并进行中 + 已归档） ----
@@ -903,7 +903,7 @@ export default function Statistics() {
                   let statusLabel = '正常持仓';
                   let statusStyle = 'bg-blue-500/10 text-blue-300';
                   if (position.isClosed) {
-                    statusLabel = '结案';
+                    statusLabel = '结仓';
                     statusStyle = 'bg-slate-700 text-slate-300';
                   } else if (position.currentAmount === 0) {
                     statusLabel = '底仓出空';

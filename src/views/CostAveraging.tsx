@@ -13,6 +13,7 @@ import React, { useState } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
+import { recomputePositionSnapshot } from '../store';
 import type { Position, PositionBatch } from '../store';
 import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
@@ -201,7 +202,7 @@ function ClearPositionModal({
  *       数据源从 Store 读取（由 useLoadCoreData 按需加载）。
  */
 function PositionLedger() {
-  const { addPosition, addBatch, closePosition, updatePosition, deletePositionBatch, removePosition } = useAppStore();
+  const { addPosition, addBatch, closePosition, deletePositionBatch, removePosition } = useAppStore();
   const positions = useAppStore((s) => s.positions);
   const feeConfig = useAppStore((s) => s.feeConfig);
 
@@ -281,97 +282,6 @@ function PositionLedger() {
     setOpenNote('');
   };
 
-  // 计算真实成本（含规费）
-  const calcRealCost = (pos: Position): number => {
-    let totalInvested = 0;
-    let totalAmount = 0;
-    const sorted = [...pos.batches].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    for (const batch of sorted) {
-      const qty = Math.abs(batch.amount);
-      const batchFee = batch.fee || 0;
-      if (batch.amount > 0) {
-        const cost = batch.price * qty + batchFee;
-        totalInvested += cost;
-        totalAmount += qty;
-      } else {
-        if (totalAmount > 0) {
-          const costBasisPerShare = totalInvested / totalAmount;
-          totalInvested -= costBasisPerShare * qty;
-        }
-        totalAmount -= qty;
-        if (totalAmount <= 0) {
-          totalInvested = 0;
-          totalAmount = 0;
-        }
-      }
-    }
-    return totalAmount > 0 ? totalInvested / totalAmount : 0;
-  };
-
-  // 计算累计已实现盈亏
-  const calcRealizedPnL = (pos: Position): number => {
-    let totalInvested = 0;
-    let totalAmount = 0;
-    let realizedPnL = 0;
-    const sorted = [...pos.batches].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    for (const batch of sorted) {
-      const qty = Math.abs(batch.amount);
-      const batchFee = batch.fee || 0;
-      if (batch.amount > 0) {
-        const cost = batch.price * qty + batchFee;
-        totalInvested += cost;
-        totalAmount += qty;
-      } else {
-        if (totalAmount > 0) {
-          const costBasisPerShare = totalInvested / totalAmount;
-          const costBasisOfSold = costBasisPerShare * qty;
-          const netProceeds = batch.price * qty - batchFee;
-          realizedPnL += netProceeds - costBasisOfSold;
-          totalInvested -= costBasisOfSold;
-        }
-        totalAmount -= qty;
-        if (totalAmount <= 0) {
-          totalInvested = 0;
-          totalAmount = 0;
-        }
-      }
-    }
-    return realizedPnL;
-  };
-
-  // 计算累计投入总资金（含规费）
-  const calcTotalInvested = (pos: Position): number => {
-    let totalInvested = 0;
-    let totalAmount = 0;
-    const sorted = [...pos.batches].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    for (const batch of sorted) {
-      const qty = Math.abs(batch.amount);
-      const batchFee = batch.fee || 0;
-      if (batch.amount > 0) {
-        const cost = batch.price * qty + batchFee;
-        totalInvested += cost;
-        totalAmount += qty;
-      } else {
-        if (totalAmount > 0) {
-          const costBasisPerShare = totalInvested / totalAmount;
-          totalInvested -= costBasisPerShare * qty;
-        }
-        totalAmount -= qty;
-        if (totalAmount <= 0) {
-          totalInvested = 0;
-          totalAmount = 0;
-        }
-      }
-    }
-    return totalInvested;
-  };
-
   // 加仓/减仓（通过弹窗）
   const handleBatch = (positionId: string, type: 'add' | 'reduce') => {
     const pos = positions.find((p) => p.id === positionId);
@@ -388,36 +298,11 @@ function PositionLedger() {
     const tradeFee = calcTradeFees(price, amount, direction, feeConfig, matchSecurityKind('', pos.fullCode.replace(/^sh|sz|bj/, '')));
     const totalFee = tradeFee.total;
 
-    // 用总资金抽回法重新计算
-    const sorted = [...pos.batches].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    let totalInvested = 0;
-    let totalAmount = 0;
-    let realizedPnL = 0;
-
-    for (const batch of sorted) {
-      const qty = Math.abs(batch.amount);
-      const batchFee = batch.fee || 0;
-      if (batch.amount > 0) {
-        const cost = batch.price * qty + batchFee;
-        totalInvested += cost;
-        totalAmount += qty;
-      } else {
-        if (totalAmount > 0) {
-          const costBasisPerShare = totalInvested / totalAmount;
-          const costBasisOfSold = costBasisPerShare * qty;
-          const netProceeds = batch.price * qty - batchFee;
-          realizedPnL += netProceeds - costBasisOfSold;
-          totalInvested -= costBasisOfSold;
-        }
-        totalAmount -= qty;
-        if (totalAmount <= 0) {
-          totalInvested = 0;
-          totalAmount = 0;
-        }
-      }
-    }
+    // 用总资金抽回法重新计算（与 recomputePositionSnapshot 同口径）
+    const snap = recomputePositionSnapshot(pos.batches);
+    let totalInvested = snap.totalInvested;
+    let totalAmount = snap.currentAmount;
+    let realizedPnL = snap.realizedPnL;
 
     // 应用新操作
     let newCost: number;
@@ -459,8 +344,10 @@ function PositionLedger() {
       fee: totalFee,
     };
 
-    addBatch(positionId, batch);
-    updatePosition(positionId, {
+    // 批次与快照更新在同一 action 内原子合并、单次落库。
+    // 旧写法（addBatch 先写旧快照 + updatePosition 再写新快照）会产生两次异步写，
+    // Dexie 同 tick 内先执行隐式 put、后执行显式 db.transaction，旧快照必然最后覆盖新值 → 总是旧值。
+    addBatch(positionId, batch, {
       currentCost: newCost,
       currentAmount: newAmount,
       realizedPnL: newRealizedPnL,
@@ -497,6 +384,8 @@ function PositionLedger() {
   // 删除单笔批次
   const handleDeleteBatch = () => {
     if (!deleteBatchConfirm) return;
+    // 批次删除与快照重算由 Store 的 deletePositionBatch 原子完成：
+    // 按剩余批次履历重新计算 currentCost/currentAmount/realizedPnL/totalInvested 并单次落库。
     deletePositionBatch(deleteBatchConfirm.positionId, deleteBatchConfirm.batchId);
     setDeleteBatchConfirm(null);
   };
@@ -584,9 +473,7 @@ function PositionLedger() {
       ) : null}
 
       {activePositions.map((pos) => {
-        const realCost = calcRealCost(pos);
-        const realPnL = calcRealizedPnL(pos);
-        const totalInv = calcTotalInvested(pos);
+        const snap = recomputePositionSnapshot(pos.batches);
 
         // 现价模拟
         const cpStr = currentPrices[pos.id] || '';
@@ -654,13 +541,13 @@ function PositionLedger() {
               </div>
               <div>
                 <span className="text-slate-500">已实现盈亏</span>
-                <p className={`font-medium ${realPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {realPnL >= 0 ? '+' : ''}¥{realPnL.toFixed(2)}
+                <p className={`font-medium ${snap.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {snap.realizedPnL >= 0 ? '+' : ''}¥{snap.realizedPnL.toFixed(2)}
                 </p>
               </div>
               <div>
                 <span className="text-slate-500">累计投入</span>
-                <p className="text-slate-200 font-medium">¥{totalInv.toFixed(2)}</p>
+                <p className="text-slate-200 font-medium">¥{snap.totalInvested.toFixed(2)}</p>
               </div>
             </div>
 

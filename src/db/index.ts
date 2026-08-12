@@ -891,7 +891,15 @@ export async function addBatchToPosition(
   batch: PositionBatch,
 ): Promise<void> {
   await db.transaction('rw', db.positions, db.positionBatches, async () => {
-    await db.positions.put(cleanUndefined(withTimestamps(toPositionEntity(position))));
+    // 兜底防脏写：批次自带本次操作后的权威快照（costAfter/amountAfter）。
+    // 即使调用方传入的 position 快照是旧值（例如先加批次、再单独更新快照的旧写法），
+    // 成本/数量也以批次为准落库，避免「旧值覆盖新值」。
+    const snapshot: PositionRow = {
+      ...position,
+      currentCost: batch.costAfter ?? position.currentCost,
+      currentAmount: batch.amountAfter ?? position.currentAmount,
+    };
+    await db.positions.put(cleanUndefined(withTimestamps(toPositionEntity(snapshot))));
     await db.positionBatches.put(cleanUndefined(withTimestamps(toPositionBatchEntity(batch, position.id))));
   });
 }

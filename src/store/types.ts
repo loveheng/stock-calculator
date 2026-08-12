@@ -190,7 +190,22 @@ export interface AppStoreActions {
   addPosition: (pos: Position) => void;
   updatePosition: (id: string, updates: Partial<Position>) => void;
   closePosition: (id: string) => void;
-  addBatch: (positionId: string, batch: PositionBatch) => void;
+  /**
+   * 原子化追加批次到已有持仓：批次与持仓快照（成本/数量等）在同一次 action 中一次性合并并单次落库。
+   * 旧写法（先 addBatch 落库旧快照、再 updatePosition 落库新快照）会产生两次异步写，
+   * 而 Dexie 同一 tick 内先执行隐式 put、后执行显式 db.transaction，旧快照必然最后覆盖新值。
+   * @param positionId 持仓 id
+   * @param batch 待追加的批次（costAfter/amountAfter 为本次操作后的权威快照）
+   * @param updates 本次批次追加后同步更新的持仓快照字段
+   */
+  addBatch: (
+    positionId: string,
+    batch: PositionBatch,
+    updates?: Partial<Pick<Position, 'currentCost' | 'currentAmount' | 'realizedPnL' | 'totalInvested'>>,
+  ) => void;
+  /**
+   * 删除单笔批次：同步按剩余批次履历重算成本/数量/已实现盈亏/累计投入，单次落库。
+   */
   deletePositionBatch: (positionId: string, batchId: string) => void;
   removePosition: (id: string) => void;
 

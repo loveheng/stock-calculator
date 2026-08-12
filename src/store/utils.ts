@@ -10,7 +10,7 @@ import { useMemo } from 'react';
 import Decimal from 'decimal.js';
 import { processAllStreams, type TStreamRecord, type StockStreamResult, type StreamEntry } from '../utils/tStreamEngine';
 import { useAppStore } from './index';
-import type { Position, TRoundArchive, RoundTxn } from './types';
+import type { Position, PositionBatch, TRoundArchive, RoundTxn } from './types';
 
 /**
  * 生成全局唯一 ID。
@@ -32,6 +32,59 @@ export function buildBasePositionCosts(positions: Position[]): Map<string, numbe
     map.set(pos.fullCode, pos.currentCost);
   }
   return map;
+}
+
+/**
+ * 从批次履历重建持仓快照（成本/数量/已实现盈亏/累计投入）。
+ *
+ * @description 采用「总资金抽回法」按时间顺序遍历批次：
+ *  - 买入（open/add）：按 价格×数量＋规费 累计投入资金与数量；
+ *  - 卖出（reduce）：按当前摊薄成本抽回资金，同时累计已实现盈亏（净收入－摊薄成本）。
+ * 用于删除批次后重建权威快照，与建仓/加减仓的写入路径保持同一口径。
+ * @param batches 持仓的完整批次履历（含 open/add/reduce，先后顺序由 timestamp 决定）
+ * @returns {{ currentCost: number; currentAmount: number; realizedPnL: number; totalInvested: number }}
+ */
+export function recomputePositionSnapshot(batches: PositionBatch[]): {
+  currentCost: number;
+  currentAmount: number;
+  realizedPnL: number;
+  totalInvested: number;
+} {
+  const sorted = [...batches].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+  let totalInvested = 0;
+  let totalAmount = 0;
+  let realizedPnL = 0;
+
+  for (const batch of sorted) {
+    const qty = Math.abs(batch.amount);
+    const batchFee = batch.fee || 0;
+    if (batch.amount > 0) {
+      totalInvested += batch.price * qty + batchFee;
+      totalAmount += qty;
+    } else {
+      if (totalAmount > 0) {
+        const costBasisPerShare = totalInvested / totalAmount;
+        const costBasisOfSold = costBasisPerShare * qty;
+        const netProceeds = batch.price * qty - batchFee;
+        realizedPnL += netProceeds - costBasisOfSold;
+        totalInvested -= costBasisOfSold;
+      }
+      totalAmount -= qty;
+      if (totalAmount <= 0) {
+        totalInvested = 0;
+        totalAmount = 0;
+      }
+    }
+  }
+
+  return {
+    currentCost: totalAmount > 0 ? totalInvested / totalAmount : 0,
+    currentAmount: totalAmount,
+    realizedPnL,
+    totalInvested,
+  };
 }
 
 /**

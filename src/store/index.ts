@@ -48,6 +48,7 @@ import { isInitialLoadDone } from '../db/storeInit';
 import {
   generateId,
   buildBasePositionCosts,
+  recomputePositionSnapshot,
   rollbackTransferPosition,
   archiveRoundIfCleared,
 } from './utils';
@@ -79,7 +80,7 @@ export type {
   AppStore,
 } from './types';
 export { EXPORT_VERSION } from './types';
-export { generateId, buildBasePositionCosts, rollbackTransferPosition, useStreamResults } from './utils';
+export { generateId, buildBasePositionCosts, recomputePositionSnapshot, rollbackTransferPosition, useStreamResults } from './utils';
 export type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 
 let persistError: string | null = null;
@@ -375,8 +376,33 @@ export const useAppStore = create<AppStore>()((set, get) => ({
   addPosition: (pos) => { set(s => ({ positions: [...s.positions, pos] })); safePersist(() => putPositionWithBatches(pos, pos.batches)); },
   updatePosition: (id, updates) => { set(s => ({ positions: s.positions.map(p => p.id === id ? { ...p, ...updates } : p) })); const u = get().positions.find(p => p.id === id); if (u) safePersist(() => putPosition(u)); },
   closePosition: (id) => { set(s => ({ positions: s.positions.map(p => p.id === id ? { ...p, isClosed: true, closedAt: new Date().toISOString() } : p) })); const u = get().positions.find(p => p.id === id); if (u) safePersist(() => putPosition(u)); },
-  addBatch: (pid, batch) => { set(s => ({ positions: s.positions.map(p => p.id === pid ? { ...p, batches: [...p.batches, batch] } : p) })); const u = get().positions.find(p => p.id === pid); if (u) safePersist(() => addBatchToPosition(u, batch)); },
-  deletePositionBatch: (pid, bid) => { set(s => ({ positions: s.positions.map(p => p.id === pid ? { ...p, batches: p.batches.filter(b => b.id !== bid) } : p) })); const u = get().positions.find(p => p.id === pid); safePersist(async () => { await deletePositionBatch(bid); if (u) await putPosition(u); }); },
+  addBatch: (pid, batch, updates) => {
+    const base = get().positions.find(p => p.id === pid);
+    if (!base) return;
+    // 一次性合并「追加批次 + 快照更新」，只做一次 set 与一次 safePersist 写库。
+    // 旧写法（先 addBatch 写旧快照，再 updatePosition 写新快照）会产生两次异步写，
+    // 而 Dexie 在同一 tick 内总是先执行隐式单表 put、后执行显式 db.transaction：
+    // updatePosition 的新值先落库，随后 addBatchToPosition 的旧快照显式事务必然覆盖新值 → 总是旧值。
+    // 合并为单次写库后不存在该问题。
+    const updated: Position = { ...base, ...updates, batches: [...base.batches, batch] };
+    set(s => ({ positions: s.positions.map(p => (p.id === pid ? updated : p)) }));
+    safePersist(() => addBatchToPosition(updated, batch));
+  },
+  deletePositionBatch: (pid, bid) => {
+    const base = get().positions.find((p) => p.id === pid);
+    if (!base) return;
+    // 删除批次后按剩余履历重建权威快照（成本/数量/已实现盈亏/累计投入）。
+    // 口径与建仓/加减仓一致（总资金抽回法，见 recomputePositionSnapshot），
+    // 一次 set + 单次持久化，避免「批次已删但快照仍是旧值」的脏数据。
+    const nextBatches = base.batches.filter((b) => b.id !== bid);
+    const snapshot = recomputePositionSnapshot(nextBatches);
+    const updated: Position = { ...base, batches: nextBatches, ...snapshot };
+    set((s) => ({ positions: s.positions.map((p) => (p.id === pid ? updated : p)) }));
+    safePersist(async () => {
+      await deletePositionBatch(bid);
+      await putPosition(updated);
+    });
+  },
   removePosition: (id) => { set(s => ({ positions: s.positions.filter(p => p.id !== id) })); safePersist(() => deletePositionWithBatches(id)); },
 
   addLongTermRecord: (record) => { set(s => ({ longTermRecords: [...s.longTermRecords, record] })); safePersist(() => putLongTermRecord(record)); },

@@ -1,7 +1,7 @@
 /**
  * @file useLiveQuotes.ts
  * @description 实时行情刷新钩子：按 A 股交易时段策略轮询腾讯行情接口
- *              （fetchStockSummary）——
+ *              （fetchStockSummaries 多代码批量合并，当前页全部标的单次请求）——
  *              - 交易时段（工作日 9:30-11:30 / 13:00-15:00）：每 5 秒刷新一次；
  *              - 非交易时段：打开视图时仅刷新一次；
  *              - 跨时段切换（开市 / 收市）：自动执行各自时段策略，
@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchStockSummary } from '../services/stockService';
+import { fetchStockSummaries } from '../services/stockService';
 import { isTradingTime } from '../utils/tradingTime';
 import type { StockQuoteSummary } from '../types/stock';
 
@@ -32,9 +32,9 @@ export interface LiveQuotesState {
 /**
  * 批量刷新所有标的最新行情并合并进 state。
  *
- * @description 单标的请求独立 try/catch，任一失败不影响其余标的；
- *              通过 inFlightRef 防止上一轮请求未结束时重复发起（避免 5 秒
- *              间隔内因慢网络叠加并发请求）。
+ * @description 全部标的合并为一次批量请求（腾讯 q=code1,code2），返回后
+ *              一次性合并更新；通过 inFlightRef 防止上一轮请求未结束时重复
+ *              发起（避免 5 秒间隔内因慢网络叠加并发请求）。
  */
 export function useLiveQuotes(fullCodes: string[]): LiveQuotesState {
   const [quotes, setQuotes] = useState<Record<string, StockQuoteSummary | null>>({});
@@ -49,24 +49,13 @@ export function useLiveQuotes(fullCodes: string[]): LiveQuotesState {
     if (codes.length === 0 || inFlightRef.current) return;
     inFlightRef.current = true;
     try {
-      const entries = await Promise.all(
-        codes.map(async (code) => {
-          try {
-            const quote = await fetchStockSummary(code);
-            return [code, quote] as const;
-          } catch (err) {
-            // 单标的失败不阻塞整体：保留旧数据，仅提示
-            console.warn(`[useLiveQuotes] 获取 ${code} 行情失败：`, err);
-            return [code, null] as const;
-          }
-        })
-      );
-      setQuotes((prev) => {
-        const next: Record<string, StockQuoteSummary | null> = { ...prev };
-        for (const [code, quote] of entries) next[code] = quote;
-        return next;
-      });
+      // 批量合并：当前页面全部标的一次请求（q=code1,code2），返回后一起更新
+      const next = await fetchStockSummaries(codes);
+      setQuotes((prev) => ({ ...prev, ...next }));
       setLastUpdated(Date.now());
+    } catch (err) {
+      // 整体失败不崩页：保留旧数据，仅提示（单个标的缺失由服务层降级为 null）
+      console.warn('[useLiveQuotes] 批量行情刷新失败：', err);
     } finally {
       inFlightRef.current = false;
     }

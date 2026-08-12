@@ -23,6 +23,7 @@ import {
 import { ledgerService } from '../services/ledgerService';
 import type { LongTermRecordRow } from '../db/index';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
+import { useLiveQuotes } from '../hooks/useLiveQuotes';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
 import {
   validateStreamTrade,
@@ -41,7 +42,7 @@ import {
 } from '../utils/tStreamEngine';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import ConfirmModal from '../components/ui/ConfirmModal';
-import type { StockSearchItem } from '../types/stock';
+import type { StockQuoteSummary, StockSearchItem } from '../types/stock';
 import type {
   BasePosition,
   TStepNode,
@@ -436,10 +437,11 @@ function TStateMachinePanel({
  * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
  *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
  *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
- * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number }} props
+ * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number; quote: StockQuoteSummary | null }} props
  *  - result: 该标的的流水池撮合结果
  *  - basePosition: 对应底仓持仓（用于超卖校验与划转）
  *  - roundNo: 该标的当前做T轮次序号
+ *  - quote: 该标的最新实时行情（批量请求返回，无行情时为 null）
  * @returns {JSX.Element} 做T项目卡片视图
  * @note 写操作均委托 Store Action 落库并触发级联重算；超卖/数量校验由
  *       validateStreamTrade 在录入前拦截
@@ -449,11 +451,13 @@ function CurrentProjectCard({
   basePosition,
   roundNo,
   feeConfig,
+  quote,
 }: {
   result: StockStreamResult;
   basePosition: Position | undefined;
   roundNo: number;
   feeConfig: FeeConfig | undefined;
+  quote: StockQuoteSummary | null;
 }) {
   const [showAppend, setShowAppend] = useState(false);
   const [showEntries, setShowEntries] = useState(false);
@@ -563,6 +567,12 @@ function CurrentProjectCard({
             {result.mode === 'short' ? '倒T' : '正T'}
           </span>
           <StreamStatusBadge result={result} />
+          {quote && quote.currentPrice > 0 && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-bold shrink-0 ${quote.changePercent >= 0 ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+              现价 ¥{quote.currentPrice.toFixed(3)}（{quote.changePercent >= 0 ? '+' : ''}
+              {quote.changePercent.toFixed(2)}%）
+            </span>
+          )}
         </div>
         {basePosition && basePosition.currentAmount === 0 ? (
           <span className="text-xs text-amber-300 shrink-0 bg-amber-500/10 px-2 py-0.5 rounded-full">
@@ -1103,6 +1113,22 @@ export default function TCalculator() {
 
   // 表单状态
   const [stock, setStock] = useState<StockSearchItem | null>(null);
+
+  // 实时行情：订阅「当前页面显示的标的」= 选中股票 + 所有进行中做T项目的 fullCode，
+  // 批量合并为单次请求（q=sh600745,sz002594），返回后各卡片一起更新现价
+  const quoteCodes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [...(stock?.fullCode ? [stock.fullCode] : []), ...results.map((r) => r.fullCode)]
+            .map((c) => c.trim())
+            .filter(Boolean)
+        )
+      ),
+    [stock, results]
+  );
+  const { quotes, isTrading, lastUpdated } = useLiveQuotes(quoteCodes);
+
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [price, setPrice] = useState('');
   const [amount, setAmount] = useState('');
@@ -1277,6 +1303,18 @@ export default function TCalculator() {
         </div>
       )}
 
+      {/* 实时行情状态：当前页全部标的批量合并为一次请求，交易时段每 5 秒刷新 */}
+      <div className="flex items-center justify-between px-1 text-xs">
+        <span className={isTrading ? 'text-blue-400 font-medium' : 'text-slate-500'}>
+          {isTrading ? '● 交易时段 · 行情每 5 秒自动刷新' : '○ 非交易时段 · 打开时刷新一次'}
+        </span>
+        {lastUpdated !== null && (
+          <span className="text-slate-600">
+            行情更新于 {new Date(lastUpdated).toLocaleTimeString('zh-CN', { hour12: false })}
+          </span>
+        )}
+      </div>
+
       {/* 汇总卡片 */}
       <div className="grid grid-cols-3 gap-3">
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-3">
@@ -1343,6 +1381,20 @@ export default function TCalculator() {
             placeholder="搜索股票代码/名称..."
           />
         </div>
+
+        {/* 选中股票的实时现价（来自批量行情请求） */}
+        {stock?.fullCode && quotes[stock.fullCode] && quotes[stock.fullCode]!.currentPrice > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className="text-slate-500">实时现价</span>
+            <span className={`font-mono font-bold text-sm tabular-nums ${quotes[stock.fullCode]!.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+              ¥{quotes[stock.fullCode]!.currentPrice.toFixed(3)}
+            </span>
+            <span className={`font-mono ${quotes[stock.fullCode]!.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+              {quotes[stock.fullCode]!.changePercent >= 0 ? '+' : ''}
+              {quotes[stock.fullCode]!.changePercent.toFixed(2)}%
+            </span>
+          </div>
+        )}
 
         <div className="form-row">
           <div className="form-group">
@@ -1458,6 +1510,7 @@ export default function TCalculator() {
                 basePosition={positions.find((p) => p.fullCode === r.fullCode && !p.isClosed)}
                 roundNo={roundNo}
                 feeConfig={feeConfig}
+                quote={quotes[r.fullCode] ?? null}
               />
             );
           })

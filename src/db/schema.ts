@@ -56,8 +56,13 @@ export interface PositionEntity extends BaseEntity {
   currentCost: number;
   /** 当前持有数量（股） */
   currentAmount: number;
-  /** 是否已平仓 */
-  isClosed: boolean;
+  /**
+   * 是否已平仓：0 = 未平仓，1 = 已平仓。
+   * 注意必须使用 0|1 数字而非 boolean —— IndexedDB 的索引 key 仅支持 number/string/Date/binary/Array，
+   * boolean 不是合法 key 类型，boolean 字段不会被 isClosed / [isClosed+isDeleted] 索引收录，
+   * 导致按索引查询（[0,0]/[1,0]）查不出任何数据。
+   */
+  isClosed: 0 | 1;
   /** 平仓时间戳（毫秒），未平仓时缺省 */
   closedAt?: number;
   /** 累计投入金额（元） */
@@ -323,11 +328,18 @@ const STORES_V6 = {
 } as const;
 
 /**
+ * v7：存量数据迁移版本 —— positions 表 isClosed 由 boolean 迁移为 0|1 数字。
+ * 索引定义与 v6 完全一致（isClosed 单字段索引自 v2 已存在，[isClosed+isDeleted] 复合索引自 v6 已存在），
+ * 因此无需变更 schema，仅在 upgrade 回调中把存量 boolean 值转为数字，使索引开始收录这些记录。
+ */
+const STORES_V7: typeof STORES_V6 = STORES_V6;
+
+/**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
  * @description 集中管理全部 10 张规范化表，并声明各表的索引字段以支持高效查询。
  * @note 索引字符串格式为 Dexie schema：主键在前（`++` 自增 / 普通字段），逗号分隔的字段均会被建立索引。
- * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V6 常量定义。
+ * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V7 常量定义。
  */
 export class TradingLedgerDB extends Dexie {
   /** 股票基础信息表 */
@@ -355,7 +367,7 @@ export class TradingLedgerDB extends Dexie {
   longTermRecords!: Table<LongTermRecordEntity, string>;
 
   /**
-   * 初始化数据库结构（版本链 v2→v6）。
+   * 初始化数据库结构（版本链 v2→v7）。
    *
    * @description 声明各表的主键与索引；后续结构变更须升级 version 并添加 stores/upgrade 迁移逻辑。
    *              新增版本时在 STORES_Vx 链尾部追加增量定义即可，无需全量复制。
@@ -367,6 +379,24 @@ export class TradingLedgerDB extends Dexie {
     this.version(4).stores(STORES_V4 as Record<string, string>);
     this.version(5).stores(STORES_V5 as Record<string, string>);
     this.version(6).stores(STORES_V6 as Record<string, string>);
+    this.version(7)
+      .stores(STORES_V7 as Record<string, string>)
+      .upgrade(async (tx) => {
+        // v6 及更早版本 isClosed 为 boolean。IndexedDB 仅支持 number/string/Date/binary/Array 作为
+        // 索引 key，boolean 不是合法 key 类型，导致 isClosed 与 [isClosed+isDeleted] 索引不收录任何记录，
+        // 按索引查询（equals([0,0]) / equals([1,0])）查不出数据。迁移为 0|1 数字后索引即可生效。
+        await tx
+          .table('positions')
+          .toCollection()
+          .modify((pos: { isClosed?: unknown }) => {
+            if (typeof pos.isClosed === 'boolean') {
+              pos.isClosed = pos.isClosed ? 1 : 0;
+            } else if (typeof pos.isClosed !== 'number') {
+              // 兜底：缺失或异常值时视为未平仓
+              pos.isClosed = 0;
+            }
+          });
+      });
   }
 }
 

@@ -51,6 +51,8 @@ function mapPositionEntityToStore(
   return {
     ...position,
     stockName,
+    // 实体层 isClosed 为 0|1 数字（IndexedDB 索引不支持 boolean），读回 Store 层时转回 boolean
+    isClosed: position.isClosed === 1,
     createdAt: new Date(position.createdAt).toISOString(),
     closedAt: position.closedAt ? new Date(position.closedAt).toISOString() : undefined,
   };

@@ -2,7 +2,7 @@
  * @file Home.tsx
  * @description 首页仪表盘：聚合展示做T总览（实时已实现收益/待对冲持仓/底仓状态）、
  *              近 N 日收益趋势、持仓分布、账户现金流（现金/总资产）与做T异动预警。
- *              数据来源：useStreamResults（流水池撮合引擎）+ ledgerServices（持仓/现金账本）。
+ *              数据来源：useStreamResults（流水池撮合引擎）+ Store positions（持仓账本）。
  * @layer UI
  * @storage_impact 只读消费：positions（底仓持仓）、tStreams（流水池）与 cashTransactions（现金账户）；
  *                 不直接写入任何 IndexedDB 表，跳转类操作委托各功能页完成。
@@ -24,9 +24,7 @@ import {
   AlertTriangle,
   ArrowRight,
 } from 'lucide-react';
-import { useStreamResults } from '../store';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { ledgerService } from '../services/ledgerService';
+import { useStreamResults, useAppStore } from '../store';
 import { roundTo } from '../utils/mathUtils';
 import type { StockStreamResult } from '../utils/tStreamEngine';
 
@@ -52,7 +50,7 @@ interface AlertItem {
 /**
  * 首页仪表盘组件。
  *
- * @description 组合 useLiveQuery 订阅持仓账本与流水池：
+ * @description 组合 Store positions 与流水池：
  *               - 计算总持仓市值、现金余额与总资产
  *               - 汇总做T实时收益（transferProfit 口径）
  *               - 按 1d/7d/30d/all 时间维度过滤收益趋势
@@ -63,14 +61,7 @@ interface AlertItem {
 export default function Home() {
   const navigate = useNavigate();
   const streamResults = useStreamResults();
-
-  const positions = useLiveQuery(
-    async () => await ledgerService.getPositionsWithStockInfo(),
-    [],
-    [],
-  ) as any[];
-
-  const tRounds = useLiveQuery(async () => await ledgerService.getTRoundsWithTransactions(), [], []) as any[];
+  const positions = useAppStore((s) => s.positions);
 
   // ---- 时间筛选状态 ----
   const [timeRange, setTimeRange] = useState<TimeRange>('7d');
@@ -319,15 +310,25 @@ export default function Home() {
   const [alertIndex, setAlertIndex] = useState(0);
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // 清理定时器的辅助函数
+  const clearAlertTimer = useCallback(() => {
+    if (alertTimerRef.current !== null) {
+      clearInterval(alertTimerRef.current);
+      alertTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
-    if (alertItems.length === 0) return;
+    clearAlertTimer();
+    if (alertItems.length === 0) {
+      setAlertIndex(0);
+      return;
+    }
     alertTimerRef.current = setInterval(() => {
       setAlertIndex((prev) => (prev + 1) % alertItems.length);
     }, 4000);
-    return () => {
-      if (alertTimerRef.current) clearInterval(alertTimerRef.current);
-    };
-  }, [alertItems.length]);
+    return clearAlertTimer;
+  }, [alertItems.length, clearAlertTimer]);
 
   const currentAlert =
     alertItems.length > 0 ? alertItems[alertIndex % alertItems.length] : null;

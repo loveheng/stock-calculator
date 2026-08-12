@@ -1,34 +1,30 @@
 /**
  * @file storeInit.ts
- * @description Store 初始化与持久化桥接层：应用启动时从 IndexedDB 全量装载数据到 Zustand Store。
- *              v4 重构：移除全量覆盖写订阅（startStorePersistence），改用 Store Action 内增量写库。
+ * @description Store 初始化与持久化桥接层：应用启动时仅从 IndexedDB 加载费率配置到 Zustand Store。
+ *              v7 重构：彻底采用按需加载模式，冷启动只加载 feeConfig，其他数据由各视图通过 useDataLoader 钩子按需加载。
  * @layer DAO
- * @storage_impact 读取 IndexedDB 的 feeConfigs / positions / positionBatches / tRounds / tTransactions / stocks 表。
+ * @storage_impact 启动时仅读取 feeConfigs 表（1 张），不再加载 positions / tStreams / stocks 等数据。
  * @author 开发团队
  */
 
 // ============================================================
-// Store Initialization – Load from IndexedDB.
+// Store Initialization – Minimal Cold Start.
 // Persistence is now handled incrementally inside Zustand actions.
+// Data loading is deferred to view-level hooks (useDataLoader).
 // ============================================================
 
 import {
   ensureDefaultData,
-  loadAllFromDB,
-  type FeeConfigRow,
-  type LongTermRecordRow,
-  type PositionRow,
-  type TRoundRow,
-  type TStreamRow,
-  type StockRow,
+  loadFeeConfigFromDB,
 } from './index';
-import { useAppStore, DEFAULT_FEE_CONFIG, type AppStore } from '../store';
+import { useAppStore, DEFAULT_FEE_CONFIG } from '../store';
 
 /** 标记：首次初始化加载是否已完成；未完成前禁止触发任何向 DB 的写入操作 */
 let initialLoadDone = false;
 
 /**
  * 查询初始化加载是否已完成。
+ *
  * 供 Store Action 在写库前作为防护检查。
  */
 export function isInitialLoadDone(): boolean {
@@ -36,28 +32,24 @@ export function isInitialLoadDone(): boolean {
 }
 
 /**
- * 初始化应用 Store：确保默认行 → 全量装载 DB → 注入 Store 状态。
+ * 初始化应用 Store：仅冷启动加载费率配置，其余数据由各视图按需加载。
  *
  * @description 执行顺序：① ensureDefaultData() 确保现金账户与费率配置单行存在；
- *              ② loadAllFromDB() 全量读取各表；
- *              ③ 若任一数据源非空，则 setState 覆盖当前 Store（feeConfig / positions / tRounds / tStreams / stocks / longTermRecords）。
+ *              ② loadFeeConfigFromDB() 冷启动加载费率配置（仅 1 行）；
+ *              ③ 若 feeConfig 存在，则 setState 更新 Store。
+ *              ④ positions / tStreams / tRounds / stocks 等数据由各视图通过 useDataLoader 钩子按需加载。
  * @returns {Promise<void>}
  * @note 仅在启动时调用一次；装载完成后将 initialLoadDone 置 true，后续 Store Action 才开始增量写库
  */
 export async function initStore(): Promise<void> {
   await ensureDefaultData();
 
-  const { feeConfig, positions, tRounds, tStreams, stocks, longTermRecords } = await loadAllFromDB();
+  const feeConfig = await loadFeeConfigFromDB();
 
-  if (feeConfig || positions.length > 0 || tRounds.length > 0 || tStreams.length > 0 || stocks.length > 0 || longTermRecords.length > 0) {
+  if (feeConfig) {
     useAppStore.setState((current) => ({
       ...current,
-      feeConfig: (feeConfig as FeeConfigRow) ?? { ...DEFAULT_FEE_CONFIG },
-      positions: (positions as unknown as AppStore['positions']) ?? [],
-      tRounds: (tRounds as unknown as AppStore['tRounds']) ?? [],
-      tStreams: (tStreams as unknown as AppStore['tStreams']) ?? [],
-      stocks: (stocks as unknown as AppStore['stocks']) ?? [],
-      longTermRecords: (longTermRecords as unknown as AppStore['longTermRecords']) ?? [],
+      feeConfig: feeConfig ?? { ...DEFAULT_FEE_CONFIG },
     }));
   }
 

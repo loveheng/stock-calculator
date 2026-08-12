@@ -12,8 +12,6 @@
 import React, { useState, useMemo } from 'react';
 import { Save, Download, Upload, FileSpreadsheet, RefreshCw } from 'lucide-react';
 import { useAppStore, FEE_TEMPLATES } from '../store';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { getFeeConfig } from '../services/ledgerService';
 import { calcFeeBreakdown } from '../utils/mathUtils';
 import type { FeeConfig } from '../utils/mathUtils';
 
@@ -30,7 +28,7 @@ import type { FeeConfig } from '../utils/mathUtils';
  */
 export default function FeeConfigPage() {
   const { setFeeConfig, exportJSON, importJSON, exportCSV } = useAppStore();
-  const feeConfig = useLiveQuery(async () => await getFeeConfig(), [], undefined) as FeeConfig | null;
+  const feeConfig = useAppStore((s) => s.feeConfig);
 
   const [localConfig, setLocalConfig] = useState<FeeConfig>({ ...(feeConfig ?? FEE_TEMPLATES['A股标准模板']) });
   const [hasChanges, setHasChanges] = useState(false);
@@ -97,8 +95,8 @@ export default function FeeConfigPage() {
   };
 
   // JSON 导出
-  const handleExport = () => {
-    const data = exportJSON();
+  const handleExport = async () => {
+    const data = await exportJSON();
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

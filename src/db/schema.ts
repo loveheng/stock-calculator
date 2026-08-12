@@ -2,7 +2,7 @@
  * @file schema.ts
  * @description 定义 TradingLedgerDB_v3 的全部 IndexedDB 实体类型（Entity）与 Dexie 数据库表结构，是整个应用数据持久化的类型基石。
  * @layer DAO
- * @storage_impact 声明 stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes / feeConfigs 共 9 张表的实体结构，并导出 Dexie 实例 db。
+ * @storage_impact 声明 stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes / feeConfigs / longTermRecords 共 10 张表的实体结构，并导出 Dexie 实例 db。
  * @author 开发团队
  */
 
@@ -179,6 +179,8 @@ export interface TStreamEntity extends BaseEntity {
 }
 
 /** 现金账户实体（accountCash 表）。单行记录（id 固定为 1）。 */
+// TODO: 该表目前仅 ensureDefaultData() 初始化 + addPositionTransaction() 写入，
+//       但无 UI 组件读取展示。后续需实现现金账户页面或仪表盘资金卡片。
 export interface AccountCashEntity {
   /** 主键，固定为 1（单例） */
   id: number;
@@ -199,6 +201,8 @@ export interface AccountCashEntity {
 }
 
 /** 现金流水实体（cashFlows 表）。记录入金/出金/分红/利息等资金变动。 */
+// TODO: 该表虽已定义实体与索引，但尚未有任何读写代码。
+//       后续需实现现金流水页面，支持入金/出金/分红/利息记录 + 历史流水查看。
 export interface CashFlowEntity extends BaseEntity {
   /** 流水类型：入金 / 出金 / 分红 / 利息 */
   type: 'deposit' | 'withdraw' | 'dividend' | 'interest';
@@ -213,6 +217,8 @@ export interface CashFlowEntity extends BaseEntity {
 }
 
 /** 交易笔记实体（tradeNotes 表）。用于记录做T/持仓的复盘心得。 */
+// TODO: 该表虽已定义实体与索引，但尚未有任何读写代码。
+//       后续需实现交易笔记页面，支持 Round/持仓关联笔记 + 标签/评分/复盘。
 export interface TradeNoteEntity extends BaseEntity {
   /** 关联做T轮次 id（可选） */
   roundId?: string;
@@ -285,10 +291,43 @@ export interface LongTermRecordEntity extends BaseEntity {
 }
 
 /**
+ * 各版本不变的基础表结构（v2）。
+ * 后续版本基于此增量叠加或覆盖，不再全量复制。
+ */
+const STORES_V2 = {
+  stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, updatedAt, isDeleted',
+  positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
+  positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
+  tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
+  tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
+  accountCash: 'id, updatedAt',
+  cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
+  tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
+  feeConfigs: 'id, updatedAt',
+} as const;
+
+/** v3：新增 tStreams 表 */
+const STORES_V3 = { ...STORES_V2, tStreams: 'id, fullCode, direction, timestamp, updatedAt, isDeleted' } as const;
+
+/** v4：新增 longTermRecords 表 */
+const STORES_V4 = { ...STORES_V3, longTermRecords: 'id, fullCode, type, sourceReportId, timestamp, updatedAt, isDeleted' } as const;
+
+/** v5：stocks 表增加 kind 字段索引 */
+const STORES_V5 = { ...STORES_V4, stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, kind, updatedAt, isDeleted' } as const;
+
+/** v6：positions 增加复合索引 [isClosed+isDeleted]，tRounds 增加复合索引 [status+isDeleted] */
+const STORES_V6 = {
+  ...STORES_V5,
+  positions: 'id, fullCode, isClosed, [isClosed+isDeleted], createdAt, updatedAt, isDeleted',
+  tRounds: 'id, positionId, fullCode, mode, status, [status+isDeleted], openedAt, closedAt, updatedAt, isDeleted',
+} as const;
+
+/**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
- * @description 集中管理全部 9 张规范化表，并声明各表的索引字段以支持高效查询。
+ * @description 集中管理全部 10 张规范化表，并声明各表的索引字段以支持高效查询。
  * @note 索引字符串格式为 Dexie schema：主键在前（`++` 自增 / 普通字段），逗号分隔的字段均会被建立索引。
+ * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V6 常量定义。
  */
 export class TradingLedgerDB extends Dexie {
   /** 股票基础信息表 */
@@ -316,61 +355,18 @@ export class TradingLedgerDB extends Dexie {
   longTermRecords!: Table<LongTermRecordEntity, string>;
 
   /**
-   * 初始化数据库结构（版本 2 的 stores 定义）。
+   * 初始化数据库结构（版本链 v2→v6）。
    *
    * @description 声明各表的主键与索引；后续结构变更须升级 version 并添加 stores/upgrade 迁移逻辑。
+   *              新增版本时在 STORES_Vx 链尾部追加增量定义即可，无需全量复制。
    */
   constructor() {
     super('TradingLedgerDB_v3');
-    this.version(2).stores({
-      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, updatedAt, isDeleted',
-      positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
-      positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
-      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
-      tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
-      accountCash: 'id, updatedAt',
-      cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
-      tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
-      feeConfigs: 'id, updatedAt',
-    });
-    this.version(3).stores({
-      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, updatedAt, isDeleted',
-      positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
-      positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
-      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
-      tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
-      tStreams: 'id, fullCode, direction, timestamp, updatedAt, isDeleted',
-      accountCash: 'id, updatedAt',
-      cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
-      tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
-      feeConfigs: 'id, updatedAt',
-    });
-    this.version(4).stores({
-      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, updatedAt, isDeleted',
-      positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
-      positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
-      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
-      tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
-      tStreams: 'id, fullCode, direction, timestamp, updatedAt, isDeleted',
-      accountCash: 'id, updatedAt',
-      cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
-      tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
-      feeConfigs: 'id, updatedAt',
-      longTermRecords: 'id, fullCode, type, sourceReportId, timestamp, updatedAt, isDeleted',
-    });
-    this.version(5).stores({
-      stocks: 'fullCode, code, stockName, pinYin, marketType, securityType, kind, updatedAt, isDeleted',
-      positions: 'id, fullCode, isClosed, createdAt, updatedAt, isDeleted',
-      positionBatches: 'id, positionId, type, timestamp, updatedAt, isDeleted',
-      tRounds: 'id, positionId, fullCode, mode, status, openedAt, closedAt, updatedAt, isDeleted',
-      tTransactions: 'id, roundId, timestamp, updatedAt, isDeleted',
-      tStreams: 'id, fullCode, direction, timestamp, updatedAt, isDeleted',
-      accountCash: 'id, updatedAt',
-      cashFlows: 'id, type, timestamp, fullCode, updatedAt, isDeleted',
-      tradeNotes: 'id, roundId, positionId, timestamp, updatedAt, isDeleted',
-      feeConfigs: 'id, updatedAt',
-      longTermRecords: 'id, fullCode, type, sourceReportId, timestamp, updatedAt, isDeleted',
-    });
+    this.version(2).stores(STORES_V2 as Record<string, string>);
+    this.version(3).stores(STORES_V3 as Record<string, string>);
+    this.version(4).stores(STORES_V4 as Record<string, string>);
+    this.version(5).stores(STORES_V5 as Record<string, string>);
+    this.version(6).stores(STORES_V6 as Record<string, string>);
   }
 }
 

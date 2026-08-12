@@ -950,10 +950,10 @@ export function cancelDefenseDialog(state: TStateMachineState): TStateMachineSta
   };
 }
 
-// Re-export for backward compatibility - the old processStockStream and processAllStreams
+// Re-export for backward compatibility - the processStockStream and processAllStreams
 // These are kept to maintain compatibility with existing store code that references them
 
-/** @deprecated Use stepTEngine instead */
+/** Process-based stream entry interface */
 export interface StreamEntry {
   id: string;
   timestamp: string;
@@ -970,7 +970,7 @@ export interface StreamEntry {
 
 export type StreamStatus = 'PENDING' | 'PARTIAL' | 'CLEARED' | 'SHORT_PENDING';
 
-/** @deprecated Use TStateMachineState instead */
+/** Stream-level result returned by the engine for each stock */
 export interface StockStreamResult {
   fullCode: string;
   stockName: string;
@@ -1015,7 +1015,7 @@ export interface SellValidation {
 }
 
 /**
- * @deprecated Old time comparison - kept for backward compat
+ * Timestamp comparison helper for sorting stream records.
  */
 export function compareByTimestamp(a: string, b: string): number {
   const ta = new Date(a).getTime();
@@ -1035,9 +1035,8 @@ export function compareByTimestamp(a: string, b: string): number {
 // ──────────────────────────────────────────────
 
 /**
- * @deprecated Use stepTEngine instead. Old FIFO engine kept for compatibility.
- * Old signature: processAllStreams(rawStreams, feeConfig, Map<string, number>)
- * where Map values are average cost (just a number, not an object).
+ * Process all streams grouped by stock code using FIFO matching.
+ * Core engine function used by the Store for settlement/recalculation.
  */
 export function processAllStreams(
   rawStreams: TStreamRecord[],
@@ -1069,8 +1068,8 @@ export function processAllStreams(
 }
 
 /**
- * @deprecated Use stepTEngine instead. Old sequential processor kept for compatibility.
- * Old signature: processStockStream(sorted, feeConfig, baseCost?: number, skipFifo?: boolean, baseCostOverride?: number)
+ * Process a single stock's stream records sequentially.
+ * Used by processAllStreams and for individual stock recalculation.
  */
 export function processStockStream(
   sorted: TStreamRecord[],
@@ -1210,9 +1209,8 @@ export function processStockStream(
 }
 
 /**
- * @deprecated Old sell validation kept for backward compat.
- * Old signature: validateStreamTrade(stream: StockStreamResult|null, baseAmount: number,
- *   direction: string, price: number, amount: number, isFirstSell?: boolean)
+ * Sell validation: checks if a sell order is valid given the base position.
+ * Used by both Store and UI for pre-trade validation.
  */
 export function validateStreamTrade(
   _stream: StockStreamResult | null,

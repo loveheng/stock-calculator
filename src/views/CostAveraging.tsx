@@ -12,8 +12,6 @@
 import React, { useState } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { getPositionsWithStockInfo, getFeeConfig } from '../services/ledgerService';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
 import type { Position, PositionBatch } from '../store';
 import type { StockSearchItem } from '../types/stock';
@@ -199,13 +197,13 @@ function ClearPositionModal({
  *  - 展开卡片查看批次履历与目标成本达成的补仓提示
  * @returns {JSX.Element} 建仓账本视图
  * @note 所有写操作委托 useAppStore（addPosition/addBatch/closePosition/
- *       updatePosition/deletePositionBatch/removePosition）落库 IndexedDB
+ *       updatePosition/deletePositionBatch/removePosition）落库 IndexedDB；
+ *       数据源从 Store 读取（由 useLoadCoreData 按需加载）。
  */
 function PositionLedger() {
   const { addPosition, addBatch, closePosition, updatePosition, deletePositionBatch, removePosition } = useAppStore();
-
-  const positions = useLiveQuery(async () => await getPositionsWithStockInfo(), [], []) as any[];
-  const feeConfig = useLiveQuery(async () => await getFeeConfig(), [], undefined) as any;
+  const positions = useAppStore((s) => s.positions);
+  const feeConfig = useAppStore((s) => s.feeConfig);
 
   const [selectedStock, setSelectedStock] = useState<StockSearchItem | null>(null);
   const [stockName, setStockName] = useState('');
@@ -994,7 +992,7 @@ function TargetCostCalculator() {
  *
  * @description 提供「多批次建仓实盘账本」与「目标成本推算」双 Tab 切换容器。
  * @returns {JSX.Element} 成本分摊页面视图
- * @note 页面挂载即通过 useLiveQuery 订阅 positions/batches 实时响应 IndexedDB 变化
+ * @note 页面挂载即通过 Store 读取 positions/batches（由 useLoadCoreData 按需加载）
  */
 export default function CostAveraging() {
   const [tab, setTab] = useState<'ledger' | 'target'>('ledger');

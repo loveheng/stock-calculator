@@ -11,11 +11,9 @@
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Search, X, ChevronDown, ChevronUp, BarChart3, Wallet, Loader2 } from 'lucide-react';
-import { useStreamResults } from '../store';
-import type { Position, PositionBatch } from '../store';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { ledgerService } from '../services/ledgerService';
-import type { RoundTxn } from '../store';
+import { useStreamResults, useAppStore } from '../store';
+import type { Position, PositionBatch, RoundTxn } from '../store';
+import { useArchivedRounds } from '../hooks/useArchivedRounds';
 import type { StreamEntry } from '../utils/tStreamEngine';
 import { searchStocks } from '../services/stockService';
 import type { StockSearchItem } from '../types/stock';
@@ -54,14 +52,14 @@ interface TCardData {
   roundNo: number;
   mode: 'long' | 'short';
   status: 'open' | 'closed';
-  settleType?: 'clear' | 'transfer';
+  settleType?: 'clear' | 'partial' | 'transfer';
   netProfit: number;
-  fees: number;
-  avgPrice: number;
-  buyAmount: number;
-  sellAmount: number;
-  tradeCount: number;
-  win: boolean;
+  fees?: number;
+  avgPrice?: number;
+  buyAmount?: number;
+  sellAmount?: number;
+  tradeCount?: number;
+  win?: boolean;
   openedAt: string;
   closedAt?: string;
   // 进行中专用
@@ -83,12 +81,17 @@ interface TCardData {
  *              - 个股行情搜索（快照行情）
  *              - 建仓履历（持仓批次 + 做T降本对照）
  * @returns {JSX.Element} 数据统计页视图
- * @note 删除/还原归档战报属于写操作，通过 ledgerService 落库并联动 store 刷新
+ * @note 数据源从 Store 读取（由 useLoadCoreData 按需加载）；删除/还原归档战报通过 ledgerService 落库
  */
 export default function Statistics() {
   const streamResults = useStreamResults();
-  const tRounds = useLiveQuery(async () => await ledgerService.getTRoundsWithTransactions(), [], []) as any[];
-  const positions = useLiveQuery(async () => await ledgerService.getPositionsWithStockInfo(), [], []) as Position[];
+  // 进行中的 Round（仅 OPENED 状态，lite 加载）
+  const tRounds = useAppStore((s) => s.tRounds);
+  // 未平仓持仓（lite 加载）
+  const positions = useAppStore((s) => s.positions);
+
+  // 已归档 Round（按需懒加载，启动时不加载）
+  const { archivedRounds, archivedLoading } = useArchivedRounds();
 
   const [tab, setTab] = useState<'trades' | 'positions'>('trades');
   const [searchQuery, setSearchQuery] = useState('');
@@ -194,8 +197,8 @@ export default function Statistics() {
       });
     }
 
-    // 2) 已归档 Round
-    for (const round of tRounds) {
+    // 2) 已归档 Round（按需加载的已完成战报）
+    for (const round of archivedRounds) {
       cards.push({
         id: `archived-${round.id}`,
         source: 'archived',
@@ -222,7 +225,7 @@ export default function Statistics() {
     return [...cards].sort(
       (a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime()
     );
-  }, [streamResults, tRounds]);
+  }, [streamResults, tRounds, archivedRounds]);
 
   // ---- 筛选（链式组合：搜索 → 方向/状态 → 时间范围，任一不匹配即排除） ----
   const filteredCards = useMemo(() => {
@@ -268,7 +271,7 @@ export default function Statistics() {
     const winCount = closedCards.filter((c) => c.win).length;
     const loseCount = totalClosedCount - winCount;
     const winRate = totalClosedCount > 0 ? (winCount / totalClosedCount) * 100 : 0;
-    const totalFees = allCards.reduce((sum, c) => sum + c.fees, 0);
+    const totalFees = allCards.reduce((sum, c) => sum + (c.fees ?? 0), 0);
     return { totalNetProfit, totalClosedCount, winCount, loseCount, winRate, totalFees };
   }, [allCards]);
 
@@ -355,7 +358,7 @@ export default function Statistics() {
     }
     if (card.mode === 'long' && card.status === 'closed') {
       // 正T · 已完成
-      const rate = fmtRate(card.netProfit, card.avgPrice * card.sellAmount);
+      const rate = fmtRate(card.netProfit, (card.avgPrice ?? 0) * (card.sellAmount ?? 0));
       return (
         <>
           <div className="rounded-2xl bg-slate-950/80 p-3">
@@ -413,7 +416,7 @@ export default function Statistics() {
       );
     }
     // 倒T · 已完成
-    const rate = fmtRate(card.netProfit, card.avgPrice * card.sellAmount);
+    const rate = fmtRate(card.netProfit, (card.avgPrice ?? 0) * (card.sellAmount ?? 0));
     return (
       <>
         <div className="rounded-2xl bg-slate-950/80 p-3">
@@ -728,8 +731,8 @@ export default function Statistics() {
                                     </div>
                                     <div className="text-slate-400">
                                       对冲盈亏
-                                      <span className={`ml-1 ${entry.realizedProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                        {entry.realizedProfit >= 0 ? '+' : ''}¥{entry.realizedProfit.toFixed(2)}
+                                      <span className={`ml-1 ${(entry.realizedProfit ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        {(entry.realizedProfit ?? 0) >= 0 ? '+' : ''}¥{(entry.realizedProfit ?? 0).toFixed(2)}
                                       </span>
                                     </div>
                                   </div>

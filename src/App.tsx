@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
+import { useLoadCoreData } from './hooks/useDataLoader';
 
 // --- Lazy loaded views ---
 import HomePage from './views/Home';
@@ -118,6 +119,10 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
 function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
+
+  // 按需加载核心数据（tStreams / positions / tRounds）
+  // 冷启动时仅加载 feeConfig，核心数据在首次渲染后异步加载，降低首屏等待时间
+  useLoadCoreData();
 
   // 获取当前页面标题
   const currentPage = NAV_ITEMS.find((item) => item.path === location.pathname);

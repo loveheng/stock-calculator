@@ -206,4 +206,51 @@ describe('processStockStream 倒T 战报净收益（回归保护）', () => {
     expect(result.transferProfit).toBeGreaterThan(20);
     expect(result.status).toBe('CLEARED');
   });
+
+  test('倒T 卖出 300 股 @17.43 → 买入 400 股 @16.00：超额买回自动对冲 + 剩余归并底仓', () => {
+    // 场景：倒T 先卖出 300 股，再买入 400 股（超出 100 股）
+    // 预期：300 股配对成功，100 股超出归并到底仓
+    // 净收益 = (17.43 * 300 - 卖出规费) - (16.00 * 300 + 买入规费对冲部分)
+    const sellFee = 2.5; // 17.43*300=5229：佣金 0.5 + 印花税 2.6145 + 过户费 0.052 ≈ 3.17，取整 fixture
+    const buyFee = 2.0;  // 16.00*400=6400：佣金 0.5 + 过户费 0.064 ≈ 0.564，取整 fixture
+    const result = processStockStream(
+      [
+        makeRecord({ id: 's1', direction: 'sell', price: 17.43, amount: 300, fee: sellFee, timestamp: '2026-08-13T01:00:00.000Z' }),
+        makeRecord({ id: 'b1', direction: 'buy', price: 16.00, amount: 400, fee: buyFee, timestamp: '2026-08-13T02:00:00.000Z' }),
+      ],
+      FEE_CONFIG,
+      24.11,
+    );
+
+    // 1) 模式为倒T
+    expect(result.mode).toBe('short');
+
+    // 2) 300 股配对成功，净收益 = 卖出净回款 - 匹配买入总支出
+    // 对冲比例 = 300/400 = 0.75，买入规费对冲部分 = 2.0 * 0.75 = 1.5
+    const matchedBuyFee = buyFee * 0.75;
+    const expected = (17.43 * 300 - sellFee) - (16.00 * 300 + matchedBuyFee);
+    expect(result.transferProfit).toBeCloseTo(expected, 1);
+    expect(result.transferProfit).toBeGreaterThan(400); // ~423 元
+
+    // 3) 状态已结清（CLEARED）
+    expect(result.status).toBe('CLEARED');
+
+    // 4) 做T池待处理数量为 0（超额部分已归并到底仓）
+    expect(result.netPendingAmount).toBe(0);
+
+    // 5) 明细撮合映射：卖出腿 300 股全部被对冲
+    const [s1, b1] = result.entries;
+    expect(s1.direction).toBe('sell');
+    expect(s1.matchedAmount).toBeCloseTo(300, 2);
+    expect(s1.remaining).toBeCloseTo(0, 2);
+
+    // 6) 买入腿：撮合 300 股（对冲部分），剩余 100 股（归并到底仓）
+    expect(b1.direction).toBe('buy');
+    expect(b1.matchedAmount).toBeCloseTo(300, 1);
+    expect(b1.remaining).toBeCloseTo(100, 1);
+
+    // 7) 收益标签挂在买入腿上（倒T 回补买入 = 收益实现腿）
+    expect(b1.realizedProfit).toBeCloseTo(expected, 1);
+    expect(b1.realizedProfit).toBeGreaterThan(0);
+  });
 });

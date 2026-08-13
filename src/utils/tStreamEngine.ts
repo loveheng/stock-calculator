@@ -416,32 +416,50 @@ function executeShortBuyBack(
   const buyTurnover = new Decimal(record.price).mul(record.amount).toNumber();
   const buyFee = record.fee;
 
-  // 纯支出（不含摩擦那部分单独跟踪，摩擦成本只计入做T总摩擦）
-  const pureOutflow = buyTurnover;
+  // 实际对冲量 = min(买入数量, 待回补卖出数量)
+  const effectiveQty = Math.min(buyQty, state.totalSellQuantity);
+  // 超出部分（归并到底仓）
+  const overQty = buyQty - effectiveQty;
+
+  // 卖出端匹配比例 = 实际对冲量 / 待回补卖出总量（用于计算被匹配的卖出周转/摩擦）
+  const sellMatchRatio = state.totalSellQuantity > 0
+    ? new Decimal(effectiveQty).div(state.totalSellQuantity).toNumber()
+    : 0;
+  // 买入端对冲比例 = 实际对冲量 / 本次买入总量（用于拆分买入支出中对冲部分）
+  const buyHedgeRatio = buyQty > 0
+    ? new Decimal(effectiveQty).div(buyQty).toNumber()
+    : 0;
+  const effectiveTurnover = new Decimal(buyTurnover).mul(buyHedgeRatio).toNumber();
+  const effectiveFee = new Decimal(buyFee).mul(buyHedgeRatio).toNumber();
+
+  // 纯支出（对冲部分的成交额）
+  const pureOutflow = effectiveTurnover;
 
   // 剩余底仓总成本
   const remainingBaseTotalCost = new Decimal(state.basePosition.cost).mul(
     state.currentQuantity,
   );
 
-  // 新持有成本 = (剩余底仓总成本 + 纯支出) / (剩余底仓数量 + 买入数量)
+  // 新持有成本 = (剩余底仓总成本 + 对冲部分支出 + 超出部分支出) / (剩余底仓数量 + 买入总数量)
   const newQuantity = state.currentQuantity + buyQty;
-  const newTotalCost = remainingBaseTotalCost.plus(pureOutflow);
+  const newTotalCost = remainingBaseTotalCost.plus(buyTurnover);
   const newCost = newQuantity > 0 ? newTotalCost.div(newQuantity).toNumber() : 0;
 
   // 已实现利润：回补买入时，按比例确认利润
   // 卖出回收(按比例) - 卖出摩擦(按比例) - 买入支出(按比例) - 买入摩擦(按比例)
-  const matchRatio = new Decimal(buyQty).div(state.totalSellQuantity);
-  const matchedSellTurnover = matchRatio.mul(state.totalSellTurnover).toNumber();
-  const matchedSellFriction = matchRatio.mul(state.totalSellFriction).toNumber();
+  const matchedSellTurnover = sellMatchRatio * state.totalSellTurnover;
+  const matchedSellFriction = sellMatchRatio * state.totalSellFriction;
   const stepProfit = new Decimal(matchedSellTurnover)
     .minus(matchedSellFriction)
     .minus(pureOutflow)
-    .minus(buyFee)
+    .minus(effectiveFee)
     .toNumber();
 
-  const isFullyClosed = buyQty === state.totalSellQuantity;
-  const remainingSellQuantity = state.totalSellQuantity - buyQty;
+  const isFullyClosed = effectiveQty >= state.totalSellQuantity;
+
+  // 剩余待回补卖出数量
+  // 注意：当 buyQty > totalSellQuantity 时，剩余 = 0（全部已回补）
+  const remainingSellQuantity = state.totalSellQuantity - effectiveQty;
   const remainingSellTurnover = new Decimal(state.totalSellTurnover)
     .minus(matchedSellTurnover)
     .toNumber();
@@ -644,18 +662,7 @@ export function stepTEngine(input: TEngineStepInput): TEngineStepOutput {
         mergeInfo: null,
       };
     } else {
-      // 倒T 买入回补
-      if (isShortOverBuy(syncedState, record.amount)) {
-        // 触发超买防御弹窗
-        const newState = buildOverBuyDefense(syncedState, record);
-        return {
-          newState,
-          triggeredDefense: true,
-          needsMergeToBase: false,
-          mergeInfo: null,
-        };
-      }
-      // 正常买入回补
+      // 倒T 买入回补（含超买自动处理：超出部分归并到底仓）
       const newState = executeShortBuyBack(syncedState, record);
       return {
         newState,
@@ -1012,6 +1019,8 @@ export interface SellValidation {
   error?: string;
   missingPosition?: boolean;
   isFirstSell?: boolean;
+  /** 借仓对冲提示（仅在需要占用底仓时设置） */
+  warning?: string;
 }
 
 /**
@@ -1096,10 +1105,17 @@ function assignEntryMatchMapping(mode: 'long' | 'short', entries: StreamEntry[])
       // 已撮合的对冲腿：按比例消耗池内各未平仓腿（与 executeLongSell/executeShortBuyBack 一致）
       const totalRemaining = pool.reduce((s, p) => s + (p.amount - p.consumed), 0);
       if (totalRemaining <= 0) continue;
-      const ratio = e.matchedAmount / totalRemaining;
+      // 当买入量（正T）/ 回补量（倒T）超过池内剩余时，按实际可用量截断配比，
+      // 避免 ratio > 1 导致开仓腿被过度消耗（卖出后超额买回场景）
+      const effectiveMatch = Math.min(e.matchedAmount, totalRemaining);
+      const ratio = effectiveMatch / totalRemaining;
       for (const p of pool) {
         p.consumed += (p.amount - p.consumed) * ratio;
       }
+      // 回填该收益实现腿的撮合量 = 实际消耗量（不超过池内剩余），
+      // 超出部分（超额买入/卖出）归并到底仓，不计入做T池撮合量
+      e.matchedAmount = effectiveMatch;
+      e.remaining = e.amount - effectiveMatch;
     }
   }
 
@@ -1255,7 +1271,9 @@ export function processStockStream(
   // 剩余待处理持仓 = 本轮总买入数量 - 本轮已对冲卖出数量（FIFO 匹配量）。
   // 回归 Bug：原实现用状态机净额（totalBuyQuantity - totalSellQuantity）计算，
   // 在「买入 → 卖出 → 再买入」场景会漏计第三笔买入（得到 100 而非 200）。
-  const netPendingAmount = buyAmount - sellAmount;
+  // 修正：当轮次已结清（CLEARED）时，所有卖出已被买入完全对冲，超额买入已归并到底仓，
+  // 做 T 池内不应再有待处理数量，因此 netPendingAmount 强制为 0。
+  const netPendingAmount = state.isClosed ? 0 : buyAmount - sellAmount;
   const weightedBuyCost = state.currentCost;
   const pendingTotalCost = state.totalBuyTurnover;
   const shortPendingAmount = state.totalSellQuantity - state.totalBuyQuantity;
@@ -1305,13 +1323,15 @@ export function processStockStream(
 }
 
 /**
- * Sell validation: checks if a sell order is valid given the base position.
+ * Trade validation: checks if a trade order is valid given the base position.
+ * - BUY: no position cap check (允许无底仓直接买入)
+ * - SELL: validates sellAmount <= positionAmount (仅卖出时校验持仓上限)
  * Used by both Store and UI for pre-trade validation.
  */
 export function validateStreamTrade(
   _stream: StockStreamResult | null,
   baseAmount: number,
-  _direction: string,
+  direction: string,
   _price: number,
   amount: number,
   _isFirstSell?: boolean,
@@ -1320,10 +1340,19 @@ export function validateStreamTrade(
     return {
       valid: false,
       maxSellable: 0,
-      error: '请输入有效的卖出数量',
+      error: '请输入有效的数量',
       isFirstSell: _isFirstSell ?? false,
     };
   }
+  // 买入跳过持仓数量上限校验，允许无底仓直接提交
+  if (direction === 'buy') {
+    return {
+      valid: true,
+      maxSellable: 999999999,
+      isFirstSell: false,
+    };
+  }
+  // 卖出校验：数量不可超出持仓
   if (amount > baseAmount) {
     return {
       valid: false,

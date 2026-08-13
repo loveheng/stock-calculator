@@ -20,6 +20,7 @@ import {
   type StockStreamResult,
 } from '../utils/tStreamEngine';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
+import { validateSellOrder } from '../utils/validation';
 import {
   putFeeConfig,
   putPosition,
@@ -182,6 +183,52 @@ export const FEE_PRESETS: Record<FeePresetName, FeeConfig> = {
 export const FEE_TEMPLATES = FEE_PRESETS;
 
 // Helper: normalize short-T deductions inline (kept here due to coupling with get())
+/**
+ * 倒T 结清后，将超额买入归并到底仓位置。
+ * normalizeShortTDeductions 已扣除初始卖出的底仓数量，
+ * 但超额买入（buyAmount - realizedSellAmount）需要加回。
+ * 通过跟踪 baseMergedAmount 实现幂等：多次调用不会重复加回。
+ */
+function applyShortExcessMerge(
+  results: StockStreamResult[],
+  streams: TStreamRecord[],
+  positions: Position[],
+): { positions: Position[]; streams: TStreamRecord[] } {
+  let finalPositions = [...positions];
+  let finalStreams = streams.map((s) => ({ ...s }));
+  for (const stream of results) {
+    if (stream.mode === 'short' && stream.status === 'CLEARED') {
+      const excessBuy = stream.buyAmount - stream.realizedSellAmount;
+      if (excessBuy > 0) {
+        // 已归并数量 = sum of baseMergedAmount on all buy records for this fullCode
+        const totalMerged = finalStreams
+          .filter((s) => s.fullCode === stream.fullCode && s.direction === 'buy')
+          .reduce((sum, s) => sum + (s.baseMergedAmount ?? 0), 0);
+        const remaining = excessBuy - totalMerged;
+        if (remaining > 0) {
+          finalPositions = finalPositions.map((p) => {
+            if (p.fullCode === stream.fullCode) {
+              return { ...p, currentAmount: p.currentAmount + remaining, isClosed: false };
+            }
+            return p;
+          });
+          // 将剩余未归并量分摊到所有 buy 记录上（按比例）
+          const buyRecords = finalStreams.filter((s) => s.fullCode === stream.fullCode && s.direction === 'buy');
+          const totalBuyAmount = buyRecords.reduce((sum, s) => sum + s.amount, 0);
+          if (totalBuyAmount > 0) {
+            for (const s of finalStreams) {
+              if (s.fullCode === stream.fullCode && s.direction === 'buy') {
+                s.baseMergedAmount = (s.baseMergedAmount ?? 0) + Math.round((remaining * s.amount) / totalBuyAmount);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return { positions: finalPositions, streams: finalStreams };
+}
+
 function normalizeShortTDeductions(
   rawStreams: TStreamRecord[], positions: Position[]
 ): { streams: TStreamRecord[]; positions: Position[] } {
@@ -241,9 +288,12 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const baseCosts = buildBasePositionCosts(normalized.positions);
     const results = processAllStreams(normalized.streams, feeConfig, baseCosts);
     const stream = results.find(r => r.fullCode === record.fullCode);
+
+    const { positions: finalPositions, streams: finalStreams } = applyShortExcessMerge(results, normalized.streams, normalized.positions);
+
     const rounds = stream ? archiveRoundIfCleared(stream, tRounds) : tRounds;
-    set({ tStreams: normalized.streams, tRounds: rounds, positions: normalized.positions });
-    safePersist(async () => { await putTStream(record); const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id)); if (nr) await putTRound(nr); for (const np of normalized.positions) { const old = positions.find(p => p.id === np.id); if (old && (old.currentAmount !== np.currentAmount || old.isClosed !== np.isClosed)) await putPosition(np); } });
+    set({ tStreams: finalStreams, tRounds: rounds, positions: finalPositions });
+    safePersist(async () => { await putTStream(record); const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id)); if (nr) await putTRound(nr); for (const np of finalPositions) { const old = positions.find(p => p.id === np.id); if (old && (old.currentAmount !== np.currentAmount || old.isClosed !== np.isClosed)) await putPosition(np); } });
     return { cleared: stream?.status === 'CLEARED', netProfit: stream?.transferProfit, avgPrice: stream?.avgPrice };
   },
 
@@ -253,10 +303,11 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const normalized = normalizeShortTDeductions(filtered, positions);
     const baseCosts = buildBasePositionCosts(normalized.positions);
     const results = processAllStreams(normalized.streams, feeConfig, baseCosts);
+    const { positions: finalPositions, streams: finalStreams } = applyShortExcessMerge(results, normalized.streams, normalized.positions);
     let rounds = [...tRounds];
     for (const r of results) { if (r.status === 'CLEARED') rounds = archiveRoundIfCleared(r, rounds); }
-    set({ tStreams: normalized.streams, tRounds: rounds, positions: normalized.positions });
-    safePersist(async () => { await deleteTStream(id); const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id)); if (nr) await putTRound(nr); for (const np of normalized.positions) { const old = positions.find(p => p.id === np.id); if (old && (old.currentAmount !== np.currentAmount || old.isClosed !== np.isClosed)) await putPosition(np); } });
+    set({ tStreams: finalStreams, tRounds: rounds, positions: finalPositions });
+    safePersist(async () => { await deleteTStream(id); const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id)); if (nr) await putTRound(nr); for (const np of finalPositions) { const old = positions.find(p => p.id === np.id); if (old && (old.currentAmount !== np.currentAmount || old.isClosed !== np.isClosed)) await putPosition(np); } });
   },
 
   updateStreamRecord: (id, updates) => {
@@ -265,15 +316,16 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const normalized = normalizeShortTDeductions(updatedStreams, positions);
     const baseCosts = buildBasePositionCosts(normalized.positions);
     const results = processAllStreams(normalized.streams, feeConfig, baseCosts);
+    const { positions: finalPositions, streams: finalStreams } = applyShortExcessMerge(results, normalized.streams, normalized.positions);
     let rounds = [...tRounds];
     for (const r of results) { if (r.status === 'CLEARED') rounds = archiveRoundIfCleared(r, rounds); }
-    set({ tStreams: normalized.streams, tRounds: rounds, positions: normalized.positions });
-    const updated = normalized.streams.find(s => s.id === id);
+    set({ tStreams: finalStreams, tRounds: rounds, positions: finalPositions });
+    const updated = finalStreams.find(s => s.id === id);
     safePersist(async () => {
       if (updated) await putTStream(updated);
       const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id));
       if (nr) await putTRound(nr);
-      for (const np of normalized.positions) {
+      for (const np of finalPositions) {
         const old = positions.find(p => p.id === np.id);
         if (old && (old.currentAmount !== np.currentAmount || old.isClosed !== np.isClosed))
           await putPosition(np);
@@ -295,10 +347,13 @@ export const useAppStore = create<AppStore>()((set, get) => ({
   },
 
   validateSellWithPosition: (stockFullCode, _direction, _price, amount) => {
-    const existing = get().tStreams.filter(s => s.fullCode === stockFullCode);
-    if (existing.length > 0) return { valid: true, maxSellable: 999999999 };
+    const stockStreams = get().tStreams.filter(s => s.fullCode === stockFullCode);
+    // 从原始流水中估算待处理买入数量（买入总量 - 卖出总量）
+    const totalBuy = stockStreams.filter(s => s.direction === 'buy').reduce((sum, s) => sum + s.amount, 0);
+    const totalSell = stockStreams.filter(s => s.direction === 'sell').reduce((sum, s) => sum + s.amount, 0);
+    const pendingBuyAmount = Math.max(0, totalBuy - totalSell);
     const baseAmount = get().positions.find(p => p.fullCode === stockFullCode && !p.isClosed)?.currentAmount ?? 0;
-    return validateStreamTrade(null, baseAmount, 'sell', 0, amount, true);
+    return validateSellOrder(amount, pendingBuyAmount, baseAmount);
   },
 
   addRound: (round) => { set(s => ({ tRounds: [...s.tRounds, round] })); safePersist(() => putTRound(round)); },

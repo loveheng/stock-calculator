@@ -38,6 +38,8 @@ export interface TStreamRecord {
   fee: number;
   /** @deprecated 倒T卖出时从底仓扣减的数量（旧引擎兼容字段） */
   baseDeductedAmount?: number;
+  /** 倒T买入时已归并到底仓的超额数量（用于幂等，仅在 buy 记录上有值） */
+  baseMergedAmount?: number;
   note?: string;
   quoteId?: string;
   selectedStock?: any;

@@ -11,7 +11,7 @@
  * @author 开发团队
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useAppStore,
   useStreamResults,
@@ -38,6 +38,7 @@ import {
   type TStreamRecord,
   type StockStreamResult,
 } from '../utils/tStreamEngine';
+import { validateSellWithStreamResult } from '../utils/validation';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import type { StockQuoteSummary, StockSearchItem } from '../types/stock';
@@ -503,11 +504,17 @@ function CurrentProjectCard({
   const apValidation = (() => {
     const p = parseFloat(apPrice);
     const a = parseFloat(apAmount);
+    if (apDir === 'sell') {
+      // 两级阶梯式校验（做T池待处理 + 中长期底仓）
+      return validateSellWithStreamResult(result, basePosition, a || 0);
+    }
     return validateStreamTrade(result, baseHolding, apDir, p || 0, a || 0);
   })();
 
   const fillAppendMaxSell = () => {
-    const max = Math.max(0, result.netPendingAmount + baseHolding);
+    // 倒T模式下 netPendingAmount 为负值，需 clamp 到 0 再参与计算
+    const pending = Math.max(0, result.netPendingAmount);
+    const max = Math.max(0, pending + baseHolding);
     if (max > 0) setApAmount(String(max));
     setApDir('sell');
   };
@@ -858,6 +865,11 @@ function CurrentProjectCard({
                   {apError}
                 </div>
               )}
+              {apValidation.warning && (
+                <div className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+                  ⚠️ {apValidation.warning}
+                </div>
+              )}
               <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
@@ -1097,7 +1109,6 @@ export default function TCalculator() {
   // 已归档 Round（按需懒加载，进入页面时异步加载）
   const { archivedRounds, archivedLoading } = useArchivedRounds();
   const addStreamRecord = useAppStore((s) => s.addStreamRecord);
-  const validateSellWithPosition = useAppStore((s) => s.validateSellWithPosition);
   const importLegacyTRecords = useAppStore((s) => s.importLegacyTRecords);
   const removeRound = useAppStore((s) => s.removeRound);
   const clearStreams = useAppStore((s) => s.clearStreams);
@@ -1136,22 +1147,34 @@ export default function TCalculator() {
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<number | null>(null);
+
+  /** 统一显示 Toast 并自动消失 */
+  const showToast = useCallback((msg: string, duration = 4000) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast(msg);
+    // 下一帧触发淡入
+    requestAnimationFrame(() => requestAnimationFrame(() => setToastVisible(true)));
+    toastTimer.current = window.setTimeout(() => {
+      setToastVisible(false);
+      // 淡出动画结束后清理 DOM
+      toastTimer.current = window.setTimeout(() => setToast(null), 300);
+    }, duration);
+  }, []);
 
   // 监听全局 toast 事件
   useEffect(() => {
     const handler = (e: Event) => {
       const msg = (e as CustomEvent<string>).detail;
-      if (toastTimer.current) window.clearTimeout(toastTimer.current);
-      setToast(msg);
-      toastTimer.current = window.setTimeout(() => setToast(null), 4000);
+      showToast(msg, 4000);
     };
     window.addEventListener('app-toast', handler);
     return () => {
       window.removeEventListener('app-toast', handler);
       if (toastTimer.current) window.clearTimeout(toastTimer.current);
     };
-  }, []);
+  }, [showToast]);
 
   // 持仓清零自动结清 Toast：监听撮合结果变化
   const prevClearedRef = useRef<Map<string, boolean>>(new Map());
@@ -1160,14 +1183,12 @@ export default function TCalculator() {
     for (const r of results) {
       const wasCleared = prev.get(r.fullCode) ?? false;
       if (!wasCleared && r.status === 'CLEARED' && r.entries.some((e) => e.direction === 'sell')) {
-        if (toastTimer.current) window.clearTimeout(toastTimer.current);
-        setToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${r.realizedPnL.toFixed(2)}`);
-        toastTimer.current = window.setTimeout(() => setToast(null), 5000);
+        showToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${r.realizedPnL.toFixed(2)}`, 5000);
       }
       prev.set(r.fullCode, r.status === 'CLEARED');
     }
     prevClearedRef.current = prev;
-  }, [results]);
+  }, [results, showToast]);
 
   // ---- 派生：选中股票撮合结果 + 底仓 ----
   const selectedResult = useMemo(() => {
@@ -1183,12 +1204,12 @@ export default function TCalculator() {
   const validation = useMemo(() => {
     const p = parseFloat(price);
     const a = parseFloat(amount);
-    // 倒T（先卖后买）：调用 Store 共享的严格底仓校验（标的存在性 + 可卖数量 N_base）
+    // 倒T（先卖后买）：两级阶梯式校验
     if (direction === 'sell') {
-      return validateSellWithPosition(stock?.fullCode ?? '', direction, p || 0, a || 0);
+      return validateSellWithStreamResult(selectedResult, basePosition, a || 0);
     }
     return validateStreamTrade(selectedResult, basePosition?.currentAmount ?? 0, 'buy', p || 0, a || 0);
-  }, [validateSellWithPosition, stock?.fullCode, selectedResult, basePosition?.currentAmount, direction, price, amount]);
+  }, [selectedResult, basePosition, direction, price, amount]);
 
   // ---- 费用预览 ----
   const feePreview = useMemo(() => {
@@ -1216,10 +1237,8 @@ export default function TCalculator() {
     const a = parseFloat(amount);
     if (validation && !validation.valid) {
       // 倒T首笔卖出底仓校验失败（缺少持仓/超可卖数量）-> 阻止提交并弹出 Toast
-      if (toastTimer.current) window.clearTimeout(toastTimer.current);
-      setToast(`🛑 ${validation.error ?? '输入无效'}`);
+      showToast(`🛑 ${validation.error ?? '输入无效'}`, 4000);
       setError(validation.error ?? '输入无效');
-      toastTimer.current = window.setTimeout(() => setToast(null), 4000);
       return;
     }
 
@@ -1241,10 +1260,8 @@ export default function TCalculator() {
     const result = await addStreamRecord(record);
     // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量）-> 阻止提交并弹出 Toast
     if (result?.rejected) {
-      if (toastTimer.current) window.clearTimeout(toastTimer.current);
-      setToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`);
+      showToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`, 4000);
       setError(result.rejectedReason ?? '校验未通过');
-      toastTimer.current = window.setTimeout(() => setToast(null), 4000);
       return;
     }
     setPrice('');
@@ -1255,9 +1272,7 @@ export default function TCalculator() {
 
   const handleImportLegacy = () => {
     const n = importLegacyTRecords();
-    if (toastTimer.current) window.clearTimeout(toastTimer.current);
-    setToast(n > 0 ? `已导入 ${n} 条历史流水` : '暂无历史做T记录可导入');
-    toastTimer.current = window.setTimeout(() => setToast(null), 3500);
+    showToast(n > 0 ? `已导入 ${n} 条历史流水` : '暂无历史做T记录可导入', 3500);
   };
 
   // ---- 归档历史库胜率统计（仅统计「今日」完成的战报） ----
@@ -1302,10 +1317,21 @@ export default function TCalculator() {
         </button>
       </div>
 
-      {/* Toast */}
+      {/* Toast — 自动消失 + 淡入淡出 + 手动关闭 */}
       {toast && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-800 text-white text-sm shadow-lg border border-slate-600 animate-pulse">
-          {toast}
+        <div
+          className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-800 text-white text-sm shadow-lg border border-slate-600 transition-opacity duration-300 ${
+            toastVisible ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          <span className="mr-3">{toast}</span>
+          <button
+            onClick={() => { setToastVisible(false); setTimeout(() => setToast(null), 300); }}
+            className="text-slate-400 hover:text-white transition-colors text-base leading-none"
+            aria-label="关闭"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -1475,6 +1501,13 @@ export default function TCalculator() {
         {error && (
           <div className="mt-3 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
             {error}
+          </div>
+        )}
+
+        {/* 借仓对冲提示（仅卖出且需占用底仓时显示） */}
+        {validation?.warning && (
+          <div className="mt-3 flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+            <span className="text-xs text-amber-300">⚠️ {validation.warning}</span>
           </div>
         )}
 

@@ -17,11 +17,9 @@ import {
   useStreamResults,
   generateId,
   type Position,
-  type LongTermRecord,
   type RoundTxn,
 } from '../store';
 import { ledgerService } from '../services/ledgerService';
-import type { LongTermRecordRow } from '../db/index';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
@@ -430,17 +428,16 @@ function TStateMachinePanel({
  * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
  *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
  *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
- * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number }} props
+ * @param {{ result: StockStreamResult; basePosition: Position | undefined }} props
 /**
  * 单个进行中做T项目卡片（核心业务卡片）。
  *
  * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
  *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
  *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
- * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number; quote: StockQuoteSummary | null }} props
+ * @param {{ result: StockStreamResult; basePosition: Position | undefined; quote: StockQuoteSummary | null }} props
  *  - result: 该标的的流水池撮合结果
  *  - basePosition: 对应底仓持仓（用于超卖校验与划转）
- *  - roundNo: 该标的当前做T轮次序号
  *  - quote: 该标的最新实时行情（批量请求返回，无行情时为 null）
  * @returns {JSX.Element} 做T项目卡片视图
  * @note 写操作均委托 Store Action 落库并触发级联重算；超卖/数量校验由
@@ -449,13 +446,11 @@ function TStateMachinePanel({
 function CurrentProjectCard({
   result,
   basePosition,
-  roundNo,
   feeConfig,
   quote,
 }: {
   result: StockStreamResult;
   basePosition: Position | undefined;
-  roundNo: number;
   feeConfig: FeeConfig | undefined;
   quote: StockQuoteSummary | null;
 }) {
@@ -464,7 +459,8 @@ function CurrentProjectCard({
   const removeStreamRecord = useAppStore((s) => s.removeStreamRecord);
   /** entries 按时间倒序（最新在最上方），仅最新一条可撤销删除 */
   const sortedEntries = [...result.entries].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    //(a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    (a, b) => b.id.localeCompare(a.id)
   );
   const transferToPosition = useAppStore((s) => s.transferToPosition);
   const settleShortRound = useAppStore((s) => s.settleShortRound);
@@ -516,6 +512,18 @@ function CurrentProjectCard({
     setApDir('sell');
   };
 
+  // 根据首笔流水时间生成纯时间戳流水号（不为空时使用 closedAt，否则使用 openedAt）
+  const roundCode = (() => {
+    const ts = result.openedAt ?? result.entries[0]?.timestamp ?? new Date().toISOString();
+    const d = new Date(ts);
+    const y = d.getFullYear();
+    const M = String(d.getMonth() + 1).padStart(2, '0');
+    const D = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return `#${y}${M}${D}-${h}${m}`;
+  })();
+
   const handleAppend = async () => {
     setApError('');
     const p = parseFloat(apPrice);
@@ -561,7 +569,7 @@ function CurrentProjectCard({
           <span className="font-semibold text-slate-200 truncate">{result.stockName}</span>
           <span className="text-xs text-slate-500 shrink-0">{result.fullCode}</span>
           <span className="text-xs bg-slate-700/80 text-slate-200 px-1.5 py-0.5 rounded-full font-bold shrink-0">
-            Round {roundNo}
+            {roundCode}
           </span>
           <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${result.mode === 'short' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
             {result.mode === 'short' ? '倒T' : '正T'}
@@ -929,7 +937,7 @@ function ArchiveRoundCard({
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="font-semibold text-slate-200 truncate">{round.stockName}</span>
           <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full font-bold shrink-0">
-            Round {round.roundNo}
+            {round.roundCode}
           </span>
           <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.mode === 'short' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
             {round.mode === 'short' ? '倒T' : '正T'}
@@ -1024,7 +1032,7 @@ function ArchiveRoundCard({
                     {t.direction === 'buy' ? '买' : t.direction === 'sell' ? '卖' : '转'}
                   </span>
                   <span className="font-mono shrink-0">
-                    {t.amount} 股 @ ¥{t.price.toFixed(2)}
+                    {t.amount} 股  ¥{t.price.toFixed(2)}
                   </span>
                   <span className="font-mono tabular-nums shrink-0">
                     {(t.matchedAmount ?? 0) > 0 ? `⚡${t.matchedAmount}股 ` : ''}
@@ -1088,28 +1096,15 @@ export default function TCalculator() {
   const tRounds = useAppStore((s) => s.tRounds);
   // 已归档 Round（按需懒加载，进入页面时异步加载）
   const { archivedRounds, archivedLoading } = useArchivedRounds();
-  // 中长期操作记录（按需懒加载，启动时不加载）
-  const [archivedLongTermRecords, setArchivedLongTermRecords] = useState<LongTermRecordRow[]>([]);
-  const [ltrLoading, setLtrLoading] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    setLtrLoading(true);
-    ledgerService.fetchAllLongTermRecords().then((records) => {
-      if (!cancelled) {
-        setArchivedLongTermRecords(records);
-        setLtrLoading(false);
-      }
-    });
-    return () => { cancelled = true; };
-  }, []);
   const addStreamRecord = useAppStore((s) => s.addStreamRecord);
   const validateSellWithPosition = useAppStore((s) => s.validateSellWithPosition);
   const importLegacyTRecords = useAppStore((s) => s.importLegacyTRecords);
   const removeRound = useAppStore((s) => s.removeRound);
   const clearStreams = useAppStore((s) => s.clearStreams);
-  // 不再从 store 读取 longTermRecords（启动时返回 []），改用按需加载的 archivedLongTermRecords
-
   const results = useStreamResults();
+
+  // 仅展示进行中的做T项目（CLEARED = 池内流水已全部配对并自动归档为战报，不再属于当前项目）
+  const activeResults = useMemo(() => results.filter((r) => r.status !== 'CLEARED'), [results]);
 
   // 表单状态
   const [stock, setStock] = useState<StockSearchItem | null>(null);
@@ -1120,12 +1115,12 @@ export default function TCalculator() {
     () =>
       Array.from(
         new Set(
-          [...(stock?.fullCode ? [stock.fullCode] : []), ...results.map((r) => r.fullCode)]
+          [...(stock?.fullCode ? [stock.fullCode] : []), ...activeResults.map((r) => r.fullCode)]
             .map((c) => c.trim())
             .filter(Boolean)
         )
       ),
-    [stock, results]
+    [stock, activeResults]
   );
   const { quotes, isTrading, lastUpdated } = useLiveQuotes(quoteCodes);
 
@@ -1177,8 +1172,8 @@ export default function TCalculator() {
   // ---- 派生：选中股票撮合结果 + 底仓 ----
   const selectedResult = useMemo(() => {
     if (!stock?.fullCode) return null;
-    return results.find((r) => r.fullCode === stock.fullCode) ?? null;
-  }, [results, stock?.fullCode]);
+    return activeResults.find((r) => r.fullCode === stock.fullCode) ?? null;
+  }, [activeResults, stock?.fullCode]);
 
   const basePosition = useMemo(() => {
     if (!stock?.fullCode) return undefined;
@@ -1265,18 +1260,29 @@ export default function TCalculator() {
     toastTimer.current = window.setTimeout(() => setToast(null), 3500);
   };
 
-  // ---- 归档历史库胜率统计 ----
+  // ---- 归档历史库胜率统计（仅统计「今日」完成的战报） ----
+  const todayArchivedRounds = useMemo(() => {
+    const now = new Date();
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+    return archivedRounds.filter((r) => {
+      const t = new Date(r.closedAt ?? r.openedAt).getTime();
+      return t >= dayStart && t < dayEnd;
+    });
+  }, [archivedRounds]);
+
   const archiveStats = useMemo(() => {
-    const wins = archivedRounds.filter((r) => r.win).length;
-    const total = archivedRounds.length;
+    const wins = todayArchivedRounds.filter((r) => r.win).length;
+    const total = todayArchivedRounds.length;
     return {
       wins,
       total,
       rate: total > 0 ? (wins / total) * 100 : 0,
-      cumulative: archivedRounds.reduce((s, r) => s + r.netProfit, 0),
+      cumulative: todayArchivedRounds.reduce((s, r) => s + r.netProfit, 0),
     };
-  }, [archivedRounds]);
+  }, [todayArchivedRounds]);
 
+  // 汇总卡片口径：包含已结清（CLEARED）轮次在内，累计已实现净收益与「今日战报归档库」累计口径一致
   const totalPending = results.reduce((s, r) => s + Math.max(0, r.netPendingAmount), 0);
   const totalRealizedPnl = results.reduce((s, r) => s + r.realizedPnL, 0);
 
@@ -1330,9 +1336,9 @@ export default function TCalculator() {
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-3">
           <div className="text-xs text-slate-500">待对冲加权成本</div>
           <div className="font-mono font-bold text-lg text-blue-400 tabular-nums">
-            {results.length > 0
+            {activeResults.length > 0
               ? `¥${roundTo(
-                  results.reduce((s, r) => s + r.weightedBuyCost * Math.max(0, r.netPendingAmount), 0) /
+                  activeResults.reduce((s, r) => s + r.weightedBuyCost * Math.max(0, r.netPendingAmount), 0) /
                     Math.max(1, totalPending),
                   3
                 )}`
@@ -1484,7 +1490,7 @@ export default function TCalculator() {
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-semibold text-slate-200">当前做T项目</h3>
-          {results.length > 0 && (
+          {activeResults.length > 0 && (
             <button
               onClick={() => {
                 if (window.confirm('确认清空全部做T流水？')) clearStreams();
@@ -1496,19 +1502,17 @@ export default function TCalculator() {
           )}
         </div>
 
-        {results.length === 0 ? (
+        {activeResults.length === 0 ? (
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            暂无做T流水，从上方添加首笔买入/卖出自动开启 <b className="text-blue-400">Round 1</b>
+            暂无进行中的做T项目（已自动归档的战报请在下方「今日战报归档库」查看）
           </div>
         ) : (
-          results.map((r) => {
-            const roundNo = 1 + tRounds.filter((round) => round.fullCode === r.fullCode).length;
+          activeResults.map((r) => {
             return (
               <CurrentProjectCard
                 key={r.fullCode}
                 result={r}
                 basePosition={positions.find((p) => p.fullCode === r.fullCode && !p.isClosed)}
-                roundNo={roundNo}
                 feeConfig={feeConfig}
                 quote={quotes[r.fullCode] ?? null}
               />
@@ -1520,8 +1524,8 @@ export default function TCalculator() {
       {/* 归档历史库 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200">🏆 历史战报归档库</h3>
-          {tRounds.length > 0 && (
+          <h3 className="text-base font-semibold text-slate-200">🏆 今日战报归档</h3>
+          {todayArchivedRounds.length > 0 && (
             <div className="text-xs text-slate-400 flex items-center gap-3">
               <span>
                 胜率{' '}
@@ -1543,13 +1547,13 @@ export default function TCalculator() {
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
             加载历史战报数据...
           </div>
-        ) : archivedRounds.length === 0 ? (
+        ) : todayArchivedRounds.length === 0 ? (
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            做T持仓归零自动锁定战报 → 生成 Round 卡片
+            今日暂无已完成战报（做T持仓归零自动锁定战报 → 生成 Round 卡片）
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {[...archivedRounds]
+            {[...todayArchivedRounds]
               .sort((a, b) => new Date(b.closedAt ?? b.openedAt).getTime() - new Date(a.closedAt ?? a.openedAt).getTime())
               .map((round) => (
                 <ArchiveRoundCard key={round.id} round={round} onRemove={(id) => removeRound(id)} />
@@ -1558,56 +1562,6 @@ export default function TCalculator() {
         )}
       </div>
 
-      {/* 中长期操作历史 */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200">📋 中长期操作历史</h3>
-          {archivedLongTermRecords.length > 0 && (
-            <span className="text-xs text-slate-400">{archivedLongTermRecords.length} 条记录</span>
-          )}
-        </div>
-        {ltrLoading ? (
-          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            加载中长期操作记录...
-          </div>
-        ) : archivedLongTermRecords.length === 0 ? (
-          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            做T归并操作将自动生成中长期操作记录（标记为「归并」）
-          </div>
-        ) : (
-          <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-            <div className="max-h-64 overflow-y-auto divide-y divide-slate-700">
-              {[...archivedLongTermRecords]
-                .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-                .map((rec) => (
-                  <div key={rec.id} className="flex items-center justify-between px-4 py-2.5 text-xs">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-slate-300 font-medium truncate">{rec.stockName}</span>
-                      {rec.type === 'merge' ? (
-                        <span className="bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
-                          归并
-                        </span>
-                      ) : rec.type === 'buy' ? (
-                        <span className="bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
-                          加仓
-                        </span>
-                      ) : (
-                        <span className="bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
-                          减仓
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 font-mono tabular-nums text-slate-400 shrink-0">
-                      <span>{rec.amount} 股</span>
-                      <span>@ ¥{rec.price.toFixed(3)}</span>
-                      <span className="text-slate-500">{new Date(rec.timestamp).toLocaleDateString()}</span>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }

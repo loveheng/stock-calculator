@@ -1068,6 +1068,55 @@ export function processAllStreams(
 }
 
 /**
+ * 明细撮合回填：仅影响 entries 的展示字段映射（matchedAmount / remaining），
+ * 不改动状态机收益口径（transferProfit / realizedFee / sellCostTotal 等仍由状态机累计）。
+ *
+ * 与状态机撮合口径完全一致：每一笔「收益实现腿」（正T卖出 / 倒T回补买入）按
+ * matchRatio = 对冲量 / 当前未平仓池总量 比例消耗池内各未平仓「开仓腿」。
+ *
+ * 收益标签只挂在收益实现腿上（主循环已按该笔步进利润回填 realizedProfit）：
+ *   - 正T：卖出腿 = 收益实现腿；买入腿仅回填被对冲消耗的 matchedAmount。
+ *   - 倒T：回补买入腿 = 收益实现腿；卖出腿仅回填被回补消耗的 matchedAmount。
+ */
+function assignEntryMatchMapping(mode: 'long' | 'short', entries: StreamEntry[]): void {
+  const isOpening = (e: StreamEntry): boolean =>
+    mode === 'long' ? e.direction === 'buy' : e.direction === 'sell';
+  const isClosing = (e: StreamEntry): boolean =>
+    mode === 'long' ? e.direction === 'sell' : e.direction === 'buy';
+
+  // 未平仓开仓腿池（按时间顺序）
+  const pool: { amount: number; consumed: number }[] = [];
+  const poolEntryIds: string[] = [];
+
+  for (const e of entries) {
+    if (isOpening(e)) {
+      poolEntryIds.push(e.id);
+      pool.push({ amount: e.amount, consumed: 0 });
+    } else if (isClosing(e) && e.matchedAmount > 0) {
+      // 已撮合的对冲腿：按比例消耗池内各未平仓腿（与 executeLongSell/executeShortBuyBack 一致）
+      const totalRemaining = pool.reduce((s, p) => s + (p.amount - p.consumed), 0);
+      if (totalRemaining <= 0) continue;
+      const ratio = e.matchedAmount / totalRemaining;
+      for (const p of pool) {
+        p.consumed += (p.amount - p.consumed) * ratio;
+      }
+    }
+  }
+
+  const consumedById = new Map<string, number>();
+  pool.forEach((p, i) => consumedById.set(poolEntryIds[i], p.consumed));
+
+  // 回填开仓腿：matchedAmount = 被对冲消耗数量，remaining = 未消耗数量
+  for (const e of entries) {
+    if (isOpening(e)) {
+      const consumed = roundTo(consumedById.get(e.id) ?? 0, 2);
+      e.matchedAmount = consumed;
+      e.remaining = roundTo(Math.max(0, e.amount - consumed), 2);
+    }
+  }
+}
+
+/**
  * Process a single stock's stream records sequentially.
  * Used by processAllStreams and for individual stock recalculation.
  */
@@ -1102,6 +1151,24 @@ export function processStockStream(
       mode = record.direction === 'buy' ? 'long' : 'short';
     }
 
+    // ── 轮次边界隔离 ──
+    // 状态机上一轮已完全结算关闭（isClosed=true，即 CLEARED）时，
+    // 此流水属于新的一轮：重置状态机与累计口径，防止跨轮流水混入
+    // 同一战报。正 T 自动归档后流水池（tStreams）不会清空，重算时
+    // 若不做隔离，新一轮首笔流水会在已关闭的 state 上继续推进
+    // （executeLongBuy 不重置 isClosed），导致新流水并入上一轮且
+    // 状态被误判为再次 CLEARED → 新轮次自动结束并生成错误战报。
+    if (state.isClosed) {
+      state = createInitialState({ cost: baseCostVal, quantity: 0 });
+      state.mode = record.direction === 'buy' ? 'long' : 'short';
+      mode = record.direction === 'buy' ? 'long' : 'short';
+      roundStarted = true;
+      openedAt = record.timestamp;
+      // 清空累计口径，使 entries / totalFee / openedAt 等仅反映当前（最后）一轮
+      entries.length = 0;
+      totalFee = 0;
+    }
+
     totalFee += record.fee;
 
     // Build entry for old API
@@ -1127,6 +1194,7 @@ export function processStockStream(
       basePosition: { cost: baseCostVal, quantity: 0 },
     };
 
+    const profitBefore = state.realizedProfit;
     const output = stepTEngine(input);
     state = output.newState;
 
@@ -1138,14 +1206,23 @@ export function processStockStream(
       continue;
     }
 
-    // Map new state to old entry
+    // Map new state to old entry：
+    //   - matchedAmount 先按整笔记录回填（收益实现腿 = 该笔全额撮合）；
+    //   - realizedProfit = 该笔流水自身实现的步进收益（开仓腿恒为 0，
+    //     收益实现腿 = 卖出净回款 − 匹配买入成本），严禁使用状态机累计值
+    //     导致未平仓腿错误显示上一笔收益；
+    //   - 开仓腿（正T买入 / 倒T借出）的撮合量将在循环后由
+    //     assignEntryMatchMapping 按状态机同一比例消耗口径回填。
     entry.matchedAmount = record.amount;
-    entry.realizedProfit = state.realizedProfit;
+    entry.realizedProfit = state.realizedProfit - profitBefore;
     entry.remaining = 0;
     entry.closed = state.isClosed;
 
     entries.push(entry);
   }
+
+  // 明细撮合回填：开仓腿按状态机同一比例消耗口径回填 matchedAmount / remaining
+  assignEntryMatchMapping(mode, entries);
 
   // Compute old-style result from new state
   const buyEntries = entries.filter(e => e.direction === 'buy');
@@ -1161,8 +1238,24 @@ export function processStockStream(
 
   const avgPrice = buyAmount > 0 ? buyTotal / buyAmount : baseCostVal;
   const realizedPnL = state.realizedProfit;
-  const realizedFee = totalFee;
-  const netPendingAmount = state.totalBuyQuantity - state.totalSellQuantity;
+
+  // ── 已实现规费（realizedFee）：严格仅计入已平仓（已对冲）Pair 对应的买卖规费，
+  //    绝不把尚未平仓买入/卖出的规费提前计入 ──
+  //  - 正T（long）：卖出全部用于平仓 → 卖出规费全部已实现（state.totalSellFriction）；
+  //                买入规费已实现部分 = 本轮累积买入规费 - 剩余未平仓买入规费。
+  //  - 倒T（short）：买入全部用于回补 → 买入规费全部已实现（state.totalBuyFriction）；
+  //                 卖出规费已实现部分 = 本轮累积卖出规费 - 剩余未回补卖出规费。
+  const buyFeesTotal = buyEntries.reduce((s, e) => s + e.fee, 0);
+  const sellFeesTotal = sellEntries.reduce((s, e) => s + e.fee, 0);
+  const realizedFee =
+    mode === 'long'
+      ? buyFeesTotal - state.totalBuyFriction + state.totalSellFriction
+      : state.totalBuyFriction + (sellFeesTotal - state.totalSellFriction);
+
+  // 剩余待处理持仓 = 本轮总买入数量 - 本轮已对冲卖出数量（FIFO 匹配量）。
+  // 回归 Bug：原实现用状态机净额（totalBuyQuantity - totalSellQuantity）计算，
+  // 在「买入 → 卖出 → 再买入」场景会漏计第三笔买入（得到 100 而非 200）。
+  const netPendingAmount = buyAmount - sellAmount;
   const weightedBuyCost = state.currentCost;
   const pendingTotalCost = state.totalBuyTurnover;
   const shortPendingAmount = state.totalSellQuantity - state.totalBuyQuantity;
@@ -1170,10 +1263,13 @@ export function processStockStream(
   const lastSellEntry = sellEntries.length > 0 ? sellEntries[sellEntries.length - 1] : null;
   const lastSellCleared = lastSellEntry ? lastSellEntry.closed : false;
 
-  // Transfer profit for short-mode archiving
-  const sellCostTotal = sellAmount * weightedBuyCost;
-  const realizedSellCost = 0;
-  const transferProfit = sellValue - sellAmount * weightedBuyCost - totalFee;
+  // 正 T 战报净收益：采用状态机 FIFO 配对累计净收益（卖出净回款 - 匹配买入总支出），
+  // 严格仅与本次 Round 内先买入流水配对，严禁引入中长期底仓成本 P_base。
+  // 倒 T 波段收益同样由状态机累计（首笔借出以实际卖出净回款为基准，P_base 仅用于结算定值）。
+  const transferProfit = state.realizedProfit;
+  // 卖出对冲成本 = 卖出净回款(含匹配买入总支出) - 波段净收益，供 UI 分解展示
+  const sellCostTotal = sellValue - state.totalSellFriction - transferProfit;
+  const realizedSellCost = sellCostTotal;
 
   return {
     fullCode,

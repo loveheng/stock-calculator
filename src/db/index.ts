@@ -237,13 +237,12 @@ function toRoundEntity(round: TRoundRow): TRoundEntity {
     fullCode: round.fullCode,
     mode: round.mode,
     status: round.closedAt ? 'COMPLETED' : 'OPENED',
-    roundNo: round.roundNo,
+    roundCode: round.roundCode,
     settleType: round.settleType === 'transfer' ? 'partial' : 'clear',
     netProfit: round.netProfit,
     totalFees: round.fees ?? round.totalFees ?? 0,
     openedAt: parseTimestamp(round.openedAt),
     closedAt: round.closedAt ? parseTimestamp(round.closedAt) : undefined,
-    stockName: round.stockName,
     buyAmount: round.buyAmount,
     sellAmount: round.sellAmount,
     transferAmount: round.transferAmount,
@@ -314,7 +313,6 @@ function toTStreamEntity(stream: TStreamRow): TStreamEntity {
     id: stream.id,
     timestamp: stream.timestamp,
     fullCode: stream.fullCode,
-    stockName: stream.stockName,
     direction: stream.direction,
     price: stream.price,
     amount: stream.amount,
@@ -339,7 +337,7 @@ function toTStreamRow(entity: TStreamEntity): TStreamRow {
   return {
     id: entity.id,
     fullCode: entity.fullCode,
-    stockName: entity.stockName,
+    stockName: entity.fullCode,
     direction: entity.direction,
     price: entity.price,
     amount: entity.amount,
@@ -362,7 +360,6 @@ function toLongTermRecordEntity(record: LongTermRecordRow): LongTermRecordEntity
   return {
     id: record.id,
     fullCode: record.fullCode,
-    stockName: record.stockName,
     type: record.type,
     price: record.price,
     amount: record.amount,
@@ -386,7 +383,7 @@ function toLongTermRecordRow(entity: LongTermRecordEntity): LongTermRecordRow {
   return {
     id: entity.id,
     fullCode: entity.fullCode,
-    stockName: entity.stockName ?? '',
+    stockName: entity.fullCode,
     type: entity.type,
     price: entity.price,
     amount: entity.amount,
@@ -497,7 +494,17 @@ export async function loadPositionsFromDB(): Promise<PositionRow[]> {
  */
 export async function loadTStreamsFromDB(): Promise<TStreamRow[]> {
   const tStreamsRaw = await db.tStreams.toArray();
-  return tStreamsRaw.filter((r) => (r.isDeleted ?? 0) === 0).map(toTStreamRow);
+  const streams = tStreamsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
+  const relevantFullCodes = [...new Set(streams.map((s) => s.fullCode))];
+  const stocks = relevantFullCodes.length > 0
+    ? await db.stocks.where('fullCode').anyOf(relevantFullCodes).toArray()
+    : [];
+  const stockMap = new Map(stocks.map((s) => [s.fullCode, s.stockName]));
+  return streams.map((entity) => {
+    const row = toTStreamRow(entity);
+    row.stockName = stockMap.get(entity.fullCode) ?? entity.fullCode;
+    return row;
+  });
 }
 
 /**
@@ -673,7 +680,7 @@ export async function fetchTransactionsByRoundId(roundId: string): Promise<Round
   const entities = await db.tTransactions
     .where({ roundId })
     .filter((t) => (t.isDeleted ?? 0) === 0)
-    .sortBy('timestamp');
+    .sortBy('id');
   return entities.map((t) => ({
     id: t.id,
     timestamp: new Date(t.timestamp).toISOString(),
@@ -708,7 +715,7 @@ export async function fetchOpenRoundsWithTransactions(): Promise<TRoundRow[]> {
       positionId: r.positionId,
       fullCode: r.fullCode,
       stockName: stockMap.get(r.fullCode)?.stockName ?? r.fullCode,
-      roundNo: r.roundNo,
+      roundCode: r.roundCode,
       mode: r.mode,
       settleType: r.settleType === 'partial' ? 'transfer' : 'clear',
       transactions: txns,
@@ -756,7 +763,7 @@ export async function fetchCompletedRoundsPage(
     positionId: r.positionId,
     fullCode: r.fullCode,
     stockName: stockMap.get(r.fullCode)?.stockName ?? r.fullCode,
-    roundNo: r.roundNo,
+    roundCode: r.roundCode,
     mode: r.mode,
     settleType: r.settleType === 'partial' ? 'transfer' : 'clear',
     netProfit: r.netProfit,
@@ -795,7 +802,7 @@ export async function fetchAllCompletedRounds(): Promise<TRoundRow[]> {
       positionId: r.positionId,
       fullCode: r.fullCode,
       stockName: stockMap.get(r.fullCode)?.stockName ?? r.fullCode,
-      roundNo: r.roundNo,
+      roundCode: r.roundCode,
       mode: r.mode,
       settleType: r.settleType === 'partial' ? 'transfer' : 'clear',
       transactions: txns,
@@ -823,10 +830,15 @@ export async function fetchAllLongTermRecords(): Promise<LongTermRecordRow[]> {
   const entities = await db.longTermRecords
     .filter((r) => (r.isDeleted ?? 0) === 0)
     .toArray();
+  const relevantFullCodes = [...new Set(entities.map((r) => r.fullCode))];
+  const stocks = relevantFullCodes.length > 0
+    ? await db.stocks.where('fullCode').anyOf(relevantFullCodes).toArray()
+    : [];
+  const stockMap = new Map(stocks.map((s) => [s.fullCode, s.stockName]));
   return entities.map((r) => ({
     id: r.id,
     fullCode: r.fullCode,
-    stockName: r.stockName ?? r.fullCode,
+    stockName: stockMap.get(r.fullCode) ?? r.fullCode,
     type: r.type,
     price: r.price,
     amount: r.amount,

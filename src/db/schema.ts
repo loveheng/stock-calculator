@@ -107,8 +107,8 @@ export interface TRoundEntity extends BaseEntity {
   mode: 'long' | 'short';
   /** 轮次状态：OPENED=进行中，COMPLETED=已结清归档 */
   status: 'OPENED' | 'COMPLETED';
-  /** 该股票的第几轮做T（从 1 递增） */
-  roundNo: number;
+  /** 做T战报业务流水号：#YYYYMMDD-HHmm（纯时间戳，不再维护序号） */
+  roundCode: string;
   /** 结算方式：clear=清仓式结清，partial=部分/划转底仓 */
   settleType: 'clear' | 'partial';
   /** 本轮净收益（元） */
@@ -119,8 +119,6 @@ export interface TRoundEntity extends BaseEntity {
   openedAt: number;
   /** 关闭时间戳（毫秒），未结清时缺省 */
   closedAt?: number;
-  /** 股票名称快照 */
-  stockName?: string;
   /** 累计买入金额（元） */
   buyAmount?: number;
   /** 累计卖出金额（元） */
@@ -167,8 +165,6 @@ export interface TStreamEntity extends BaseEntity {
   timestamp: string;
   /** 完整证券代码（含市场前缀，如 sh601318），作为流水池唯一主键 */
   fullCode: string;
-  /** 股票展示名称 */
-  stockName: string;
   /** 交易方向：买入 / 卖出 */
   direction: 'buy' | 'sell';
   /** 成交单价（元） */
@@ -281,8 +277,6 @@ export interface FeeConfigEntity {
 export interface LongTermRecordEntity extends BaseEntity {
   /** 关联标的完整代码 */
   fullCode: string;
-  /** 股票名称 */
-  stockName?: string;
   /** 操作类型：buy / sell / merge */
   type: 'buy' | 'sell' | 'merge';
   /** 成交单价 */

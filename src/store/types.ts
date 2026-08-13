@@ -84,7 +84,7 @@ export interface TRoundArchive {
   stockName: string;
   mode: 'long' | 'short';
   status?: 'OPENED' | 'COMPLETED';
-  roundNo: number;
+  roundCode: string;
   settleType: 'clear' | 'partial' | 'transfer';
   netProfit: number;
   totalFees?: number;

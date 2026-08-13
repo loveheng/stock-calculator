@@ -2,7 +2,7 @@
 
 > **版本**：v7（按需加载重构）  
 > **技术栈**：React 19 + React Router 7 + Zustand + Dexie (IndexedDB) + TypeScript + Vite + PWA + Vitest  
-> **最后更新**：2026-08-12
+> **最后更新**：2026-08-13
 
 ---
 
@@ -258,7 +258,137 @@ interface AppStore {
 
 > 另外该引擎还保留一套**单步状态机**（`createInitialState` / `stepTEngine` / `mergeLongToBase` 等），用于 TCalculator 页面的逐步交互展示，`processAllStreams` 是其批量入口。
 
-### 4.5 `hooks/useDataLoader.ts` — 按需加载钩子（v7 核心机制）
+### 4.5 短线交易（做T）详细说明
+
+短线交易（做T，T+0 套利）是本项目的核心功能，页面路由 `/t-calculator`，对应 `src/views/TCalculator.tsx`。其设计目标是：在保持底仓不变的前提下，通过 **先买后卖（正T）** 或 **先卖后买（倒T）** 的日内/短期操作，摊低成本或赚取差价利润。
+
+#### 4.5.1 两种做T模式
+
+**正T（T 模式 = `long`，先买后卖）**
+
+适用场景：持仓底仓不动，日内低点买入、高点卖出相同数量，赚取差价。
+
+```
+买入 N 股（建T）→ 卖出 N 股（平仓）
+利润 = 卖出回收 - 买入支出 - 摩擦成本（按比例分摊）
+```
+
+- 首笔流水为 **买入** 自动进入正T
+- 买入仅计算支出并增加 `currentQuantity`，**不改变底仓成本**
+- 卖出时按比例匹配累积买入量（`matchRatio = sellQty / totalBuyQuantity`），计算已实现利润
+- 卖出数量 ≤ 累积买入量时为正常平仓；等量卖出自动结算（`long_auto_close`）
+- 未平仓的买入持仓可通过「归并」按纯成交金额并入底仓（`long_merge`）
+
+**倒T（T 模式 = `short`，先卖后买）**
+
+适用场景：判断短期高点，先卖出底仓一部分，回落后再买回，赚取差价或降低成本。
+
+```
+卖出 N 股（借仓，引用底仓 P_base）→ 买入 N 股（回补）
+```
+
+- 首笔流水为 **卖出** 自动进入倒T
+- 首笔卖出引用底仓成本 `P_base` 作为对冲成本基准（`buildBasePositionCosts` 构建 fullCode → P_base 映射）
+- 卖出后底仓数量减少、单价不变（移动平均法）
+- 回补买入时移动加权更新整体持仓成本：
+  ```
+  新持有成本 = (剩余底仓总成本 + 本次买入纯支出) / (剩余底仓数量 + 买入数量)
+  ```
+- 等量回补自动结算（`short_auto_close`）；部分回补后可「部分减持」（`short_partial_reduce`）或「划转」（`short_transfer`）到新底仓
+
+#### 4.5.2 流水池 tStreams 与 FIFO 撮合
+
+所有做T操作都记录为单边流水 `TStreamRecord`（buy/sell），不做配对存储，撮合由纯函数引擎实时计算：
+
+```
+流水池 tStreams (TStreamRecord[])
+  → 按 fullCode 分组
+  → compareByTimestamp 时间升序排序
+  → processStockStream 逐条推进状态机（stepTEngine）
+  → 输出 StockStreamResult（含 entries 配对明细）
+```
+
+- **FIFO 规则**：先买入的先卖出（正T），先卖出的先买回（倒T），符合国内券商结算惯例
+- **级联重算**：页面通过 `useStreamResults()` Hook 订阅，任何流水/费率/持仓变化自动重算全市场撮合结果
+- **倒T成本继承**：倒T首笔卖出把底仓 `(P_base × N_sell)` 并入 P_avg 加权池，全部卖出统一按融合 P_avg 结算（`firstSellCostBasis` / `inheritedBaseAmount` 字段）
+- **双指标口径**：`realizedPnL`（已实现净收益）与 `transferProfit`（Round 绝对现金流净收益 = 卖出回收 − 加权成本 − 规费）同时展示
+
+#### 4.5.3 状态机与 5 种结算类型
+
+`stepTEngine`（`src/utils/tStreamEngine.ts`）以**单步推进**方式驱动状态机，每一步生成 `TStepNode` 步骤节点卡片，结束时生成 `TSettlementCard` 结算卡片：
+
+| 结算类型 | 触发场景 | 标签颜色 |
+|---|---|---|
+| `long_auto_close` | 正T 买入后等量卖出，自动平仓 | 🟢 绿 |
+| `long_merge` | 正T 买入后未卖出，手动归并底仓 | 🔵 蓝 |
+| `short_auto_close` | 倒T 卖出后等量买回，自动平仓 | 🔴 红 |
+| `short_partial_reduce` | 倒T 卖出后部分买回，剩余部分减持 | 🟣 紫 |
+| `short_transfer` | 倒T 卖出后部分买回，剩余划转新底仓 | 🟠 橙 |
+
+#### 4.5.4 超限防御机制（超卖 / 超买）
+
+当出现 **正T卖超**（卖出量 > 累积买入量）或 **倒T买超**（买入量 > 借仓卖出量）时，引擎触发防御弹窗 `OverflowDefenseDialog`，提供 3 个分支：
+
+| 选项 | 动作 | 说明 |
+|---|---|---|
+| 选项 A | `auto_hedge` | 自动对冲已有数量并结清（超出的部分忽略） |
+| 选项 B | `hedge_then_start_reverse` | 结清当前 T，超出部分自动反向开启（卖超 → 倒T；买超 → 正T） |
+| 选项 C | `cancel` | 返回修改，取消防御弹窗 |
+
+对应函数：`resolveOverSellAutoHedge` / `resolveOverSellHedgeThenReverse` / `resolveOverBuyAutoHedge` / `resolveOverBuyHedgeThenReverse` / `cancelDefenseDialog`。UI 层由 `DefenseOverflowModal` 组件渲染。
+
+#### 4.5.5 Round 战报自动归档
+
+流水池完全配对（`status === 'CLEARED'`）且发生过卖出时，`archiveRoundIfCleared`（`src/store/utils.ts`）自动生成 `TRoundArchive` 战报：
+
+- 战报含成交明细快照（tTransactions）、回合序号（roundNo 按标的递增）、模式、净收益、胜率标记
+- 划转/归并场景（`transferToPosition` / `settleShortRound`）走 `completeRoundWithMerge` / `completeRoundClear` 级联结算
+- 删除带归并的战报自动触发 `rollbackTransferPosition` 剥离底仓、回退加权成本（`src/store/utils.ts`）
+- 已完成战报按需懒加载（`useArchivedRounds`），展开「查看成交明细」时才按需查询 `fetchTransactionsByRoundId`
+
+##### 当前项目过滤（CLEARED 自动出列）
+
+页面通过 `activeResults = results.filter(r => r.status !== 'CLEARED')` 派生「当前做T项目」列表：
+
+- 流水池完全配对后（`status === 'CLEARED'`）的 Round 已自动归档为战报，**不再属于当前进行中项目**，自动从「当前做T项目」卡片流淡出
+- 头部汇总卡片仍按 `results`（含已结清轮次）统计累计已实现净收益，与下方归档库的今日累计口径衔接
+- 「清空流水池」按钮仅在进行中项目（`activeResults.length > 0`）时显示，避免误清空已归档数据
+
+##### 今日战报归档库（仅展示当天）
+
+归档库标题为「🏆 今日战报归档库」，通过 `todayArchivedRounds` 按**本地时区当天**（00:00–24:00）过滤 `closedAt`（兜底 `openedAt`）后渲染：
+
+- 胜率（赢/总 + 百分比）与累计净现金均按当日完成战报统计，聚焦当日做T战绩
+- 卡片列表按 `closedAt` 倒序展示当日战报；无当日战报时显示空态引导文案
+- 加载逻辑仍基于 `useArchivedRounds`（全量摘要懒加载），当天过滤在页面层完成，不改动 DB 查询
+
+#### 4.5.6 UI 组成（TCalculator.tsx）
+
+| 组件 | 职责 |
+|---|---|
+| 交易表单 | 选股（StockAutocomplete）、方向（正T买入/倒T卖出）、价格/数量/时间/备注、费用预览、[全部卖出] 快捷键、实时行情展示 |
+| `CurrentProjectCard` | 进行中做T项目卡片：加权均价 P_avg、已卖对冲数量、剩余待处理持仓、已实现净收益、Round 绝对现金流净收益、实时行情徽章、流水明细（仅最新一条可撤销删除）、[+追加记录] 快速录入、[划转底仓]、[结算倒T] |
+| `TStateMachinePanel` | 状态机可视化：步骤节点卡片（本步支出/回收、单步摩擦、累计利润、当前持仓成本与数量）、结算卡片、超限防御弹窗交互 |
+| `ArchiveRoundCard` | 今日战报：净收益、卖出量、均价、成交明细穿透（按需加载）、删除战报（含归并回滚确认弹窗） |
+| `StreamStatusBadge` | 状态徽章：PENDING / PARTIAL / CLEARED / SHORT_PENDING |
+
+#### 4.5.7 关键 Store Action 与引擎函数
+
+| 函数 | 位置 | 作用 |
+|---|---|---|
+| `addStreamRecord(record)` | store/index.ts | 追加流水 + 归一化 + 撮合 + 自动归档 + 增量写库 |
+| `removeStreamRecord(id)` | store/index.ts | 删流水 + 重算撮合 + 自动归档 |
+| `updateStreamRecord(id, up)` | store/index.ts | 更新流水 + 归一化 + 重算 + 归档 |
+| `clearStreams()` | store/index.ts | 清空流水 + 持仓还原 |
+| `transferToPosition(fullCode)` | store/index.ts | 正T归并/倒T划转底仓（completeRoundWithMerge） |
+| `settleShortRound(fullCode)` | store/index.ts | 倒T清仓结算（completeRoundClear） |
+| `removeRound(id)` | store/index.ts | 删战报 + 剥离底仓 + 级联中长期（deleteRoundWithCascade） |
+| `validateStreamTrade` | tStreamEngine.ts | 卖出/买入数量校验（可卖数量上限、倒T首笔底仓校验） |
+| `processAllStreams` | tStreamEngine.ts | 批量撮合入口（按 fullCode 分组，FIFO 配对结算） |
+| `stepTEngine` | tStreamEngine.ts | 状态机单步推进（交互展示用） |
+| `useStreamResults` | store/utils.ts | 派生全市场撮合结果 Hook（级联重算核心） |
+
+### 4.6 `hooks/useDataLoader.ts` — 按需加载钩子（v7 核心机制）
 
 | Hook | 加载内容 | 使用场景 |
 |---|---|---|
@@ -339,3 +469,4 @@ npx tsc --noEmit     # TypeScript 类型检查（tsconfig 排除了 src/__tests_
 | v6 | Store 层拆分：types.ts（类型）+ utils.ts（纯函数）+ index.ts（Action 实现） |
 | v6.1 | deletePositionBatch 修复；safePersist 指数退避重试 + 失败队列；persistError 模块化，移除 DOM 事件耦合 |
 | **v7** | **按需加载重构：冷启动仅加载费率配置，核心数据由 useDataLoader 钩子按需加载；新增证券类型（stock/etf/bond）与 ETF 分层费率** |
+| v7.1 | 短线交易页聚焦当日：当前做T项目过滤 CLEARED 自动归档项（activeResults）；归档库改为「今日战报归档库」（仅显示当天完成的战报）；移除原注释状态的「中长期操作历史」UI 面板 |

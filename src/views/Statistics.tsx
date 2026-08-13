@@ -50,7 +50,7 @@ interface TCardData {
   source: 'active' | 'archived';
   stockName: string;
   fullCode: string;
-  roundNo: number;
+  roundCode: string;
   mode: 'long' | 'short';
   status: 'open' | 'closed';
   settleType?: 'clear' | 'partial' | 'transfer';
@@ -165,8 +165,16 @@ export default function Statistics() {
     // 1) 进行中 Round（从撮合引擎结果中取非 CLEARED 状态）
     for (const stream of streamResults) {
       if (stream.status === 'CLEARED') continue;
-      const existingRounds = tRounds.filter((r) => r.fullCode === stream.fullCode);
-      const roundNo = existingRounds.length + 1;
+      const roundCode = (() => {
+        const ts = stream.openedAt ?? stream.entries[0]?.timestamp ?? new Date().toISOString();
+        const d = new Date(ts);
+        const y = d.getFullYear();
+        const M = String(d.getMonth() + 1).padStart(2, '0');
+        const D = String(d.getDate()).padStart(2, '0');
+        const h = String(d.getHours()).padStart(2, '0');
+        const m = String(d.getMinutes()).padStart(2, '0');
+        return `#${y}${M}${D}-${h}${m}`;
+      })();
 
       // 倒T卖出均价
       let avgSellPrice = 0;
@@ -184,7 +192,7 @@ export default function Statistics() {
         source: 'active',
         stockName: stream.stockName,
         fullCode: stream.fullCode,
-        roundNo,
+        roundCode,
         mode: stream.mode,
         status: 'open',
         netProfit: stream.transferProfit,
@@ -210,7 +218,7 @@ export default function Statistics() {
         source: 'archived',
         stockName: round.stockName,
         fullCode: round.fullCode,
-        roundNo: round.roundNo,
+        roundCode: round.roundCode,
         mode: round.mode,
         status: 'closed',
         settleType: round.settleType,
@@ -678,7 +686,7 @@ export default function Statistics() {
                               </span>
                             )}
                             <span className="flex-shrink-0 rounded-full bg-slate-950 px-2 py-0.5 text-xs text-slate-400">
-                              Round {card.roundNo}
+                              {card.roundCode}
                             </span>
                           </div>
                           <div className="flex flex-wrap items-center gap-2">

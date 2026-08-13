@@ -47,6 +47,7 @@ import {
 import { isInitialLoadDone } from '../db/storeInit';
 import {
   generateId,
+  formatTradeNo,
   buildBasePositionCosts,
   recomputePositionSnapshot,
   rollbackTransferPosition,
@@ -350,9 +351,8 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     } else {
       newPositions = newPositions.map(p => p.id === posDef.id ? { ...p, currentCost: newCost, currentAmount: newAmount, totalInvested: newInvested, batches: [...p.batches, batch] } : p);
     }
-    const maxRound = tRounds.filter(r => r.fullCode === fullCode).reduce((m, r) => Math.max(m, r.roundNo), 0);
-    const archiveRound: TRoundArchive = { id: generateId(), fullCode, stockName: stream.stockName, mode: stream.mode, roundNo: maxRound + 1, settleType: 'partial', transactions: stream.entries.map(e => ({ id: e.id, timestamp: e.timestamp, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: stream.transferProfit, totalFees: stream.totalFee, sellAmount: stream.realizedSellAmount, avgPrice: stream.avgPrice, buyAmount: stream.buyAmount, tradeCount: stream.tradeCount, holdingDays: stream.holdingDays, win: stream.transferProfit >= 0, openedAt: stream.openedAt ?? stream.entries[0]?.timestamp ?? now, closedAt: now, transferAmount: toTransfer };
-    const ltRecord: LongTermRecord = { id: generateId(), fullCode, stockName: stream.stockName, timestamp: now, type: 'merge', price: avg, amount: toTransfer, fee: txnFee, sourceReportId: archiveRound.id, note: `做T划转底仓（第${maxRound + 1}轮）` };
+    const archiveRound: TRoundArchive = { id: generateId(), fullCode, stockName: stream.stockName, mode: stream.mode, roundCode: formatTradeNo(now), settleType: 'partial', transactions: stream.entries.map(e => ({ id: e.id, timestamp: e.timestamp, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: stream.transferProfit, totalFees: stream.totalFee, sellAmount: stream.realizedSellAmount, avgPrice: stream.avgPrice, buyAmount: stream.buyAmount, tradeCount: stream.tradeCount, holdingDays: stream.holdingDays, win: stream.transferProfit >= 0, openedAt: stream.openedAt ?? stream.entries[0]?.timestamp ?? now, closedAt: now, transferAmount: toTransfer };
+    const ltRecord: LongTermRecord = { id: generateId(), fullCode, stockName: stream.stockName, timestamp: now, type: 'merge', price: avg, amount: toTransfer, fee: txnFee, sourceReportId: archiveRound.id, note: `做T划转底仓（${formatTradeNo(now)}）` };
     set(s => ({ tStreams: s.tStreams.filter(st => st.fullCode !== fullCode), tRounds: [...s.tRounds, archiveRound], positions: newPositions, longTermRecords: [...s.longTermRecords, ltRecord] }));
     safePersist(() => completeRoundWithMerge(fullCode, streams.map(st => st.id), archiveRound, ltRecord, newPositions));
     return { ok: true, message: `已将 ${toTransfer} 股划转至底仓（P_avg=${avg.toFixed(2)}）` };
@@ -366,8 +366,7 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const result = processAllStreams(streams, feeConfig, baseCosts).find(r => r.fullCode === fullCode);
     if (!result || result.mode !== 'short') return { ok: false, message: '当前不是倒T模式' };
     const now = new Date().toISOString();
-    const maxRound = tRounds.filter(r => r.fullCode === fullCode).reduce((m, r) => Math.max(m, r.roundNo), 0);
-    const round: TRoundArchive = { id: generateId(), fullCode, stockName: result.stockName, mode: 'short', roundNo: maxRound + 1, settleType: result.shortPendingAmount === 0 ? 'clear' : 'partial', transactions: result.entries.map(e => ({ id: e.id, timestamp: e.timestamp, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: result.transferProfit, totalFees: result.totalFee, sellAmount: result.realizedSellAmount, avgPrice: result.avgPrice, buyAmount: result.buyAmount, tradeCount: result.tradeCount, holdingDays: result.holdingDays, win: result.transferProfit >= 0, openedAt: result.openedAt ?? result.entries[0]?.timestamp ?? now, closedAt: now };
+    const round: TRoundArchive = { id: generateId(), fullCode, stockName: result.stockName, mode: 'short', roundCode: formatTradeNo(now), settleType: result.shortPendingAmount === 0 ? 'clear' : 'partial', transactions: result.entries.map(e => ({ id: e.id, timestamp: e.timestamp, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: result.transferProfit, totalFees: result.totalFee, sellAmount: result.realizedSellAmount, avgPrice: result.avgPrice, buyAmount: result.buyAmount, tradeCount: result.tradeCount, holdingDays: result.holdingDays, win: result.transferProfit >= 0, openedAt: result.openedAt ?? result.entries[0]?.timestamp ?? now, closedAt: now };
     set(s => ({ tStreams: s.tStreams.filter(st => st.fullCode !== fullCode), tRounds: [...s.tRounds, round] }));
     safePersist(() => completeRoundClear(fullCode, streams.map(st => st.id), round));
     return { ok: true, message: `倒T已结算，净收益 ¥${result.transferProfit.toFixed(2)}` };

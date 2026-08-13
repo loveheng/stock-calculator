@@ -3,11 +3,13 @@
  * @description 股票搜索自动补全组件：基于腾讯 Smartbox 接口的搜索输入框，
  *              支持按代码/中文名/拼音首字母搜索，防抖输入并展示下拉候选列表。
  * @layer UI
- * @storage_impact 纯展示组件，不写入 IndexedDB；搜索结果来自 stockService 网络请求。
+ * @storage_impact 用户在候选列表中选择股票时，将股票基础信息写入 stocks 表（upsert）；搜索结果来自 stockService 网络请求。
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { searchStocks, debounce } from '../../services/stockService';
+import { db } from '../../db/schema';
+import { matchSecurityKind } from '../../utils/mathUtils';
 import type { StockSearchItem } from '../../types/stock';
 
 interface StockAutocompleteProps {
@@ -77,7 +79,25 @@ export default function StockAutocomplete({
     doSearch(val);
   };
 
-  const handleSelect = (stock: StockSearchItem) => {
+  const handleSelect = async (stock: StockSearchItem) => {
+    // 将股票基础信息写入 stocks 表（upsert，fullCode 为主键），
+    // 供其他实体通过 fullCode 关联查询股票名称
+    await db.stocks.put({
+      id: crypto.randomUUID(),
+      fullCode: stock.fullCode,
+      code: stock.Code,
+      stockName: stock.Name,
+      pinYin: stock.PinYin,
+      marketType: stock.MarketType,
+      securityType: stock.SecurityType,
+      kind: matchSecurityKind(stock.SecurityType, stock.Code),
+      quoteId: stock.QuoteID,
+      shortName: stock.ShortName,
+      unifiedCode: stock.UnifiedCode,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      isDeleted: 0,
+    });
     onChange(stock);
     setInputValue(`${stock.fullCode} ${stock.Name}`);
     setIsOpen(false);

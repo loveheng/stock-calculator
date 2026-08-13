@@ -112,7 +112,7 @@ function createRound(overrides: Partial<TRoundArchive> = {}): TRoundArchive {
     stockName: '中国平安',
     mode: 'long',
     status: 'COMPLETED',
-    roundNo: 1,
+    roundCode: '#20260102-0000',
     settleType: 'clear',
     netProfit: 120,
     openedAt: '2026-01-02T00:00:00.000Z',

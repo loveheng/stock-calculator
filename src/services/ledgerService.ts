@@ -128,7 +128,7 @@ export async function getTRoundsWithTransactions(): Promise<TRoundArchive[]> {
       id: r.id,
       fullCode: r.fullCode,
       stockName: stockMap.get(r.fullCode)?.stockName ?? r.fullCode,
-      roundNo: r.roundNo,
+      roundCode: r.roundCode,
       mode: r.mode,
       settleType: r.settleType === 'partial' ? 'transfer' : 'clear',
       transactions,

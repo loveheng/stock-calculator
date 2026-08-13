@@ -337,7 +337,7 @@ describe('LongTermRecord 归并标记与级联删除', () => {
       fee: 3,
       timestamp: '2026-01-02T00:00:00.000Z',
       sourceReportId: 'round-1',
-      note: '正T归并到底仓（Round 1）',
+      note: '正T归并到底仓（#20260102-0000）',
     };
 
     // 验证 Tag 确为 merge
@@ -398,7 +398,7 @@ describe('LongTermRecord 归并标记与级联删除', () => {
         fee: 3,
         timestamp: '2026-01-02T00:00:00.000Z',
         sourceReportId: 'round-1',
-        note: '正T归并到底仓（Round 1）',
+        note: '正T归并到底仓（#20260102-0000）',
       },
       {
         id: 'lt-2',

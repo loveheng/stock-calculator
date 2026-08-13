@@ -20,6 +20,21 @@ export function generateId(): string {
 }
 
 /**
+ * 格式化时间戳为做T战报业务流水号格式：#YYYYMMDD-HHmm。
+ * @param timestamp ISO 时间字符串
+ * @returns 格式化的流水号，如 #20260813-1142
+ */
+export function formatTradeNo(timestamp: string): string {
+  const d = new Date(timestamp);
+  const y = d.getFullYear();
+  const M = String(d.getMonth() + 1).padStart(2, '0');
+  const D = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  return `#${y}${M}${D}-${h}${m}`;
+}
+
+/**
  * 从持仓/成本摊薄账本构建 全Code -> 底仓持仓均价(P_base) 映射，
  * 供引擎在倒T首笔卖出时继承该均价作为对冲成本基准。
  */
@@ -229,8 +244,9 @@ export function archiveRoundIfCleared(
   const hasSell = stream.entries.some((e) => e.direction === 'sell');
   if (stream.status !== 'CLEARED' || !hasSell) return rounds;
 
-  const existing = rounds.filter((r) => r.fullCode === stream.fullCode);
-  const maxRound = existing.reduce((m, r) => Math.max(m, r.roundNo), 0);
+  const closedAt = stream.lastClosedAt ?? new Date().toISOString();
+  const openedAt = stream.openedAt ?? stream.entries[0]?.timestamp ?? new Date().toISOString();
+  const roundCode = formatTradeNo(closedAt);
 
   const transactions: RoundTxn[] = stream.entries.map((e) => ({
     id: e.id,
@@ -249,7 +265,7 @@ export function archiveRoundIfCleared(
     fullCode: stream.fullCode,
     stockName: stream.stockName,
     mode: stream.mode,
-    roundNo: maxRound + 1,
+    roundCode,
     settleType: 'clear',
     transactions,
     netProfit: stream.transferProfit,
@@ -260,8 +276,8 @@ export function archiveRoundIfCleared(
     tradeCount: stream.tradeCount,
     holdingDays: stream.holdingDays,
     win: stream.transferProfit >= 0,
-    openedAt: stream.openedAt ?? stream.entries[0]?.timestamp ?? new Date().toISOString(),
-    closedAt: stream.lastClosedAt ?? new Date().toISOString(),
+    openedAt,
+    closedAt,
   };
   return [...rounds, round];
 }

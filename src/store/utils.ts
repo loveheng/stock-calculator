@@ -1,7 +1,7 @@
 /**
  * @file utils.ts
  * @description Store 层纯工具函数：ID 生成、底仓成本映射、归并回滚、撮合结果派生 Hook、
- *              Round 自动归档（archiveRoundIfCleared）等。均为纯函数或 React Hook，不直接写 IndexedDB。
+ *              Round 结清（finalizeRoundIfCleared）等。均为纯函数或 React Hook，不直接写 IndexedDB。
  * @layer Store (Utils)
  * @author 开发团队
  */
@@ -35,16 +35,17 @@ export function formatTradeNo(timestamp: string): string {
 }
 
 /**
- * 从持仓/成本摊薄账本构建 全Code -> 底仓持仓均价(P_base) 映射，
- * 供引擎在倒T首笔卖出时继承该均价作为对冲成本基准。
+ * 从持仓/成本摊薄账本构建 全Code -> 真实底仓（成本 + 数量）映射，
+ * 供引擎在倒T首笔卖出时继承该均价作为对冲成本基准（P_base），
+ * 并以真实底仓数量驱动移动加权成本与 shortPendingAmount 精确推导。
  */
-export function buildBasePositionCosts(positions: Position[]): Map<string, number> {
-  const map = new Map<string, number>();
+export function buildBasePositionCosts(positions: Position[]): Map<string, { cost: number; quantity: number }> {
+  const map = new Map<string, { cost: number; quantity: number }>();
   for (const pos of positions) {
     if (pos.isClosed) continue;
     const open = pos.batches.some((b) => b.type === 'open' || b.amount > 0);
     if (!open) continue;
-    map.set(pos.fullCode, pos.currentCost);
+    map.set(pos.fullCode, { cost: pos.currentCost, quantity: pos.currentAmount });
   }
   return map;
 }
@@ -233,22 +234,69 @@ export function rollbackTransferPosition(
 }
 
 /**
+ * 从 Round 库派生「活跃流水池」：仅 OPENED Round 的 transactions 参与撮合。
+ *
+ * @description v8 核心派生函数 —— tStreams 不再独立存在，流水全部归属于 Round：
+ *  - OPENED Round 的 transactions 即进行中做T项目的全部单边流水；
+ *  - COMPLETED Round 的流水是归档明细，退出活跃池（防重复归档/跨轮污染）。
+ * @param rounds 全量 Round 库（OPENED + COMPLETED）
+ * @returns 引擎所需的 TStreamRecord[]（方向归一化为 buy/sell）
+ */
+export function activeStreamsFromRounds(rounds: TRoundArchive[]): TStreamRecord[] {
+  const streams: TStreamRecord[] = [];
+  for (const r of rounds) {
+    if ((r.status ?? 'OPENED') === 'COMPLETED') continue;
+    const stockName = r.stockName || r.fullCode;
+    for (const t of r.transactions ?? []) {
+      const rawDir = String(t.direction);
+      if (rawDir === 'merge' || rawDir === 'transfer') continue;
+      streams.push({
+        id: t.id,
+        timestamp: t.timestamp,
+        fullCode: r.fullCode,
+        stockName,
+        direction: rawDir as 'buy' | 'sell',
+        price: t.price,
+        amount: t.amount,
+        fee: t.fee,
+        note: t.note,
+        quoteId: t.quoteId,
+        selectedStock: t.selectedStock,
+        baseDeductedAmount: t.baseDeductedAmount,
+        baseMergedAmount: t.baseMergedAmount,
+        borrowBatchId: t.borrowBatchId,
+        mergeBatchId: t.mergeBatchId,
+      });
+    }
+  }
+  return streams;
+}
+
+/**
  * 派生全市场撮合结果 Hook（级联重算核心）。
+ *
+ * @description 订阅 tRounds（OPENED 流水池）+ feeConfig + positions，
+ *              任何变化自动级联重算全市场 FIFO 撮合结果。
  */
 export function useStreamResults(): StockStreamResult[] {
-  const tStreams = useAppStore((s) => s.tStreams);
+  const tRounds = useAppStore((s) => s.tRounds);
   const feeConfig = useAppStore((s) => s.feeConfig);
   const positions = useAppStore((s) => s.positions);
   return useMemo(() => {
     const baseCosts = buildBasePositionCosts(positions);
-    return processAllStreams(tStreams, feeConfig, baseCosts);
-  }, [tStreams, feeConfig, positions]);
+    const activeStreams = activeStreamsFromRounds(tRounds);
+    return processAllStreams(activeStreams, feeConfig, baseCosts);
+  }, [tRounds, feeConfig, positions]);
 }
 
 /**
- * Round 自动归档：池归零且发生过卖出时生成战报。
+ * Round 结清：撮合结果 CLEARED 且发生过卖出时，将对应的 OPENED Round 标记为 COMPLETED。
+ *
+ * @description v8 语义：Round 在首笔流水录入时即创建（OPENED），结清时**复用同一 Round**
+ *              翻转 status 并回填概览字段，不再新建 Round（消除原「重复归档」缺陷）。
+ *              找不到 OPENED Round 时回退为创建归档（兼容旧数据/手工导入）。
  */
-export function archiveRoundIfCleared(
+export function finalizeRoundIfCleared(
   stream: StockStreamResult,
   rounds: TRoundArchive[],
 ): TRoundArchive[] {
@@ -259,9 +307,40 @@ export function archiveRoundIfCleared(
   const openedAt = stream.openedAt ?? stream.entries[0]?.timestamp ?? new Date().toISOString();
   const roundCode = formatTradeNo(closedAt);
 
+  const idx = rounds.findIndex(
+    (r) => r.fullCode === stream.fullCode && (r.status ?? 'OPENED') !== 'COMPLETED'
+  );
+  if (idx >= 0) {
+    const existing = rounds[idx];
+    const updated: TRoundArchive = {
+      ...existing,
+      status: 'COMPLETED',
+      roundCode: existing.roundCode || roundCode,
+      settleType: 'clear',
+      netProfit: stream.transferProfit,
+      totalFees: stream.totalFee,
+      fees: stream.totalFee,
+      sellAmount: stream.realizedSellAmount,
+      avgPrice: stream.avgPrice,
+      buyAmount: stream.buyAmount,
+      tradeCount: stream.tradeCount,
+      holdingDays: stream.holdingDays,
+      win: stream.transferProfit >= 0,
+      closedAt,
+      lastTouched: closedAt,
+      lastUpdated: Date.now(),
+    };
+    const next = [...rounds];
+    next[idx] = updated;
+    return next;
+  }
+
+  // 回退：没有对应的 OPENED Round（异常/旧数据），创建 COMPLETED 归档
   const transactions: RoundTxn[] = stream.entries.map((e) => ({
     id: e.id,
     timestamp: e.timestamp,
+    fullCode: stream.fullCode,
+    stockName: stream.stockName,
     direction: e.direction,
     price: e.price,
     amount: e.amount,
@@ -276,11 +355,13 @@ export function archiveRoundIfCleared(
     fullCode: stream.fullCode,
     stockName: stream.stockName,
     mode: stream.mode,
+    status: 'COMPLETED',
     roundCode,
     settleType: 'clear',
     transactions,
     netProfit: stream.transferProfit,
     totalFees: stream.totalFee,
+    fees: stream.totalFee,
     sellAmount: stream.realizedSellAmount,
     avgPrice: stream.avgPrice,
     buyAmount: stream.buyAmount,

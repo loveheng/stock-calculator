@@ -2,11 +2,13 @@
  * @file index.ts
  * @description IndexedDB 数据读写中枢（DAO 层）：提供全局 `db` 实例、行级视图模型、实体转换函数，
  *              以及冷启动精简加载 + 按需分页查询/批量落盘的持久化 API，供 Store 层初始化与刷新时调用。
- *              v6.1 重构：统一类型系统 —— PositionRow/TRoundRow/TStreamRow/LongTermRecordRow
+ *              v6.1 重构：统一类型系统 —— PositionRow/TRoundRow/LongTermRecordRow
  *              定义为 Store 层类型的别名，消除双体系；移除所有实体转换函数中的 as any 强制转换；
  *              safeImportAllData 增加事务包裹确保导入失败时回滚。
+ *              v8 重构：移除 tStreams —— 做T流水唯一持久化为 tTransactions（归属于 Round），
+ *              增量写入入口为 putTransaction（per-entry）+ putTRound（概览）。
  * @layer DAO
- * @storage_impact 启动时仅读取 5 张表（feeConfigs / positions / positionBatches / tStreams / stocks）；
+ * @storage_impact 启动时仅读取 4 张表（feeConfigs / positions / positionBatches / tRounds）；
  *                 已平仓持仓、已完成 Round、中长期记录等归档数据通过按需分页查询接口延迟加载；
  *                 所有写库均自动补充 `createdAt` / `updatedAt` / `isDeleted=0`，并通过 cleanUndefined 剔除 undefined 字段防序列化错误。
  * @author 开发团队
@@ -18,7 +20,6 @@
 import Dexie, { type Table } from 'dexie';
 import { matchSecurityKind, type FeeConfig, type SecurityKind } from '../utils/mathUtils';
 import type { PositionBatch, Position, RoundTxn, TRoundArchive } from '../store';
-import type { TStreamRecord } from '../utils/tStreamEngine';
 import type { StockMeta } from '../types/stock';
 import { ulid } from 'ulid';
 import { cleanUndefined } from './cleanUndefined';
@@ -31,7 +32,6 @@ import {
   type PositionBatchEntity,
   type PositionEntity,
   type StockEntity,
-  type TStreamEntity,
   type TTransactionEntity,
   type TRoundEntity,
   type TradeNoteEntity,
@@ -50,7 +50,6 @@ import type { LongTermRecord } from '../store/types';
 export type { FeeConfig } from '../utils/mathUtils';
 export type { Position, PositionBatch, TRoundArchive, RoundTxn } from '../store';
 export type { LongTermRecord } from '../store/types';
-export type { TStreamRecord } from '../utils/tStreamEngine';
 export type { StockMeta } from '../types/stock';
 
 /** 费率配置的行级视图模型（用于 UI 展示，非实体） */
@@ -87,9 +86,6 @@ export type TRoundRow = TRoundArchive;
 
 /** 股票行视图模型 = StockMeta（行情搜索返回结构） */
 export type StockRow = StockMeta;
-
-/** 做T流水的行级视图模型 = Store/TEngine 层 TStreamRecord 类型（统一为单一定义） */
-export type TStreamRow = TStreamRecord;
 
 /** 中长期操作记录的行级视图模型 = Store 层 LongTermRecord 类型（两者完全一致） */
 export type LongTermRecordRow = LongTermRecord;
@@ -260,24 +256,35 @@ function toRoundEntity(round: TRoundRow): TRoundEntity {
 }
 
 /**
- * 将成交明细视图模型转换为事务实体（transfer 方向归一化为 buy）。
+ * 将成交明细视图模型转换为事务实体（transfer/merge 方向归一化为 buy）。
  *
+ * @description v8 起 tTransactions 是流水的唯一持久化表，字段与引擎 TStreamRecord 对齐，
+ *              因此转换函数直接透传全部流水字段（含倒T扣减/归并幂等标记）。
  * @param {RoundTxn} transaction - 成交明细视图模型
  * @param {string} roundId - 所属 Round id
  * @returns {TTransactionEntity} 事务实体
  */
 function toTransactionEntity(transaction: RoundTxn, roundId: string): TTransactionEntity {
+  const rawDirection = String(transaction.direction);
   return {
     id: transaction.id,
     roundId,
-    direction: (String(transaction.direction) === 'transfer' || String(transaction.direction) === 'merge') ? 'buy' : (transaction.direction as 'buy' | 'sell'),
+    fullCode: transaction.fullCode ?? '',
+    stockName: transaction.stockName ?? transaction.fullCode ?? '',
+    direction: (rawDirection === 'transfer' || rawDirection === 'merge') ? 'buy' : (transaction.direction as 'buy' | 'sell'),
     price: transaction.price,
     amount: transaction.amount,
     fee: transaction.fee,
     matchedAmount: transaction.matchedAmount ?? 0,
     realizedProfit: transaction.realizedProfit ?? 0,
-    timestamp: parseTimestamp(transaction.timestamp),
+    timestamp: transaction.timestamp,
     note: transaction.note,
+    quoteId: transaction.quoteId,
+    selectedStock: transaction.selectedStock as Record<string, unknown> | undefined,
+    baseDeductedAmount: transaction.baseDeductedAmount,
+    baseMergedAmount: transaction.baseMergedAmount,
+    borrowBatchId: transaction.borrowBatchId,
+    mergeBatchId: transaction.mergeBatchId,
     createdAt: parseTimestamp(transaction.timestamp),
     updatedAt: parseTimestamp(transaction.timestamp),
     isDeleted: 0,
@@ -285,15 +292,20 @@ function toTransactionEntity(transaction: RoundTxn, roundId: string): TTransacti
 }
 
 /**
- * 将事务实体映射回成交明细视图模型（时间戳转 ISO 字符串）。
+ * 将事务实体映射回成交明细视图模型（兼容 v8 前 number 时间戳的存量数据）。
  *
  * @param {TTransactionEntity} transaction - 事务实体
  * @returns {RoundTxn} 成交明细视图模型
  */
 function toRoundTxn(transaction: TTransactionEntity): RoundTxn {
+  const ts = typeof transaction.timestamp === 'number'
+    ? new Date(transaction.timestamp).toISOString()
+    : transaction.timestamp;
   return {
     id: transaction.id,
-    timestamp: new Date(transaction.timestamp).toISOString(),
+    timestamp: ts,
+    fullCode: transaction.fullCode,
+    stockName: transaction.stockName,
     direction: transaction.direction,
     price: transaction.price,
     amount: transaction.amount,
@@ -301,58 +313,12 @@ function toRoundTxn(transaction: TTransactionEntity): RoundTxn {
     matchedAmount: transaction.matchedAmount,
     realizedProfit: transaction.realizedProfit,
     note: transaction.note,
-  };
-}
-
-/**
- * 将做T流水行视图模型转换为 tStreams 实体（保留 selectedStock 快照）。
- *
- * @param {TStreamRow} stream - 做T流水行视图模型
- * @returns {TStreamEntity} tStreams 实体
- */
-function toTStreamEntity(stream: TStreamRow): TStreamEntity {
-  return {
-    id: stream.id,
-    timestamp: stream.timestamp,
-    fullCode: stream.fullCode,
-    direction: stream.direction,
-    price: stream.price,
-    amount: stream.amount,
-    fee: stream.fee,
-    note: stream.note,
-    quoteId: stream.quoteId,
-    selectedStock: stream.selectedStock,
-    baseDeductedAmount: stream.baseDeductedAmount,
-    borrowBatchId: stream.borrowBatchId,
-    mergeBatchId: stream.mergeBatchId,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    isDeleted: 0,
-  };
-}
-
-/**
- * 将 tStreams 实体映射回做T流水行视图模型。
- *
- * @param {TStreamEntity} entity - tStreams 实体
- * @returns {TStreamRow} 做T流水行视图模型
- */
-function toTStreamRow(entity: TStreamEntity): TStreamRow {
-  return {
-    id: entity.id,
-    fullCode: entity.fullCode,
-    stockName: entity.fullCode,
-    direction: entity.direction,
-    price: entity.price,
-    amount: entity.amount,
-    fee: entity.fee,
-    timestamp: entity.timestamp,
-    note: entity.note,
-    quoteId: entity.quoteId,
-    selectedStock: entity.selectedStock,
-    baseDeductedAmount: entity.baseDeductedAmount,
-    borrowBatchId: entity.borrowBatchId,
-    mergeBatchId: entity.mergeBatchId,
+    quoteId: transaction.quoteId,
+    selectedStock: transaction.selectedStock,
+    baseDeductedAmount: transaction.baseDeductedAmount,
+    baseMergedAmount: transaction.baseMergedAmount,
+    borrowBatchId: transaction.borrowBatchId,
+    mergeBatchId: transaction.mergeBatchId,
   };
 }
 
@@ -496,32 +462,14 @@ export async function loadPositionsFromDB(): Promise<PositionRow[]> {
 }
 
 /**
- * 按需加载做T流水池（活跃的 tStream 记录）。
- *
- * @returns {Promise<TStreamRow[]>} 未删除的流水记录数组
- */
-export async function loadTStreamsFromDB(): Promise<TStreamRow[]> {
-  const tStreamsRaw = await db.tStreams.toArray();
-  const streams = tStreamsRaw.filter((r) => (r.isDeleted ?? 0) === 0);
-  const relevantFullCodes = [...new Set(streams.map((s) => s.fullCode))];
-  const stocks = relevantFullCodes.length > 0
-    ? await db.stocks.where('fullCode').anyOf(relevantFullCodes).toArray()
-    : [];
-  const stockMap = new Map(stocks.map((s) => [s.fullCode, s.stockName]));
-  return streams.map((entity) => {
-    const row = toTStreamRow(entity);
-    row.stockName = stockMap.get(entity.fullCode) ?? entity.fullCode;
-    return row;
-  });
-}
-
-/**
- * 按需加载所有未删除的做T轮次（OPENED + COMPLETED，不含成交明细）。
+ * 按需加载所有未删除的做T轮次（OPENED + COMPLETED）。
  *
  * @description 将全部 Round 加载到 Zustand 的 tRounds 中，确保删除操作
  *              （removeRound）能通过 ID 找到已完成战报；成交明细通过
  *              fetchTransactionsByRoundId 按需加载，不在初始加载时拉取。
- * @returns {Promise<TRoundRow[]>} 所有未删除的轮次数组（不含 transactions）
+ *              v8：OPENED 状态的 Round 额外携带 transactions（即当前流水池），
+ *              供 useStreamResults 在刷新后无损恢复撮合。
+ * @returns {Promise<TRoundRow[]>} 所有未删除的轮次数组（OPENED 含 transactions）
  */
 export async function loadTRoundsFromDB(): Promise<TRoundRow[]> {
   const entities = await db.tRounds
@@ -532,6 +480,21 @@ export async function loadTRoundsFromDB(): Promise<TRoundRow[]> {
     ? await db.stocks.where('fullCode').anyOf(relevantFullCodes).toArray()
     : [];
   const stockMap = new Map(stocks.map((s) => [s.fullCode, s]));
+  // 仅 OPENED 轮次加载流水（COMPLETED 明细按需懒加载，避免归档体积拖慢冷启动）
+  const openRoundIds = entities.filter((r) => r.status === 'OPENED').map((r) => r.id);
+  const txnEntities = openRoundIds.length > 0
+    ? await db.tTransactions
+        .where('roundId').anyOf(openRoundIds)
+        .filter((t) => (t.isDeleted ?? 0) === 0)
+        .sortBy('timestamp')
+    : [];
+  const txnMap = new Map<string, RoundTxn[]>();
+  for (const t of txnEntities) {
+    const list = txnMap.get(t.roundId);
+    const row = toRoundTxn(t);
+    if (list) list.push(row);
+    else txnMap.set(t.roundId, [row]);
+  }
   return entities.map((r) => ({
     id: r.id,
     positionId: r.positionId,
@@ -539,6 +502,7 @@ export async function loadTRoundsFromDB(): Promise<TRoundRow[]> {
     stockName: stockMap.get(r.fullCode)?.stockName ?? r.fullCode,
     roundCode: r.roundCode,
     mode: r.mode,
+    status: r.status,
     settleType: r.settleType === 'partial' ? 'transfer' : 'clear',
     netProfit: r.netProfit,
     fees: r.totalFees,
@@ -552,6 +516,7 @@ export async function loadTRoundsFromDB(): Promise<TRoundRow[]> {
     openedAt: new Date(r.openedAt).toISOString(),
     closedAt: r.closedAt ? new Date(r.closedAt).toISOString() : '',
     lastUpdated: r.lastUpdated,
+    transactions: txnMap.get(r.id),
   }));
 }
 
@@ -721,17 +686,7 @@ export async function fetchTransactionsByRoundId(roundId: string): Promise<Round
     .where({ roundId })
     .filter((t) => (t.isDeleted ?? 0) === 0)
     .sortBy('id');
-  return entities.map((t) => ({
-    id: t.id,
-    timestamp: new Date(t.timestamp).toISOString(),
-    direction: t.direction as RoundTxn['direction'],
-    price: t.price,
-    amount: t.amount,
-    fee: t.fee,
-    matchedAmount: t.matchedAmount,
-    realizedProfit: t.realizedProfit,
-    note: t.note,
-  }));
+  return entities.map((t) => toRoundTxn(t));
 }
 
 /**
@@ -998,9 +953,19 @@ export async function deleteAdjustmentBatches(positionId: string): Promise<void>
     .delete();
 }
 
-// ---- 做T Round ----
-/** 新增/更新单个 Round（同一事务内连同其成交明细整体落库：先删后写 tTransactions） */
+// ---- 做T Round 与流水（v8：tTransactions 为流水唯一持久化表） ----
+/** 新增/更新单个 Round 概览（v8：只写 tRounds 行；流水由 putTransaction 增量写入） */
 export async function putTRound(round: TRoundRow): Promise<void> {
+  await db.tRounds.put(cleanUndefined(withTimestamps(toRoundEntity(round))));
+}
+
+/**
+ * 整轮写入（Round 概览 + 该轮全部流水，单事务原子操作）。
+ *
+ * @description 用于手动添加归档 Round / 导入 / 划转或结算结清等「整轮替换」场景。
+ *              正常增量流水路径应使用 putTRound + putTransaction 分别落库。
+ */
+export async function putRoundWithTransactions(round: TRoundRow): Promise<void> {
   await db.transaction('rw', db.tRounds, db.tTransactions, async () => {
     await db.tRounds.put(cleanUndefined(withTimestamps(toRoundEntity(round))));
     await db.tTransactions.where({ roundId: round.id }).delete();
@@ -1020,12 +985,12 @@ export async function deleteTRoundWithTransactions(id: string): Promise<void> {
   });
 }
 
-/** 新增/更新单笔交易明细 */
-export async function putTransaction(txn: RoundTxn, roundId: string): Promise<void> {
+/** 新增/更新单笔成交明细（v8 增量流水写入主入口：roundId + 流水字段一并落库） */
+export async function putTransaction(roundId: string, txn: RoundTxn): Promise<void> {
   await db.tTransactions.put(cleanUndefined(withTimestamps(toTransactionEntity(txn, roundId))));
 }
 
-/** 替换某 Round 下的所有交易明细 */
+/** 替换某 Round 下的所有交易明细（整轮替换，导入/迁移用） */
 export async function replaceRoundTransactions(roundId: string, transactions: RoundTxn[]): Promise<void> {
   await db.transaction('rw', db.tTransactions, async () => {
     await db.tTransactions.where({ roundId }).delete();
@@ -1036,21 +1001,15 @@ export async function replaceRoundTransactions(roundId: string, transactions: Ro
   });
 }
 
-// ---- 做T流水池 ----
-/** 新增/更新单条做T流水 */
-export async function putTStream(stream: TStreamRow): Promise<void> {
-  await db.tStreams.put(cleanUndefined(withTimestamps(toTStreamEntity(stream))));
+/** 按 id 物理删除单笔成交明细 */
+export async function deleteTransaction(id: string): Promise<void> {
+  await db.tTransactions.delete(id);
 }
 
-/** 按 id 删除单条做T流水 */
-export async function deleteTStream(id: string): Promise<void> {
-  await db.tStreams.delete(id);
-}
-
-/** 批量删除做T流水 */
-export async function bulkDeleteTStreams(ids: string[]): Promise<void> {
+/** 批量物理删除成交明细 */
+export async function bulkDeleteTransactions(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
-  await db.tStreams.bulkDelete(ids);
+  await db.tTransactions.bulkDelete(ids);
 }
 
 // ---- 中长期操作记录 ----
@@ -1101,23 +1060,16 @@ export async function deleteRoundWithCascade(
 }
 
 /**
- * 完整的做T归并归档（单事务原子操作）。
- * 1) 删除该标的做T流水
- * 2) 写入归档 Round
- * 3) 写入中长期归并记录
- * 4) 更新持仓
+ * 做T划转底仓结算归档（单事务原子操作）。
+ * v8：流水已随录入逐笔写入 tTransactions，此处只需更新 Round 概览（COMPLETED）
+ *     并幂等补全明细，同时写入中长期归并记录并更新持仓。
  */
 export async function completeRoundWithMerge(
-  fullCode: string,
-  streamIds: string[],
   round: TRoundRow,
   mergeRecord: LongTermRecordRow,
   positions: PositionRow[],
 ): Promise<void> {
-  await db.transaction('rw', [db.tStreams, db.tRounds, db.tTransactions, db.longTermRecords, db.positions, db.positionBatches], async () => {
-    if (streamIds.length > 0) {
-      await db.tStreams.bulkDelete(streamIds);
-    }
+  await db.transaction('rw', [db.tRounds, db.tTransactions, db.longTermRecords, db.positions, db.positionBatches], async () => {
     await db.tRounds.put(cleanUndefined(withTimestamps(toRoundEntity(round))));
     const txns = round.transactions ?? [];
     if (txns.length > 0) {
@@ -1140,19 +1092,14 @@ export async function completeRoundWithMerge(
 }
 
 /**
- * 清仓式归档做T Round（单事务原子操作）。
- * 1) 删除该标的做T流水
- * 2) 写入归档 Round
+ * 清仓式结算做T Round（单事务原子操作）。
+ * v8：流水已随录入逐笔写入 tTransactions，此处只需更新 Round 概览（COMPLETED）
+ *     并幂等补全明细。
  */
 export async function completeRoundClear(
-  fullCode: string,
-  streamIds: string[],
   round: TRoundRow,
 ): Promise<void> {
-  await db.transaction('rw', db.tStreams, db.tRounds, db.tTransactions, async () => {
-    if (streamIds.length > 0) {
-      await db.tStreams.bulkDelete(streamIds);
-    }
+  await db.transaction('rw', db.tRounds, db.tTransactions, async () => {
     await db.tRounds.put(cleanUndefined(withTimestamps(toRoundEntity(round))));
     const txns = round.transactions ?? [];
     if (txns.length > 0) {
@@ -1173,11 +1120,10 @@ export async function safeImportAllData(
   feeConfig: FeeConfigRow,
   positions: PositionRow[],
   tRounds: TRoundRow[],
-  tStreams: TStreamRow[],
   stocks: StockRow[],
   longTermRecords: LongTermRecordRow[] = [],
 ): Promise<void> {
-  await db.transaction('rw', [db.feeConfigs, db.stocks, db.positions, db.positionBatches, db.tRounds, db.tTransactions, db.tStreams, db.longTermRecords], async () => {
+  await db.transaction('rw', [db.feeConfigs, db.stocks, db.positions, db.positionBatches, db.tRounds, db.tTransactions, db.longTermRecords], async () => {
     const now = Date.now();
 
     // 1. 费率配置：直接 put（id=1 单行 upsert）
@@ -1233,18 +1179,7 @@ export async function safeImportAllData(
       await db.tTransactions.where({ roundId: rid }).delete();
     }
 
-    // 5. 做T流水池
-    const newStreamIds = new Set(tStreams.map((s) => s.id));
-    if (tStreams.length > 0) {
-      await db.tStreams.bulkPut(tStreams.map((s) => cleanUndefined({ ...toTStreamEntity(s), updatedAt: now, createdAt: now, isDeleted: 0 })));
-    }
-    const oldStreamIds = (await db.tStreams.toArray()).map((e) => e.id);
-    const staleStreamIds = oldStreamIds.filter((id) => !newStreamIds.has(id));
-    if (staleStreamIds.length > 0) {
-      await db.tStreams.bulkDelete(staleStreamIds);
-    }
-
-    // 6. 中长期操作记录
+    // 5. 中长期操作记录
     const newLtrIds = new Set(longTermRecords.map((r) => r.id));
     if (longTermRecords.length > 0) {
       await db.longTermRecords.bulkPut(longTermRecords.map((r) => cleanUndefined({ ...toLongTermRecordEntity(r), updatedAt: now, createdAt: now, isDeleted: 0 })));

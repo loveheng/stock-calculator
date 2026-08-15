@@ -143,53 +143,49 @@ export interface TRoundEntity extends BaseEntity {
   adjustmentBatchIds?: string[];
 }
 
-/** 做T成交流水实体（tTransactions 表）。记录 Round 内每笔买卖及撮合对冲结果。 */
+/**
+ * 做T成交流水实体（tTransactions 表）。记录 Round 内每笔买卖流水及撮合对冲结果。
+ *
+ * @description v8 起 tTransactions 是做T流水的**唯一持久化表**（取代 tStreams）：
+ *  - 每笔买卖在录入时即写库（per-entry 落盘，非归档时批量快照）；
+ *  - 字段与引擎 TStreamRecord 完全对齐（含倒T扣减/归并幂等标记），
+ *    刷新后可从 OPENED Round 的 transactions 无损恢复流水池；
+ *  - COMPLETED Round 的 transactions 同时作为战报成交明细（归档详情）。
+ */
 export interface TTransactionEntity extends BaseEntity {
   /** 所属做T轮次 id */
   roundId: string;
-  /** 成交方向：买入 / 卖出（划转在写入时统一转为 buy） */
-  direction: 'buy' | 'sell';
-  /** 成交单价（元） */
-  price: number;
-  /** 成交数量（股） */
-  amount: number;
-  /** 手续费（元） */
-  fee: number;
-  /** 被撮合对冲的数量（股） */
-  matchedAmount: number;
-  /** 本笔已实现盈亏（元，卖出方向才产生） */
-  realizedProfit: number;
-  /** 成交时间戳（毫秒） */
-  timestamp: number;
-  /** 备注 */
-  note?: string;
-}
-
-/** 未完成做T项目流水实体（tStreams 表）。记录进行中 Round 的单边买卖流水，供刷新后恢复做T项目。 */
-export interface TStreamEntity extends BaseEntity {
-  /** 做T流水的展示时间戳（ISO 字符串或 'YYYY-MM-DD HH:mm'，与撮合引擎 FIFO 排序格式一致） */
-  timestamp: string;
-  /** 完整证券代码（含市场前缀，如 sh601318），作为流水池唯一主键 */
+  /** 完整证券代码（含市场前缀，如 sh601318），作为跨 Round 查询索引 */
   fullCode: string;
-  /** 交易方向：买入 / 卖出 */
+  /** 股票名称快照（恢复 UI 展示用） */
+  stockName: string;
+  /** 成交方向：买入 / 卖出（划转/归并在写入时统一转为 buy） */
   direction: 'buy' | 'sell';
   /** 成交单价（元） */
   price: number;
   /** 成交数量（股，正数） */
   amount: number;
-  /** 单边规费快照（元） */
+  /** 手续费（元） */
   fee: number;
+  /** 做T流水的展示时间戳（ISO 字符串或 'YYYY-MM-DD HH:mm'，与撮合引擎 FIFO 排序格式一致） */
+  timestamp: string;
+  /** 被撮合对冲的数量（股） */
+  matchedAmount: number;
+  /** 本笔已实现盈亏（元，卖出方向才产生） */
+  realizedProfit: number;
   /** 备注 */
   note?: string;
   /** 行情快照 ID */
   quoteId?: string;
   /** 选股条目快照（恢复 UI 自动补全展示用） */
   selectedStock?: Record<string, unknown>;
-  /** 倒T首笔卖出已扣减的底仓数量（股） */
+  /** 倒T卖出时从底仓扣减的数量（股） */
   baseDeductedAmount?: number;
+  /** 倒T买入时已归并到底仓的超额数量（用于幂等，仅在 buy 记录上有值） */
+  baseMergedAmount?: number;
   /** 该卖出流对应的出借批次 ID（normalizeShortTDeductions 设置） */
   borrowBatchId?: string;
-  /** 该买入流对应的归并批次 ID（applyShortExcessMerge 设置） */
+  /** 该买入流对应的归并批次 ID（applyShortExcessMerge 设置，多个流共享同一个 ID） */
   mergeBatchId?: string;
 }
 
@@ -343,11 +339,23 @@ const STORES_V6 = {
 const STORES_V7: typeof STORES_V6 = STORES_V6;
 
 /**
+ * v8：做T流水重构 —— tTransactions 取代 tStreams 成为流水唯一持久化表。
+ * 1) tTransactions 增加 fullCode/direction 索引（支持跨 Round 查询与流水恢复）；
+ * 2) tStreams 表从 schema 中移除（Dexie stores() 为累积式设计，必须显式传 null
+ *    才能在升级时删除表），存量 tStreams 数据在 upgrade 回调中迁移为 OPENED Round + tTransactions。
+ */
+const STORES_V8 = {
+  ...STORES_V7,
+  tStreams: null,
+  tTransactions: 'id, roundId, fullCode, direction, timestamp, updatedAt, isDeleted',
+} as const;
+
+/**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
- * @description 集中管理全部 10 张规范化表，并声明各表的索引字段以支持高效查询。
+ * @description 集中管理全部 9 张规范化表，并声明各表的索引字段以支持高效查询。
  * @note 索引字符串格式为 Dexie schema：主键在前（`++` 自增 / 普通字段），逗号分隔的字段均会被建立索引。
- * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V7 常量定义。
+ * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V8 常量定义。
  */
 export class TradingLedgerDB extends Dexie {
   /** 股票基础信息表 */
@@ -360,8 +368,6 @@ export class TradingLedgerDB extends Dexie {
   tRounds!: Table<TRoundEntity, string>;
   /** 做T成交流水表 */
   tTransactions!: Table<TTransactionEntity, string>;
-  /** 未完成做T项目流水表（进行中 Round 的单边流水池） */
-  tStreams!: Table<TStreamEntity, string>;
   /** 现金账户表（单行） */
   accountCash!: Table<AccountCashEntity, number>;
   /** 现金流水表 */
@@ -375,7 +381,7 @@ export class TradingLedgerDB extends Dexie {
   longTermRecords!: Table<LongTermRecordEntity, string>;
 
   /**
-   * 初始化数据库结构（版本链 v2→v7）。
+   * 初始化数据库结构（版本链 v2→v8）。
    *
    * @description 声明各表的主键与索引；后续结构变更须升级 version 并添加 stores/upgrade 迁移逻辑。
    *              新增版本时在 STORES_Vx 链尾部追加增量定义即可，无需全量复制。
@@ -405,6 +411,7 @@ export class TradingLedgerDB extends Dexie {
             }
           });
       });
+    this.version(8).stores(STORES_V8 as Record<string, string | null>);
   }
 }
 

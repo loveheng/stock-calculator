@@ -4,7 +4,7 @@
  *              支持按时间维度（近7天/30天/本月/全部）、正倒T状态、仓位状态多维筛选，
  *              并内嵌个股行情行情快照搜索与建仓履历（持仓批次明细）。
  * @layer UI
- * @storage_impact 只读消费：tStreams（流水池）、tRounds（做T战报）、positions/batches（建仓履历）；
+ * @storage_impact 只读消费：tRounds（做T轮次，OPENED 流水池 + COMPLETED 归档）、positions/batches（建仓履历）；
  *                 不直接写入 IndexedDB。
  * @author 开发团队
  */

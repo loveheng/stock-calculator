@@ -107,7 +107,7 @@ describe('processStockStream 正T 战报净收益（Bug 回归）', () => {
     expect(result.status).toBe('CLEARED');
   });
 
-  test('正T 部分卖出（Round 未结清）：战报净收益仅按 Round 内买入摊配，与 P_base 无关', () => {
+  test('正T 部分卖出（Round 未结清）：战报净收益仅按 Round 内买入 FIFO 配对，与 P_base 无关', () => {
     const result = processStockStream(
       [
         makeRecord({ id: 'b1', direction: 'buy', price: 16.67, amount: 100, fee: 1 }),
@@ -118,17 +118,17 @@ describe('processStockStream 正T 战报净收益（Bug 回归）', () => {
       24.11,
     );
 
-    // 卖出 100 / 累积买入 150 → 按比例 2/3 摊配本次 Round 买入总支出
-    // 匹配买入总成本 = 买入成交额 2502 × (100/150) + 买入规费 1.5 × (100/150)
-    // 净收益 = (卖出净回款 1691.5) - (匹配买入总成本 1669) = 22.5（与 P_base 24.11 完全无关）
-    const matchRatio = 100 / 150;
-    const matchedBuyTotal = (16.67 * 100 + 16.7 * 50) * matchRatio + (1 + 0.5) * matchRatio;
+    // 卖出 100 / 累积买入 150 → 真 FIFO：严格匹配最早一笔买入 100@16.67，
+    // 不跨入第二笔 50@16.7，也不按比例 2/3 摊配（旧比例法已废弃）
+    // 匹配买入总成本 = 1667 + 买入规费 1
+    // 净收益 = (卖出净回款 1691.5) - (匹配买入总成本 1668) = 23.5（与 P_base 24.11 完全无关）
+    const matchedBuyTotal = 16.67 * 100 + 1;
     const expected = (16.93 * 100 - 1.5) - matchedBuyTotal;
     expect(result.transferProfit).toBeCloseTo(expected, 2);
     // 回归保护：严禁引用 P_base（24.11 × 匹配数量）
     expect(result.transferProfit).not.toBeCloseTo(1693 - 24.11 * 100 - (1 + 0.5 + 1.5), 0);
-    // 引擎既有状态语义：未结清且 totalBuyQuantity(50) < totalSellQuantity(100) 时标记为 PENDING
-    expect(result.status).toBe('PENDING');
+    // 已发生卖出但仍有未平仓买入（50 股）→ PARTIAL（精确状态判定，P2-2）
+    expect(result.status).toBe('PARTIAL');
   });
 
   test('Bug 回归「买入→卖出→再买入」：200@16 → 卖100@17 → 买100@16，数量/规费/明细撮合映射', () => {

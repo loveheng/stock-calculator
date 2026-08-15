@@ -5,7 +5,7 @@
  *              一键划转底仓（绝对现金流法）、倒T结算归档，并内嵌归档历史库
  *              （Round 卡片 + 胜率 + 累计净收益）。
  * @layer UI
- * @storage_impact 写表：tStreams（流水池，applyStreamRecord）、tRounds（结算归档）、
+ * @storage_impact 写表：tTransactions（做T流水，随录入逐笔落库）、tRounds（Round 概览与结清）、
  *                 positions/batches/cashTransactions（划转/现金流）；
  *                 读表：settings（费率）。
  * @author 开发团队
@@ -1108,17 +1108,15 @@ function ArchiveRoundCard({
  *  - 历史战报归档库（胜率 + 累计净收益 + 战报卡片）
  *  所有写操作均通过 Store Action 落库 IndexedDB 并级联重算流水池。
  * @returns {JSX.Element} 做T账本与计算器页面视图
- * @note 页面挂载即订阅 tStreams/positions/tRounds 实时响应 Store 变化（数据由 useLoadCoreData 按需加载）
+ * @note 页面挂载即订阅 tRounds（OPENED 流水池 + 归档）/positions 实时响应 Store 变化（数据由 useLoadCoreData 按需加载）
  */
 export default function TCalculator() {
-  const tStreams = useAppStore((s) => s.tStreams);
   const feeConfig = useAppStore((s) => s.feeConfig);
   const positions = useAppStore((s) => s.positions);
   const tRounds = useAppStore((s) => s.tRounds);
   // 已归档 Round（按需懒加载，进入页面时异步加载）
   const { archivedRounds, archivedLoading } = useArchivedRounds();
   const addStreamRecord = useAppStore((s) => s.addStreamRecord);
-  const importLegacyTRecords = useAppStore((s) => s.importLegacyTRecords);
   const removeRound = useAppStore((s) => s.removeRound);
   const clearStreams = useAppStore((s) => s.clearStreams);
   const results = useStreamResults();
@@ -1185,19 +1183,9 @@ export default function TCalculator() {
     };
   }, [showToast]);
 
-  // 持仓清零自动结清 Toast：监听撮合结果变化
-  const prevClearedRef = useRef<Map<string, boolean>>(new Map());
-  useEffect(() => {
-    const prev = prevClearedRef.current;
-    for (const r of results) {
-      const wasCleared = prev.get(r.fullCode) ?? false;
-      if (!wasCleared && r.status === 'CLEARED' && r.entries.some((e) => e.direction === 'sell')) {
-        showToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${r.realizedPnL.toFixed(2)}`, 5000);
-      }
-      prev.set(r.fullCode, r.status === 'CLEARED');
-    }
-    prevClearedRef.current = prev;
-  }, [results, showToast]);
+  // 持仓清零自动结清 Toast：由各录入入口（主表单 handleSubmit / 追加 handleAppend）
+  // 基于 addStreamRecord 返回的 cleared 标志触发；v8 下 CLEARED 轮次会立即归档为
+  // COMPLETED Round 并从撮合结果中消失，因此不再基于 results 轮询检测。
 
   // ---- 派生：选中股票撮合结果 + 底仓 ----
   const selectedResult = useMemo(() => {
@@ -1273,15 +1261,14 @@ export default function TCalculator() {
       setError(result.rejectedReason ?? '校验未通过');
       return;
     }
+    // 自动结清：本轮做T全部配对完成，Round 已归档
+    if (result.cleared) {
+      showToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
+    }
     setPrice('');
     setAmount('');
     setNote('');
     setError('');
-  };
-
-  const handleImportLegacy = () => {
-    const n = importLegacyTRecords();
-    showToast(n > 0 ? `已导入 ${n} 条历史流水` : '暂无历史做T记录可导入', 3500);
   };
 
   // ---- 归档历史库胜率统计（仅统计「今日」完成的战报） ----
@@ -1318,12 +1305,6 @@ export default function TCalculator() {
           <h2 className="text-lg font-bold text-slate-200">做T账本 · Round 生命周期</h2>
           <p className="text-xs text-slate-500">流水池 FIFO 撮合 · 绝对现金流法 · 自动归档战报</p>
         </div>
-        <button
-          onClick={handleImportLegacy}
-          className="btn btn-outline btn-sm shrink-0"
-        >
-          导入历史记录
-        </button>
       </div>
 
       {/* Toast — 自动消失 + 淡入淡出 + 手动关闭 */}

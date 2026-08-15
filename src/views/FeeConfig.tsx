@@ -4,7 +4,7 @@
  *              实时测算买卖一手费用试算，并支持持久化保存、JSON/CSV 导入导出。
  *              保存后通过 Store 广播 setFeeConfig 触发做T流水池全局级联重算。
  * @layer UI
- * @storage_impact 写入 settings 表（feeConfig 记录）；间接影响 tStreams/positions 等
+ * @storage_impact 写入 settings 表（feeConfig 记录）；间接影响 tRounds（做T撮合口径）/positions 等
  *                 依赖费率的计算口径（由 store 级联重算触发）。
  * @author 开发团队
  */

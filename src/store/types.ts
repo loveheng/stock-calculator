@@ -13,28 +13,6 @@ import type { FeeConfig } from '../utils/mathUtils';
 import type { StockMeta, StockSearchItem } from '../types/stock';
 import type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 
-// ---- 做T记录（旧版：买卖成对，仅保留用于统计页兼容展示） ----
-/** @deprecated tRecords 为 v5 以前旧版数据格式，仅保留用于统计页兼容展示。
- *  新代码应使用 tStreams（单边流水池）+ tRounds（Round 战报归档）替代。
- *  计划在 v7 中移除本字段及其关联的 importLegacyTRecords 接口。 */
-export interface TRecord {
-  id: string;
-  timestamp: string;
-  stockName: string;
-  mode: 'long' | 'short';
-  buyPrice: number;
-  buyAmount: number;
-  sellPrice: number;
-  sellAmount: number;
-  totalFee: number;
-  netProfit: number | null;
-  profitRate: number | null;
-  status: string;
-  fullCode: string;
-  quoteId?: string;
-  selectedStock?: StockSearchItem;
-}
-
 // ---- 建仓批次 ----
 export interface PositionBatch {
   id: string;
@@ -68,9 +46,17 @@ export interface Position {
 }
 
 // ---- Round 交易明细（每笔已撮合的做T交易） ----
+/**
+ * @description v8 起与引擎 TStreamRecord 字段对齐：Round 的 transactions 即该轮全部流水，
+ *              既作为流水池恢复源（OPENED Round），也作为战报成交明细（COMPLETED Round）。
+ */
 export interface RoundTxn {
   id: string;
   timestamp: string;
+  /** 完整证券代码（含市场前缀），OPENED 流水必须有；归档明细可缺省（从 Round 冗余） */
+  fullCode?: string;
+  /** 股票名称快照 */
+  stockName?: string;
   direction: 'buy' | 'sell' | 'merge';
   price: number;
   amount: number;
@@ -78,6 +64,18 @@ export interface RoundTxn {
   matchedAmount?: number;
   realizedProfit?: number;
   note?: string;
+  /** 行情快照 ID */
+  quoteId?: string;
+  /** 选股条目快照（恢复 UI 自动补全展示用） */
+  selectedStock?: unknown;
+  /** 倒T卖出时从底仓扣减的数量（股） */
+  baseDeductedAmount?: number;
+  /** 倒T买入时已归并到底仓的超额数量（用于幂等，仅在 buy 记录上有值） */
+  baseMergedAmount?: number;
+  /** 该卖出流对应的出借批次 ID */
+  borrowBatchId?: string;
+  /** 该买入流对应的归并批次 ID */
+  mergeBatchId?: string;
 }
 
 // ---- Round 战报归档 ----
@@ -149,9 +147,6 @@ export interface StreamAddResult {
 export interface AppStoreExport {
   version: number;
   feeConfig: FeeConfig;
-  /** @deprecated 旧版做T记录，v5 后改用 tStreams + tRounds */
-  tRecords: TRecord[];
-  tStreams: TStreamRecord[];
   tRounds: TRoundArchive[];
   positions: Position[];
   stocks: StockMeta[];
@@ -162,7 +157,6 @@ export interface AppStoreExport {
 export interface AppStoreActions {
   // -- 生命周期 --
   setCoreDataLoaded: (loaded: boolean) => void;
-  loadTStreams: () => Promise<void>;
   loadPositions: () => Promise<void>;
   loadTRounds: () => Promise<void>;
   loadStocks: () => Promise<void>;
@@ -176,7 +170,6 @@ export interface AppStoreActions {
   removeStreamRecord: (id: string) => void;
   updateStreamRecord: (id: string, updates: Partial<TStreamRecord>) => void;
   clearStreams: () => void;
-  importLegacyTRecords: () => number;
   validateSellWithPosition: (
     stockFullCode: string,
     direction: string,
@@ -234,9 +227,10 @@ export interface AppStoreActions {
 export interface AppStore extends AppStoreActions {
   coreDataLoaded: boolean;
   feeConfig: FeeConfig;
-  /** @deprecated 旧版做T记录，v5 后改用 tStreams + tRounds */
-  tRecords: TRecord[];
-  tStreams: TStreamRecord[];
+  /**
+   * 做T战报库：OPENED（进行中，transactions 即当前流水池）+ COMPLETED（已归档）。
+   * v8 起取代 tStreams —— 不再有独立流水池，流水全部归属于 Round。
+   */
   tRounds: TRoundArchive[];
   positions: Position[];
   stocks: StockMeta[];

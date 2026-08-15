@@ -120,7 +120,7 @@ function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
 
-  // 按需加载核心数据（tStreams / positions / tRounds）
+  // 按需加载核心数据（tRounds（OPENED 含流水池）/ positions）
   // 冷启动时仅加载 feeConfig，核心数据在首次渲染后异步加载，降低首屏等待时间
   useLoadCoreData();
 

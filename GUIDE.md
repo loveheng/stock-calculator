@@ -112,9 +112,9 @@ DB Layer (Dexie IndexedDB)                  ← 持久化存储
            → ReactDOM.render(<App />)
 
 首帧渲染后（AppLayout 挂载时）:
-  useLoadCoreData() → loadTStreams() + loadPositions() + loadTRounds()   # 并行
+  useLoadCoreData() → loadTRounds() + loadPositions()   # 并行（tRounds 的 OPENED 轮次内含流水池）
                     → setCoreDataLoaded(true)                            # 核心数据就绪
-  各页面再按需加载: useLoadPositions / useLoadTStreams / useLoadTRounds / useLoadStocks
+  各页面再按需加载: useLoadPositions / useLoadTRounds / useLoadStocks
 
 运行时（以 addStreamRecord 为例）:
   用户点击"添加流水"
@@ -122,14 +122,15 @@ DB Layer (Dexie IndexedDB)                  ← 持久化存储
     → useAppStore.getState().addStreamRecord(record)
     → Store Action 内部（统一管道）:
         1. 做T底仓校验（validateStreamTrade / 倒T首笔卖出）
-        2. normalizeShortTDeductions（归一化倒T底仓扣减）
-        3. buildBasePositionCosts → processAllStreams（FIFO 撮合）
-        4. archiveRoundIfCleared（自动 Round 归档）
-        5. set({ tStreams, tRounds, positions })   ← 内存状态更新
-        6. safePersist(() => { ... })              ← 增量 DB 写入
-             putTStream(record)        # 新增/更新流水
-             putTRound(...)            # 新归档战报
-             putPosition(...)          # 被修改的持仓（diff 检测）
+        2. 找/建 OPENED Round（单标的单 OPENED Round 规则），流水作为 transaction 追加
+        3. activeStreamsFromRounds（OPENED Round 流水池）→ reconcilePositionsWithStreams
+           → normalizeShortTDeductions → processAllStreams（FIFO 撮合）→ applyShortExcessMerge
+        4. finalizeRoundIfCleared（撮合 CLEARED → 复用同一 Round 标记 COMPLETED，不新建）
+        5. set({ tRounds, positions })   ← 内存状态更新
+        6. safePersist(() => { ... })    ← 增量 DB 写入
+             putTransaction(roundId, txn)  # 流水逐笔落库（tTransactions）
+             putTRound(round)              # Round 概览（OPENED/COMPLETED）
+             putPosition(...)              # 被修改的持仓（diff 检测）
 
 导入/导出:
   exportJSON / importJSON → importData → safePersist(safeImportAllData)
@@ -158,16 +159,15 @@ async function safePersist(fn: () => Promise<void>) {
 
 ## 四、核心模块详解
 
-### 4.1 `db/schema.ts` — 数据库表结构（11 张表，库名 TradingLedgerDB_v3）
+### 4.1 `db/schema.ts` — 数据库表结构（10 张表，库名 TradingLedgerDB_v3）
 
 | 表名 | 主键 | 说明 |
 |---|---|---|
 | `stocks` | fullCode | 股票元信息（含 `kind`：stock/etf/bond 费率分类） |
 | `positions` | id | 持仓账本（底仓成本 + 数量 + 平仓状态） |
 | `positionBatches` | id | 持仓批次（open/add/reduce） |
-| `tRounds` | id | 做T战报（status: OPENED/COMPLETED） |
-| `tTransactions` | id | 战报成交明细快照 |
-| `tStreams` | id | 做T流水池（进行中 Round 的单边买卖记录） |
+| `tRounds` | id | 做T轮次概览（status: OPENED 进行中 / COMPLETED 已归档） |
+| `tTransactions` | id | **做T流水唯一持久化表**（OPENED Round 的流水池 + COMPLETED Round 的成交明细，字段与引擎 TStreamRecord 对齐） |
 | `accountCash` | id=1 | 现金账户（单行；初始化已做，UI 待开发） |
 | `cashFlows` | id | 现金流水（预留，尚无读写代码） |
 | `tradeNotes` | id | 交易笔记（预留，尚无读写代码） |
@@ -175,15 +175,17 @@ async function safePersist(fn: () => Promise<void>) {
 | `longTermRecords` | id | 中长期操作记录（buy/sell/merge，与战报级联删除） |
 
 > 所有实体继承 `BaseEntity`（id / createdAt / updatedAt / `isDeleted` 软删除标记）。
-> 表结构用版本链常量 `STORES_V2 → STORES_V6` 增量叠加，新增表/索引时在链尾追加即可，无需全量复制。
+> 表结构用版本链常量 `STORES_V2 → STORES_V8` 增量叠加，新增表/索引时在链尾追加即可，无需全量复制。
+> **v8 变更**：`tStreams` 表移除（stores 中显式 `tStreams: null` 触发 Dexie 删除）。
+> 历史 tStreams 数据不迁移（历史数据不保留），表随 upgrade 直接 drop；做T流水唯一持久化为 tTransactions。
 
 ### 4.2 `db/index.ts` — 持久化操作 API（40+ 导出函数）
 
 | 类别 | 函数 |
 |---|---|
-| **启动/装载** | `ensureDefaultData`, `loadFeeConfigFromDB`, `loadPositionsFromDB`, `loadTStreamsFromDB`, `loadTRoundsFromDB`, `loadStocksFromDB` |
-| **增量写入** | `putFeeConfig`, `putStock`, `bulkPutStocks`, `putPosition`, `putPositionWithBatches`, `putPositionBatch`, `addBatchToPosition`, `replacePositionBatches`, `putTRound`, `putTransaction`, `replaceRoundTransactions`, `putTStream`, `putLongTermRecord` |
-| **精确删除** | `deleteStock`, `deletePositionWithBatches`, `deletePositionBatch`, `deleteTRoundWithTransactions`, `deleteTStream`, `bulkDeleteTStreams`, `deleteLongTermRecord`, `deleteLongTermRecordsBySourceReportId`, `deleteRoundWithCascade` |
+| **启动/装载** | `ensureDefaultData`, `loadFeeConfigFromDB`, `loadPositionsFromDB`, `loadTRoundsFromDB`（OPENED 含流水）, `loadStocksFromDB` |
+| **增量写入** | `putFeeConfig`, `putStock`, `bulkPutStocks`, `putPosition`, `putPositionWithBatches`, `putPositionBatch`, `addBatchToPosition`, `replacePositionBatches`, `putTRound`（概览）, `putTransaction`（单笔流水）, `putRoundWithTransactions`（整轮替换）, `replaceRoundTransactions`, `putLongTermRecord` |
+| **精确删除** | `deleteStock`, `deletePositionWithBatches`, `deletePositionBatch`, `deleteTRoundWithTransactions`, `deleteTransaction`, `bulkDeleteTransactions`, `deleteLongTermRecord`, `deleteLongTermRecordsBySourceReportId`, `deleteRoundWithCascade` |
 | **级联结算** | `completeRoundWithMerge`（划转底仓）, `completeRoundClear`（清仓结算） |
 | **查询/分页** | `fetchBatchesByPositionId`, `fetchClosedPositionsPage`, `fetchAllClosedPositions`, `fetchOpenRoundsWithTransactions`（进行中 Round，含明细）, `fetchCompletedRoundsPage`（已完成 Round，仅摘要，不含明细）, `fetchAllCompletedRounds`（导出用，含明细）, `fetchTransactionsByRoundId`（明细按需查询）, `fetchAllLongTermRecords` |
 | **安全导入** | `safeImportAllData` — 逐表批量 upsert + 清理残留记录，绝不调用 clear() |
@@ -191,11 +193,12 @@ async function safePersist(fn: () => Promise<void>) {
 > 写库前统一经 `cleanUndefined()` 剔除 undefined 字段（IndexedDB 结构化克隆不允许 undefined）。
 > `Row` 类型（PositionRow/TRoundRow/...）与 Store 类型同源（type 别名），改一处全局生效。
 >
+> **流水持久化（v8）**：每笔做T流水在录入时即 `putTransaction(roundId, txn)` 逐笔落库
+> （per-entry，非归档时批量快照）；Round 概览由 `putTRound` 单独维护。CLEARED/手动结算时
+> 只翻转 Round status 为 COMPLETED，流水原地保留为归档成交明细，不再复制/删除。
 > **Round 成交明细按需加载**：列表加载器（`fetchCompletedRoundsPage` → `useArchivedRounds`）只返回轮次摘要
 > （含 `tradeCount` 等汇总字段，不含 `transactions`）；UI 展开「查看成交明细」时才通过
-> `fetchTransactionsByRoundId` 按需查询 `tTransactions` 表。写入路径（`putTRound` / `completeRoundClear` /
-> `completeRoundWithMerge` / `safeImportAllData`）负责把明细持久化到 `tTransactions`，保证按需加载有据可查；
-> `fetchAllCompletedRounds`（导出用）仍返回完整明细。
+> `fetchTransactionsByRoundId` 按需查询 `tTransactions` 表。
 
 ### 4.3 `store/` — Zustand 全局状态（三文件分工）
 
@@ -210,11 +213,9 @@ store/
 
 ```typescript
 interface AppStore {
-  coreDataLoaded: boolean;         // 核心数据（流水/持仓/战报）是否已加载
+  coreDataLoaded: boolean;         // 核心数据（轮次/持仓/战报）是否已加载
   feeConfig: FeeConfig;            // 费率配置（含 ETF 分层费率）
-  tRecords: TRecord[];             // @deprecated 旧版做T记录（仅统计页兼容展示）
-  tStreams: TStreamRecord[];       // 做T流水池
-  tRounds: TRoundArchive[];        // 进行中的 Round 战报
+  tRounds: TRoundArchive[];        // 做T轮次库：OPENED（transactions 即流水池）+ COMPLETED（已归档）
   positions: Position[];           // 持仓账本
   stocks: StockMeta[];             // 股票元信息
   longTermRecords: LongTermRecord[]; // 中长期操作记录
@@ -222,21 +223,24 @@ interface AppStore {
 }
 ```
 
+> **v8 变更**：`tStreams` 状态移除。流水不再独立存在，全部归属于 Round 的
+> `transactions`（OPENED Round 的流水经 `activeStreamsFromRounds` 派生为引擎输入）。
+
 **关键 Action 与 DB 绑定（摘录）：**
 
 | Action | Store 更新 | DB 写入 |
 |---|---|---|
-| `loadTStreams / loadPositions / loadTRounds / loadStocks` | 全量装载对应数据 | 只读查询 |
+| `loadPositions / loadTRounds / loadStocks` | 全量装载对应数据（OPENED Round 含流水） | 只读查询 |
 | `setFeeConfig(partial)` | merge 费率 | `putFeeConfig` |
-| `addStreamRecord(record)` | 追加流水 + FIFO 撮合 + 自动归档 | `putTStream` + `putTRound` + `putPosition`(diff) |
-| `removeStreamRecord(id)` | 删流水 + 重算撮合 + 自动归档 | `deleteTStream` + `putTRound` + `putPosition`(diff) |
-| `updateStreamRecord(id, up)` | 更新流水 + 归一化 + 重算 + 归档 | `putTStream` + `putTRound` + `putPosition`(diff) |
-| `clearStreams()` | 清空流水 + 持仓还原 | `bulkDeleteTStreams` + `putPosition`(diff) |
+| `addStreamRecord(record)` | 找/建 OPENED Round + 追加流水 + FIFO 撮合 + 结清归档 | `putTransaction` + `putTRound` + `putPosition`(diff) |
+| `removeStreamRecord(id)` | 删流水 + 重算撮合（空 Round 整轮删除） | `deleteTransaction` + `putTRound`/`deleteTRoundWithTransactions` + `putPosition`(diff) |
+| `updateStreamRecord(id, up)` | 更新流水 + 归一化 + 重算 + 归档 | `putTransaction` + `putTRound` + `putPosition`(diff) |
+| `clearStreams()` | 清空 OPENED Round（保留 COMPLETED 归档）+ 持仓还原 | `deleteTRoundWithTransactions` + `putPosition`(diff) |
 | `removeRound(id)` | 删战报 + 剥离底仓 + 级联中长期 | `deleteRoundWithCascade` |
-| `transferToPosition(...)` | 划转底仓 + 归档 + 记中长期 | `completeRoundWithMerge` |
-| `settleShortRound(fullCode)` | 倒T结算归档 | `completeRoundClear` |
+| `transferToPosition(...)` | 划转底仓 + 复用 Round 结清 + 记中长期 | `completeRoundWithMerge` |
+| `settleShortRound(fullCode)` | 倒T结算（复用 Round 结清） | `completeRoundClear` |
 | `addPosition(pos)` | 新建持仓 | `putPositionWithBatches` |
-| `importData(data)` | 全量导入 | `safeImportAllData` |
+| `importData(data)` | 全量导入（tRounds/positions/stocks/longTermRecords） | `safeImportAllData` |
 | `exportJSON / exportCSV` | — | 只读导出 |
 
 ### 4.4 `utils/tStreamEngine.ts` — FIFO 撮合引擎（纯函数，不写 DB）
@@ -244,7 +248,7 @@ interface AppStore {
 核心流程：
 
 ```
-流水池 (tStreams)
+活跃流水池（OPENED Round 的 transactions）
   → 按时间排序（compareByTimestamp）
   → FIFO 买入/卖出队列
   → 配对结算：卖出价 vs 加权均价 P_avg（倒T首笔卖出引用底仓成本 P_base）
@@ -254,7 +258,8 @@ interface AppStore {
      }
 ```
 
-配套派生 Hook `useStreamResults()`（`store/utils.ts`）—— 页面直接订阅即可获得全市场撮合结果，任何流水/费率/持仓变化自动级联重算。
+配套派生 Hook `useStreamResults()`（`store/utils.ts`）—— 页面直接订阅即可获得全市场撮合结果，
+流水来自 `activeStreamsFromRounds(tRounds)`（仅 OPENED Round），任何轮次/费率/持仓变化自动级联重算。
 
 > 另外该引擎还保留一套**单步状态机**（`createInitialState` / `stepTEngine` / `mergeLongToBase` 等），用于 TCalculator 页面的逐步交互展示，`processAllStreams` 是其批量入口。
 
@@ -296,12 +301,13 @@ interface AppStore {
   ```
 - 等量回补自动结算（`short_auto_close`）；部分回补后可「部分减持」（`short_partial_reduce`）或「划转」（`short_transfer`）到新底仓
 
-#### 4.5.2 流水池 tStreams 与 FIFO 撮合
+#### 4.5.2 Round 流水池与 FIFO 撮合
 
-所有做T操作都记录为单边流水 `TStreamRecord`（buy/sell），不做配对存储，撮合由纯函数引擎实时计算：
+所有做T操作都记录为 Round 内的单边流水（buy/sell，`RoundTxn`），不做配对存储，撮合由纯函数引擎实时计算：
 
 ```
-流水池 tStreams (TStreamRecord[])
+OPENED Round.transactions（流水池，v8 取代独立 tStreams）
+  → activeStreamsFromRounds 派生 TStreamRecord[]
   → 按 fullCode 分组
   → compareByTimestamp 时间升序排序
   → processStockStream 逐条推进状态机（stepTEngine）
@@ -310,6 +316,7 @@ interface AppStore {
 
 - **FIFO 规则**：先买入的先卖出（正T），先卖出的先买回（倒T），符合国内券商结算惯例
 - **级联重算**：页面通过 `useStreamResults()` Hook 订阅，任何流水/费率/持仓变化自动重算全市场撮合结果
+- **单标的单 OPENED Round**：同一 fullCode 同时至多一个进行中 Round；CLEARED 后 Round 标记 COMPLETED（流水退出活跃池），再次录入自动开启新一轮（跨轮隔离）
 - **倒T成本继承**：倒T首笔卖出把底仓 `(P_base × N_sell)` 并入 P_avg 加权池，全部卖出统一按融合 P_avg 结算（`firstSellCostBasis` / `inheritedBaseAmount` 字段）
 - **双指标口径**：`realizedPnL`（已实现净收益）与 `transferProfit`（Round 绝对现金流净收益 = 卖出回收 − 加权成本 − 规费）同时展示
 
@@ -337,22 +344,23 @@ interface AppStore {
 
 对应函数：`resolveOverSellAutoHedge` / `resolveOverSellHedgeThenReverse` / `resolveOverBuyAutoHedge` / `resolveOverBuyHedgeThenReverse` / `cancelDefenseDialog`。UI 层由 `DefenseOverflowModal` 组件渲染。
 
-#### 4.5.5 Round 战报自动归档
+#### 4.5.5 Round 战报自动归档（v8：复用 Round 结清）
 
-流水池完全配对（`status === 'CLEARED'`）且发生过卖出时，`archiveRoundIfCleared`（`src/store/utils.ts`）自动生成 `TRoundArchive` 战报：
+流水池完全配对（`status === 'CLEARED'`）且发生过卖出时，`finalizeRoundIfCleared`（`src/store/utils.ts`）将**已有的 OPENED Round 标记为 COMPLETED** 并回填概览字段：
 
-- 战报含成交明细快照（tTransactions）、回合序号（roundNo 按标的递增）、模式、净收益、胜率标记
-- 划转/归并场景（`transferToPosition` / `settleShortRound`）走 `completeRoundWithMerge` / `completeRoundClear` 级联结算
-- 删除带归并的战报自动触发 `rollbackTransferPosition` 剥离底仓、回退加权成本（`src/store/utils.ts`）
-- 已完成战报按需懒加载（`useArchivedRounds`），展开「查看成交明细」时才按需查询 `fetchTransactionsByRoundId`
+- Round 在**首笔流水录入时即创建**（OPENED），流水逐笔落库 tTransactions；
+- 结清时复用同一 Round 翻转 status（不新建、不复制流水），消除原 tStreams 模型的「重复归档」缺陷；
+- 划转/归并场景（`transferToPosition` / `settleShortRound`）同样复用 OPENED Round 结清，走 `completeRoundWithMerge` / `completeRoundClear` 级联结算；
+- 删除带归并的战报自动触发 `rollbackTransferPosition` 剥离底仓、回退加权成本（`src/store/utils.ts`）；
+- 已完成战报按需懒加载（`useArchivedRounds`），展开「查看成交明细」时才按需查询 `fetchTransactionsByRoundId`。
 
-##### 当前项目过滤（CLEARED 自动出列）
+##### 当前项目过滤（COMPLETED 自动出列）
 
 页面通过 `activeResults = results.filter(r => r.status !== 'CLEARED')` 派生「当前做T项目」列表：
 
-- 流水池完全配对后（`status === 'CLEARED'`）的 Round 已自动归档为战报，**不再属于当前进行中项目**，自动从「当前做T项目」卡片流淡出
-- 头部汇总卡片仍按 `results`（含已结清轮次）统计累计已实现净收益，与下方归档库的今日累计口径衔接
-- 「清空流水池」按钮仅在进行中项目（`activeResults.length > 0`）时显示，避免误清空已归档数据
+- Round 结清后（COMPLETED），其流水退出活跃池，撮合结果中不再出现该标的 —— **自动从「当前做T项目」卡片流淡出**；
+- 头部汇总卡片仍按 `results` 统计累计已实现净收益，与下方归档库的今日累计口径衔接；
+- 「清空流水池」按钮仅在进行中项目（`activeResults.length > 0`）时显示，避免误清空已归档数据。
 
 ##### 今日战报归档库（仅展示当天）
 
@@ -392,12 +400,12 @@ interface AppStore {
 
 | Hook | 加载内容 | 使用场景 |
 |---|---|---|
-| `useLoadCoreData()` | tStreams + positions + tRounds | AppLayout 挂载时调用一次 |
+| `useLoadCoreData()` | tRounds（OPENED 含流水池）+ positions | AppLayout 挂载时调用一次 |
 | `useLoadPositions()` | positions | CostAveraging 等 |
-| `useLoadTStreams()` | tStreams | TCalculator 等 |
-| `useLoadTRounds()` | tRounds | TCalculator 等 |
+| `useLoadTRounds()` | tRounds（OPENED 含流水池） | TCalculator 等 |
 | `useLoadStocks()` | stocks | 需要股票自动补全的页面 |
 
+> v8：`useLoadTStreams` 已移除 —— 流水随 OPENED Round 的 transactions 一并加载。
 > 关键实现：`useCallback(useAppStore.getState().loadXxx, [])` 稳定函数引用，避免 useEffect 竞态重复触发；`useRef` 保证每个钩子只加载一次。
 
 ---
@@ -470,3 +478,4 @@ npx tsc --noEmit     # TypeScript 类型检查（tsconfig 排除了 src/__tests_
 | v6.1 | deletePositionBatch 修复；safePersist 指数退避重试 + 失败队列；persistError 模块化，移除 DOM 事件耦合 |
 | **v7** | **按需加载重构：冷启动仅加载费率配置，核心数据由 useDataLoader 钩子按需加载；新增证券类型（stock/etf/bond）与 ETF 分层费率** |
 | v7.1 | 短线交易页聚焦当日：当前做T项目过滤 CLEARED 自动归档项（activeResults）；归档库改为「今日战报归档库」（仅显示当天完成的战报）；移除原注释状态的「中长期操作历史」UI 面板 |
+| **v8** | **做T数据模型重构：移除 tStreams 表与旧版 tRecords 兼容层 —— 流水唯一持久化为 tTransactions（Round 内，字段与引擎对齐），Round 概览存 tRounds；单标的单 OPENED Round 规则，结清复用同一 Round 标记 COMPLETED（消除重复归档）；tTransactions 增加 fullCode/direction 索引；v8 upgrade 直接删除 tStreams 表（历史数据不保留，不做迁移）** |

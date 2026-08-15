@@ -4,9 +4,10 @@
  *              归并批次与倒T扣减必须随流水删除而正确回滚。
  *
  *              场景（Bug 回归）：底仓 1000 股 @24.11
- *                卖出 200 股 @17.43（倒T首笔卖出 → 扣减底仓 200）
- *                买入 300 股 @16.00（超额 100 股 → 归并底仓）
- *                → 删除买入流水：100 股归并必须撤销（回到扣减后 800 股）
+ *                卖出 200 股 @17.43（倒T首笔卖出 → 借出底仓）
+ *                买入 300 股 @16.00（其中 200 股回补归还底仓，超额 100 股 → 归并底仓）
+ *                → 底仓 = 1000 - 200(借出) + 200(归还) + 100(归并) = 1100
+ *                → 删除买入流水：归并撤销且借出恢复为净借出 200 → 回到 800 股
  *                → 再删除卖出流水：200 股扣减必须撤销（回到基线 1000 股）
  * @layer Test
  * @storage_impact 纯函数测试，不读写任何存储。
@@ -95,14 +96,15 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
     expect(streams[0].baseDeductedAmount).toBe(200); // 幂等标记已记录
   });
 
-  test('卖出 200 + 买入 300：超额 100 股归并底仓 → 900 股，加权成本 = (24.11*800+16*100)/900', () => {
+  test('卖出 200 + 买入 300：回补 200 归还底仓 + 超额 100 股归并 → 1100 股，加权成本 = (24.11*1000+16*100)/1100', () => {
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
     const buy = createStream({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, timestamp: '2026-08-13T02:00:00.000Z' });
     const { positions, streams, results } = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG);
 
     const p = positions[0];
-    expect(p.currentAmount).toBe(900);
-    expect(p.currentCost).toBeCloseTo((24.11 * 800 + 16 * 100) / 900, 3);
+    // 净借出 = 卖出 200 - 买回 300 ≤ 0 → 底仓不扣减；超额买回 100 归并底仓
+    expect(p.currentAmount).toBe(1100);
+    expect(p.currentCost).toBeCloseTo((24.11 * 1000 + 16 * 100) / 1100, 3);
 
     // 归并批次已追加：amount=100 @16，note 以「倒T超额归并」开头
     const mergeBatch = p.batches.find((b) => b.note?.startsWith('倒T超额归并'));
@@ -119,21 +121,22 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
 
     // 幂等标记已记录
     expect(streams.find((s) => s.id === 'b1')?.baseMergedAmount).toBe(100);
-    expect(streams.find((s) => s.id === 's1')?.baseDeductedAmount).toBe(200);
+    // 买回已覆盖全部卖出 → 无净借出，无 baseDeductedAmount
+    expect(streams.find((s) => s.id === 's1')?.baseDeductedAmount ?? 0).toBe(0);
   });
 
-  test('删除买入流水：100 股归并随流水删除而撤销 → 回到扣减后 800 股', () => {
+  test('删除买入流水：100 股归并随流水删除而撤销 → 回到净借出扣减后 800 股', () => {
     // 先构造「已归并」的持仓状态（等价于 addStreamRecord 后的持久化状态）
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
     const buy = createStream({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, timestamp: '2026-08-13T02:00:00.000Z' });
     const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG);
-    expect(first.positions[0].currentAmount).toBe(900);
+    expect(first.positions[0].currentAmount).toBe(1100);
 
     // 删除买入流水（模拟 removeStreamRecord）
     const { positions, streams } = reconcilePositionsWithStreams(first.positions, [sell], FEE_CONFIG);
     const p = positions[0];
 
-    // 归并的 100 股已撤销：900 - 100 = 800，成本还原为 24.11
+    // 归并的 100 股已撤销，买回归还也撤销 → 净借出恢复为 200 → 1000 - 200 = 800，成本还原为 24.11
     expect(p.currentAmount).toBe(800);
     expect(p.currentCost).toBeCloseTo(24.11, 3);
 
@@ -168,7 +171,7 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
     const buy = createStream({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, timestamp: '2026-08-13T02:00:00.000Z' });
     const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG);
-    expect(first.positions[0].currentAmount).toBe(900);
+    expect(first.positions[0].currentAmount).toBe(1100);
 
     const { positions } = reconcilePositionsWithStreams(first.positions, [], FEE_CONFIG);
     const p = positions[0];
@@ -184,8 +187,8 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
     const second = reconcilePositionsWithStreams(first.positions, [sell, buy], FEE_CONFIG);
 
     const p = second.positions[0];
-    expect(p.currentAmount).toBe(900);
-    expect(p.currentCost).toBeCloseTo((24.11 * 800 + 16 * 100) / 900, 3);
+    expect(p.currentAmount).toBe(1100);
+    expect(p.currentCost).toBeCloseTo((24.11 * 1000 + 16 * 100) / 1100, 3);
 
     // 归并批次只应存在一条（100 股），不得重复叠加
     const mergeBatches = p.batches.filter((b) => b.note?.startsWith('倒T超额归并'));

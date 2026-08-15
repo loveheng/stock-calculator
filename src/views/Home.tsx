@@ -4,7 +4,7 @@
  *              近 N 日收益趋势、持仓分布、账户现金流（现金/总资产）与做T异动预警。
  *              数据来源：useStreamResults（流水池撮合引擎）+ Store positions（持仓账本）。
  * @layer UI
- * @storage_impact 只读消费：positions（底仓持仓）、tStreams（流水池）与 cashTransactions（现金账户）；
+ * @storage_impact 只读消费：positions（底仓持仓）、tRounds（做T轮次）与 cashTransactions（现金账户）；
  *                 不直接写入任何 IndexedDB 表，跳转类操作委托各功能页完成。
  * @author 开发团队
  */

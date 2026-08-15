@@ -40,6 +40,7 @@ export interface PositionWithStockInfo extends Position {
 function mapPositionBatchEntityToStore(batch: {
   id: string; timestamp: number; type: string; price: number; amount: number;
   costAfter: number; amountAfter: number; note?: string; fee?: number;
+  kind?: 'borrow' | 'merge'; costPrice?: number;
 }): PositionBatch {
   return { ...batch, timestamp: new Date(batch.timestamp).toISOString() } as PositionBatch;
 }

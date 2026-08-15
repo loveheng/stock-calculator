@@ -95,6 +95,10 @@ export interface PositionBatchEntity extends BaseEntity {
   timestamp: number;
   /** 备注 */
   note?: string;
+  /** 自动调整标识：borrow=倒T出借（借仓卖出），merge=倒T超额买回归并 */
+  kind?: 'borrow' | 'merge';
+  /** 该笔操作发生时的底仓成本价（元），仅借仓卖出时记录，用于显示成本对照 */
+  costPrice?: number;
 }
 
 /** 做T轮次实体（tRounds 表）。一个 Round 代表一次完整/进行中的做T项目，采用绝对现金流法核算净收益。 */
@@ -135,6 +139,8 @@ export interface TRoundEntity extends BaseEntity {
   win?: boolean;
   /** 最近一次活动时间戳（毫秒） */
   lastUpdated?: number;
+  /** 该 round 对应在中长期仓位中的自动调整批次 ID（出借/归并），删除时级联移除 */
+  adjustmentBatchIds?: string[];
 }
 
 /** 做T成交流水实体（tTransactions 表）。记录 Round 内每笔买卖及撮合对冲结果。 */
@@ -181,6 +187,10 @@ export interface TStreamEntity extends BaseEntity {
   selectedStock?: Record<string, unknown>;
   /** 倒T首笔卖出已扣减的底仓数量（股） */
   baseDeductedAmount?: number;
+  /** 该卖出流对应的出借批次 ID（normalizeShortTDeductions 设置） */
+  borrowBatchId?: string;
+  /** 该买入流对应的归并批次 ID（applyShortExcessMerge 设置） */
+  mergeBatchId?: string;
 }
 
 /** 现金账户实体（accountCash 表）。单行记录（id 固定为 1）。 */

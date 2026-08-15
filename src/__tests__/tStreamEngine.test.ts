@@ -253,4 +253,57 @@ describe('processStockStream 倒T 战报净收益（回归保护）', () => {
     expect(b1.realizedProfit).toBeCloseTo(expected, 1);
     expect(b1.realizedProfit).toBeGreaterThan(0);
   });
+
+  test('Bug回归：倒T 卖出 200 股 @17.43 → 买入 300 股 @16.00：残余 100 股自动归并底仓', () => {
+    // 场景：倒T 先卖出 200 股，再买入 300 股（超出 100 股）
+    // 预期：200 股对冲成功并结清，剩余 100 股自动归并到底仓
+    // 净收益 = (17.43 * 200 - 卖出规费) - (16.00 * 200 + 买入规费对冲部分)
+    const sellFee = 2.0; // 取整 fixture
+    const buyFee = 1.5;  // 取整 fixture
+    const result = processStockStream(
+      [
+        makeRecord({ id: 's1', direction: 'sell', price: 17.43, amount: 200, fee: sellFee, timestamp: '2026-08-13T01:00:00.000Z' }),
+        makeRecord({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, fee: buyFee, timestamp: '2026-08-13T02:00:00.000Z' }),
+      ],
+      FEE_CONFIG,
+      24.11,
+    );
+
+    // 1) 模式为倒T
+    expect(result.mode).toBe('short');
+
+    // 2) 200 股配对成功，净收益 = 卖出净回款 - 匹配买入总支出
+    // 对冲比例 = 200/300 = 2/3，买入规费对冲部分 = 1.5 * 2/3 = 1.0
+    const matchedBuyFee = buyFee * (2 / 3);
+    const expected = (17.43 * 200 - sellFee) - (16.00 * 200 + matchedBuyFee);
+    expect(result.transferProfit).toBeCloseTo(expected, 1);
+    expect(result.transferProfit).toBeGreaterThan(270); // ~280 元
+
+    // 3) 状态已结清（CLEARED）
+    expect(result.status).toBe('CLEARED');
+
+    // 4) 做T池待处理数量为 0（超额部分已归并到底仓）
+    expect(result.netPendingAmount).toBe(0);
+
+    // 5) 明细撮合映射：卖出腿 200 股全部被对冲
+    const [s1, b1] = result.entries;
+    expect(s1.direction).toBe('sell');
+    expect(s1.matchedAmount).toBeCloseTo(200, 2);
+    expect(s1.remaining).toBeCloseTo(0, 2);
+
+    // 6) 买入腿：撮合 200 股（对冲部分），剩余 100 股（归并到底仓）
+    expect(b1.direction).toBe('buy');
+    expect(b1.matchedAmount).toBeCloseTo(200, 1);
+    expect(b1.remaining).toBeCloseTo(100, 1);
+
+    // 7) 收益标签挂在买入腿上（倒T 回补买入 = 收益实现腿）
+    expect(b1.realizedProfit).toBeCloseTo(expected, 1);
+    expect(b1.realizedProfit).toBeGreaterThan(0);
+
+    // 8) 验证超额买入量 = 300 - 200 = 100
+    expect(result.buyAmount).toBe(300);
+    expect(result.realizedSellAmount).toBe(200);
+    const excessBuy = result.buyAmount - result.realizedSellAmount;
+    expect(excessBuy).toBe(100);
+  });
 });

@@ -46,6 +46,10 @@ export interface PositionBatch {
   amountAfter: number;
   note?: string;
   fee?: number;
+  /** 自动调整标识：borrow=倒T出借（借仓卖出，非真实落袋），merge=倒T超额买回归并 */
+  kind?: 'borrow' | 'merge';
+  /** 该笔操作发生时的底仓成本价（元），仅借仓卖出时记录，用于显示成本对照 */
+  costPrice?: number;
 }
 
 // ---- 持仓（成本摊薄账本中的单只股票持仓） ----
@@ -108,6 +112,11 @@ export interface TRoundArchive {
    * 写入路径（归档/结算/导入）必须携带完整明细以保证持久化。
    */
   transactions?: RoundTxn[];
+  /**
+   * 该 round 对应在中长期仓位中的自动调整批次 ID（出借/归并）。
+   * 删除 round 时级联移除这些批次，保证做T数据删除后不影响中长期仓位。
+   */
+  adjustmentBatchIds?: string[];
 }
 
 // ---- 中长期操作记录 ----

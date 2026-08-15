@@ -40,6 +40,10 @@ export interface TStreamRecord {
   baseDeductedAmount?: number;
   /** 倒T买入时已归并到底仓的超额数量（用于幂等，仅在 buy 记录上有值） */
   baseMergedAmount?: number;
+  /** 该卖出流对应的出借批次 ID（normalizeShortTDeductions 设置） */
+  borrowBatchId?: string;
+  /** 该买入流对应的归并批次 ID（applyShortExcessMerge 设置，多个流共享同一个 ID） */
+  mergeBatchId?: string;
   note?: string;
   quoteId?: string;
   selectedStock?: any;

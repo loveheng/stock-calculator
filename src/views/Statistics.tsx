@@ -1048,15 +1048,20 @@ export default function Statistics() {
                                       className="flex items-center justify-between text-xs text-slate-400"
                                     >
                                       <span>
-                                        {batch.type === 'open'
-                                          ? '建仓'
-                                          : batch.type === 'add'
-                                            ? '加仓'
-                                            : batch.type === 'reduce'
-                                              ? '减仓'
-                                              : '结清'}
+                                        {batch.kind === 'borrow'
+                                          ? '出借'
+                                          : batch.type === 'open'
+                                            ? '建仓'
+                                            : batch.type === 'add'
+                                              ? '加仓'
+                                              : batch.type === 'reduce'
+                                                ? '减仓'
+                                                : '结清'}
                                         {' · '}
                                         ¥{batch.price.toFixed(2)} × {batch.amount} 股
+                                        {batch.kind === 'borrow' && batch.costPrice !== undefined && (
+                                          <span className="text-slate-500 ml-1">成本¥{batch.costPrice.toFixed(2)}</span>
+                                        )}
                                       </span>
                                       <span className="text-slate-500">
                                         {fmtDate(batch.timestamp)}

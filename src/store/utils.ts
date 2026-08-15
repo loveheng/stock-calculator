@@ -78,6 +78,17 @@ export function recomputePositionSnapshot(batches: PositionBatch[]): {
     if (batch.amount > 0) {
       totalInvested += batch.price * qty + batchFee;
       totalAmount += qty;
+    } else if (batch.kind === 'borrow') {
+      // 出借：只减数量与成本基数，不产生盈亏（借仓卖出，非真实落袋）
+      if (totalAmount > 0) {
+        const costBasisPerShare = totalInvested / totalAmount;
+        totalInvested -= costBasisPerShare * qty;
+      }
+      totalAmount -= qty;
+      if (totalAmount <= 0) {
+        totalInvested = 0;
+        totalAmount = 0;
+      }
     } else {
       if (totalAmount > 0) {
         const costBasisPerShare = totalInvested / totalAmount;

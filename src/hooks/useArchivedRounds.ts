@@ -42,12 +42,29 @@ export function useArchivedRounds(): {
     if (!hasData.current) {
       // 首次加载（含 StrictMode 双执行的第一轮）：展示 loading 占位
       setArchivedLoading(true);
+    } else {
+      // ── 非首次加载：同步 tRounds 变化，立即从本地 state 中移除已删除的战报 ──
+      // 当 removeRound 执行后，Zustand 的 tRounds 已同步删除该战报，
+      // 但 DB 的异步删除（deleteRoundWithCascade 经 safePersist）可能尚未完成。
+      // 如果此时去 DB 重查，会拿到仍包含已删除战报的脏数据。
+      // 这里先根据 tRounds 的 ID 集合进行本地过滤，实现毫秒级 UI 响应。
+      const tRoundIds = new Set(tRounds.map((r) => r.id));
+      setArchivedRounds((prev) => {
+        const filtered = prev.filter((r) => tRoundIds.has(r.id));
+        // 无变化时保持引用不变，避免不必要的重渲染
+        return filtered.length === prev.length ? prev : filtered;
+      });
     }
 
-    // 一次性加载所有已完成的 Round（统计页需要全量汇总）
+    // 全量从 DB 重新拉取，确保与持久化层最终一致（异步，不影响 UI 即时响应）
     ledgerService.fetchCompletedRoundsPage(1, 999999).then((result) => {
       if (!cancelled) {
-        setArchivedRounds(result.items);
+        // ── 从 DB 拉取后，再以当前 tRounds 的 ID 集合做一次本地过滤 ──
+        // 确保已被 removeRound 从 Zustand 中删除（但 safePersist 的异步
+        // 删除尚未完成）的战报不会因为 DB 脏数据而重新出现在列表中。
+        const tRoundIds = new Set(tRounds.map((r) => r.id));
+        const filtered = result.items.filter((r) => tRoundIds.has(r.id));
+        setArchivedRounds(filtered);
         hasData.current = true;
         // 无条件关闭 loading：无论首次加载生效的是第几次 effect 的请求，
         // 只要任一请求成功返回即结束 loading 状态，避免卡在「加载中」

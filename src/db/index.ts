@@ -218,6 +218,8 @@ function toPositionBatchEntity(batch: PositionBatch, positionId: string): Positi
     amountAfter: batch.amountAfter,
     timestamp: parseTimestamp(batch.timestamp),
     note: batch.note,
+    kind: batch.kind,
+    costPrice: batch.costPrice,
     createdAt: parseTimestamp(batch.timestamp),
     updatedAt: parseTimestamp(batch.timestamp),
     isDeleted: 0,
@@ -321,6 +323,8 @@ function toTStreamEntity(stream: TStreamRow): TStreamEntity {
     quoteId: stream.quoteId,
     selectedStock: stream.selectedStock,
     baseDeductedAmount: stream.baseDeductedAmount,
+    borrowBatchId: stream.borrowBatchId,
+    mergeBatchId: stream.mergeBatchId,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     isDeleted: 0,
@@ -347,6 +351,8 @@ function toTStreamRow(entity: TStreamEntity): TStreamRow {
     quoteId: entity.quoteId,
     selectedStock: entity.selectedStock,
     baseDeductedAmount: entity.baseDeductedAmount,
+    borrowBatchId: entity.borrowBatchId,
+    mergeBatchId: entity.mergeBatchId,
   };
 }
 
@@ -480,6 +486,8 @@ export async function loadPositionsFromDB(): Promise<PositionRow[]> {
         costAfter: batch.costAfter,
         amountAfter: batch.amountAfter,
         note: batch.note,
+        kind: batch.kind,
+        costPrice: batch.costPrice,
       });
     }
   }
@@ -508,12 +516,43 @@ export async function loadTStreamsFromDB(): Promise<TStreamRow[]> {
 }
 
 /**
- * 按需加载进行中的做T轮次（活跃 Round，含成交明细）。
+ * 按需加载所有未删除的做T轮次（OPENED + COMPLETED，不含成交明细）。
  *
- * @returns {Promise<TRoundRow[]>} 进行中的轮次数组（含 transactions）
+ * @description 将全部 Round 加载到 Zustand 的 tRounds 中，确保删除操作
+ *              （removeRound）能通过 ID 找到已完成战报；成交明细通过
+ *              fetchTransactionsByRoundId 按需加载，不在初始加载时拉取。
+ * @returns {Promise<TRoundRow[]>} 所有未删除的轮次数组（不含 transactions）
  */
 export async function loadTRoundsFromDB(): Promise<TRoundRow[]> {
-  return fetchOpenRoundsWithTransactions();
+  const entities = await db.tRounds
+    .where('isDeleted').equals(0)
+    .toArray();
+  const relevantFullCodes = [...new Set(entities.map((r) => r.fullCode))];
+  const stocks = relevantFullCodes.length > 0
+    ? await db.stocks.where('fullCode').anyOf(relevantFullCodes).toArray()
+    : [];
+  const stockMap = new Map(stocks.map((s) => [s.fullCode, s]));
+  return entities.map((r) => ({
+    id: r.id,
+    positionId: r.positionId,
+    fullCode: r.fullCode,
+    stockName: stockMap.get(r.fullCode)?.stockName ?? r.fullCode,
+    roundCode: r.roundCode,
+    mode: r.mode,
+    settleType: r.settleType === 'partial' ? 'transfer' : 'clear',
+    netProfit: r.netProfit,
+    fees: r.totalFees,
+    sellAmount: r.sellAmount ?? 0,
+    transferAmount: r.transferAmount,
+    avgPrice: r.avgPrice ?? 0,
+    buyAmount: r.buyAmount ?? 0,
+    tradeCount: r.tradeCount ?? 0,
+    holdingDays: r.holdingDays ?? 0,
+    win: r.win ?? false,
+    openedAt: new Date(r.openedAt).toISOString(),
+    closedAt: r.closedAt ? new Date(r.closedAt).toISOString() : '',
+    lastUpdated: r.lastUpdated,
+  }));
 }
 
 /**
@@ -591,6 +630,7 @@ export async function fetchBatchesByPositionId(positionId: string): Promise<Posi
     costAfter: b.costAfter,
     amountAfter: b.amountAfter,
     note: b.note,
+    kind: b.kind,
   }));
 }
 
@@ -932,6 +972,32 @@ export async function replacePositionBatches(positionId: string, batches: Positi
   });
 }
 
+/**
+ * 原子化更新持仓快照并替换所有批次（单事务）。
+ * 用于 reconcile 对账后的持久化：positions 表写快照，positionBatches 表全量替换。
+ */
+export async function replacePositionSnapshotWithBatches(
+  position: PositionRow,
+  batches: PositionBatch[],
+): Promise<void> {
+  await db.transaction('rw', db.positions, db.positionBatches, async () => {
+    await db.positions.put(cleanUndefined(withTimestamps(toPositionEntity(position))));
+    await db.positionBatches.where({ positionId: position.id }).delete();
+    if (batches.length > 0) {
+      const now = Date.now();
+      await db.positionBatches.bulkPut(batches.map((b) => cleanUndefined({ ...toPositionBatchEntity(b, position.id), updatedAt: now, createdAt: now, isDeleted: 0 })));
+    }
+  });
+}
+
+/** 删除某持仓下所有带 kind 标识的调整批次（borrow/merge） */
+export async function deleteAdjustmentBatches(positionId: string): Promise<void> {
+  await db.positionBatches
+    .where({ positionId })
+    .filter((b) => b.kind === 'borrow' || b.kind === 'merge')
+    .delete();
+}
+
 // ---- 做T Round ----
 /** 新增/更新单个 Round（同一事务内连同其成交明细整体落库：先删后写 tTransactions） */
 export async function putTRound(round: TRoundRow): Promise<void> {
@@ -1016,12 +1082,20 @@ export async function deleteRoundWithCascade(
   sourceReportId: string,
   positions: PositionRow[],
 ): Promise<void> {
-  await db.transaction('rw', db.tRounds, db.tTransactions, db.longTermRecords, db.positions, async () => {
+  await db.transaction('rw', db.tRounds, db.tTransactions, db.longTermRecords, db.positions, db.positionBatches, async () => {
     await db.tRounds.delete(roundId);
     await db.tTransactions.where({ roundId }).delete();
     await db.longTermRecords.where({ sourceReportId }).delete();
     for (const pos of positions) {
       await db.positions.put(cleanUndefined(withTimestamps(toPositionEntity(pos))));
+      // 同步持久化批次履历，保证批次与快照一致
+      await db.positionBatches.where({ positionId: pos.id }).delete();
+      if (pos.batches.length > 0) {
+        const now = Date.now();
+        await db.positionBatches.bulkPut(pos.batches.map((b) =>
+          cleanUndefined({ ...toPositionBatchEntity(b, pos.id), updatedAt: now, createdAt: now, isDeleted: 0 })
+        ));
+      }
     }
   });
 }
@@ -1040,7 +1114,7 @@ export async function completeRoundWithMerge(
   mergeRecord: LongTermRecordRow,
   positions: PositionRow[],
 ): Promise<void> {
-  await db.transaction('rw', db.tStreams, db.tRounds, db.tTransactions, db.longTermRecords, db.positions, async () => {
+  await db.transaction('rw', [db.tStreams, db.tRounds, db.tTransactions, db.longTermRecords, db.positions, db.positionBatches], async () => {
     if (streamIds.length > 0) {
       await db.tStreams.bulkDelete(streamIds);
     }
@@ -1053,6 +1127,14 @@ export async function completeRoundWithMerge(
     await db.longTermRecords.put(cleanUndefined(withTimestamps(toLongTermRecordEntity(mergeRecord))));
     for (const pos of positions) {
       await db.positions.put(cleanUndefined(withTimestamps(toPositionEntity(pos))));
+      // 同步持久化批次履历，保证批次与快照一致
+      await db.positionBatches.where({ positionId: pos.id }).delete();
+      if (pos.batches.length > 0) {
+        const now = Date.now();
+        await db.positionBatches.bulkPut(pos.batches.map((b) =>
+          cleanUndefined({ ...toPositionBatchEntity(b, pos.id), updatedAt: now, createdAt: now, isDeleted: 0 })
+        ));
+      }
     }
   });
 }

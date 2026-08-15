@@ -94,10 +94,34 @@ export function recalculatePosition(batches: PositionBatchEntity[]): PositionSna
       if (currentAmount <= 0) continue; // 无持仓可卖，忽略异常批次
       // 防御：最多卖出当前持仓数量，避免产生负持仓
       const sellable = Math.min(qty, currentAmount);
-      const unitFee = fee / sellable; // 规费按数量均摊
+
+      // ① 出借批次（倒T借仓卖出）：状态合并——出借当卖出看待，计入落袋利润。
+      // kind 保留用于删除保护，不做正T对配/不登记待回补台账。
+      if (batch.kind === 'borrow') {
+        const unitFee = fee / sellable;
+        const baseFee = unitFee * sellable;
+        const costBasis = initialCost * sellable;
+        const netProceeds = batch.price * sellable - baseFee;
+        accumulatedTPnL += netProceeds - costBasis; // 出借当卖出，计入做T落袋利润
+        totalInvested -= costBasis; // 按底仓成本抽回，非按卖出价
+        currentAmount -= sellable;
+        // 不做正T对配、不登记待回补台账
+        if (currentAmount <= 0) {
+          currentAmount = 0;
+          totalInvested = 0;
+          uncoveredQty = 0;
+          pendingLowQty = 0;
+          pendingLowCost = 0;
+          isClosed = 1;
+          closedAt = batch.timestamp;
+        }
+        continue;
+      }
+
+      const unitFee = fee / sellable;
       let remaining = sellable;
 
-      // ① 正T对配：优先与「待高抛台账」中的低吸买入对冲。整轮落袋 = 高抛净回款 − 低吸总成本
+      // ② 正T对配：优先与「待高抛台账」中的低吸买入对冲。整轮落袋 = 高抛净回款 − 低吸总成本
       if (pendingLowQty > 0) {
         const paired = Math.min(remaining, pendingLowQty);
         const sellFee = unitFee * paired;
@@ -115,7 +139,7 @@ export function recalculatePosition(batches: PositionBatchEntity[]): PositionSna
         remaining -= paired;
       }
 
-      // ② 剩余部分为底仓减仓（倒T候选）：暂记「净回款 − 底仓初始均价×数量」，
+      // ③ 剩余部分为底仓减仓（倒T候选）：暂记「净回款 − 底仓初始均价×数量」，
       //    登记进「待回补台账」等待低吸买回
       if (remaining > 0) {
         const baseFee = unitFee * remaining;

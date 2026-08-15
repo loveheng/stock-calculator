@@ -214,6 +214,8 @@ function toEntityBatch(batch: PositionBatch, positionId: string): PositionBatchE
     amountAfter: batch.amountAfter,
     timestamp: new Date(batch.timestamp).getTime(),
     note: batch.note,
+    kind: batch.kind,
+    costPrice: batch.costPrice,
     // recalculatePosition 不读取审计时间戳，此处仅作类型占位
     createdAt: 0,
     updatedAt: 0,
@@ -549,11 +551,16 @@ function PositionLedger() {
         // 动态保本价 / 做T落袋利润 / 实际净投入现金 / 初始建仓均价
         const snap = recalculatePosition(pos.batches.map((b) => toEntityBatch(b, pos.id)));
 
+        // 批次履历已包含出借/归并调整批次（kind='borrow'/'merge'），
+        // recalculatePosition 已能正确处理：出借只减数量不记盈亏，归并正常加回。
+        // 因此 snap.currentAmount 与 DB currentAmount 一致，可直接用于展示。
+        const netAmount = snap.currentAmount;
+
         // 实时现价（来自腾讯行情接口，交易时段每 5 秒刷新）
         const live = quotes[pos.fullCode] ?? null;
         const cp = live?.currentPrice ?? 0;
-        const hasPrice = cp > 0 && snap.currentAmount > 0;
-        const floatPnL = hasPrice ? (cp - snap.currentCost) * snap.currentAmount : 0;
+        const hasPrice = cp > 0 && netAmount > 0;
+        const floatPnL = hasPrice ? (cp - snap.currentCost) * netAmount : 0;
         const floatPnLPercent = hasPrice && snap.currentCost > 0 ? ((cp - snap.currentCost) / snap.currentCost) * 100 : 0;
         // 回本所需涨幅 = (动态保本价 - 现价) / 现价 × 100%；现价高于保本价时为负（已回本）
         const requiredRisePercent = hasPrice && snap.currentCost > 0 ? ((snap.currentCost - cp) / cp) * 100 : 0;
@@ -624,7 +631,7 @@ function PositionLedger() {
               </div>
               <div>
                 <span className="text-slate-500">持仓数量</span>
-                <p className="text-slate-200 font-medium">{snap.currentAmount.toLocaleString()}股</p>
+                <p className="text-slate-200 font-medium">{netAmount.toLocaleString()}股</p>
               </div>
               <div>
                 <span className="text-slate-500">做T / 调仓落袋利润 🔥</span>
@@ -682,15 +689,19 @@ function PositionLedger() {
                     <div key={batch.id} className="flex items-center justify-between text-xs text-slate-400 py-1.5 border-b border-slate-800 last:border-0">
                       <div className="flex items-center gap-2">
                         <span className={`px-1.5 py-0.5 rounded text-xs ${
+                          batch.kind === 'borrow' ? 'bg-amber-500/20 text-amber-400' :
                           batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
                           batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
                           batch.type === 'reduce' ? 'bg-red-500/20 text-red-400' :
                           'bg-slate-500/20 text-slate-400'
                         }`}>
-                          {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结仓'}
+                          {batch.kind === 'borrow' ? '出借' : batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结仓'}
                         </span>
                         <span>¥{batch.price.toFixed(3)}</span>
                         <span>× {Math.abs(batch.amount)}股</span>
+                        {batch.kind === 'borrow' && batch.costPrice !== undefined && (
+                          <span className="text-slate-600">成本¥{batch.costPrice.toFixed(3)}</span>
+                        )}
                         {batch.fee !== undefined && batch.fee > 0 && (
                           <span className="text-slate-600">费¥{batch.fee.toFixed(2)}</span>
                         )}
@@ -706,21 +717,30 @@ function PositionLedger() {
                           <button
                             onClick={() => {
                               if (isFirstBatch(batch.id)) return;
+                              if (batch.kind === 'borrow' || batch.kind === 'merge') return;
                               setDeleteBatchConfirm({ positionId: pos.id, batchId: batch.id });
                             }}
-                            disabled={isFirstBatch(batch.id)}
+                            disabled={isFirstBatch(batch.id) || batch.kind === 'borrow' || batch.kind === 'merge'}
                             className={`p-1 rounded ${
-                              isFirstBatch(batch.id)
+                              isFirstBatch(batch.id) || batch.kind === 'borrow' || batch.kind === 'merge'
                                 ? 'text-slate-700 cursor-not-allowed'
                                 : 'hover:bg-slate-800 text-slate-600 hover:text-red-400'
                             }`}
-                            title={isFirstBatch(batch.id) ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】' : '删除该笔操作记录'}
+                            title={
+                              batch.kind === 'borrow' || batch.kind === 'merge'
+                                ? '系统自动生成的调整记录，不可删除'
+                                : isFirstBatch(batch.id)
+                                  ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】'
+                                  : '删除该笔操作记录'
+                            }
                           >
                             <Trash2 className="w-3 h-3" />
                           </button>
-                          {isFirstBatch(batch.id) && (
+                          {(isFirstBatch(batch.id) || batch.kind === 'borrow' || batch.kind === 'merge') && (
                             <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-60 bg-slate-800 text-slate-200 text-xs rounded-lg p-2 shadow-lg z-10">
-                              已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】
+                              {batch.kind === 'borrow' || batch.kind === 'merge'
+                                ? '系统自动生成的调整记录，不可删除'
+                                : '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】'}
                             </div>
                           )}
                         </div>

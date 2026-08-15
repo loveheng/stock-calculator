@@ -471,6 +471,15 @@ function CurrentProjectCard({
   const baseHolding = basePosition?.currentAmount ?? 0;
 
   const handleSettleShort = async () => {
+    // 有底仓 → 优先归并超额到中长期持仓；若无可归并数量或操作失败 → 结算归档，不出借回退
+    if (basePosition && basePosition.currentAmount > 0) {
+      const res = await transferToPosition(result.fullCode);
+      if (res.ok) {
+        addToast(res.message ?? '操作完成');
+        return;
+      }
+      // 无可归并数量（netPending=0）时降级为结算归档
+    }
     const res = await settleShortRound(result.fullCode);
     if (res.ok) {
       addToast(res.message ?? '操作完成');

@@ -29,6 +29,8 @@ import {
   putPositionBatch,
   putPositionWithBatches,
   addBatchToPosition,
+  replacePositionSnapshotWithBatches,
+  deleteAdjustmentBatches,
   putTRound,
   deleteTRoundWithTransactions,
   putTStream,
@@ -206,12 +208,43 @@ function applyShortExcessMerge(
           .reduce((sum, s) => sum + (s.baseMergedAmount ?? 0), 0);
         const remaining = excessBuy - totalMerged;
         if (remaining > 0) {
+          const mergePrice = stream.avgPrice;
+          const mergeBatchId = generateId(); // 提前生成 ID，供流记录关联
           finalPositions = finalPositions.map((p) => {
             if (p.fullCode === stream.fullCode) {
-              return { ...p, currentAmount: p.currentAmount + remaining, isClosed: false };
+              const oldAmount = p.currentAmount;
+              const newAmount = oldAmount + remaining;
+              // 加权计算新成本 = (原持仓总成本 + 归并买入金额) / 新总数量
+              const newCost = oldAmount > 0
+                ? roundTo((p.currentCost * oldAmount + mergePrice * remaining) / newAmount, 3)
+                : mergePrice;
+              const batch: PositionBatch = {
+                id: mergeBatchId,
+                timestamp: new Date().toISOString(),
+                type: 'add',
+                price: mergePrice,
+                amount: remaining,
+                kind: 'merge',
+                costAfter: newCost,
+                amountAfter: newAmount,
+                note: `倒T超额归并（${formatTradeNo(new Date().toISOString())}）`,
+              };
+              return {
+                ...p,
+                currentAmount: newAmount,
+                currentCost: newCost,
+                isClosed: false,
+                batches: [...p.batches, batch],
+              };
             }
             return p;
           });
+          // 记录归并批次 ID 到所有买入流，供删除时精确回滚
+          for (const s of finalStreams) {
+            if (s.fullCode === stream.fullCode && s.direction === 'buy') {
+              s.mergeBatchId = mergeBatchId;
+            }
+          }
           // 将剩余未归并量分摊到所有 buy 记录上（按比例）
           const buyRecords = finalStreams.filter((s) => s.fullCode === stream.fullCode && s.direction === 'buy');
           const totalBuyAmount = buyRecords.reduce((sum, s) => sum + s.amount, 0);
@@ -245,17 +278,118 @@ function normalizeShortTDeductions(
     const currentDeducted = sorted.filter(s => s.direction === 'sell').reduce((sum, s) => sum + (s.baseDeductedAmount ?? 0), 0);
     const diff = initialSellCount - currentDeducted;
     if (diff > 0 && pos) {
+      // 计算卖出流的加权均价，用于出借批次的价格
+      const sellStreams = sorted.filter(s => s.direction === 'sell');
+      const totalSellValue = sellStreams.reduce((sum, s) => sum + s.price * s.amount, 0);
+      const avgSellPrice = totalSellValue / initialSellCount;
+      let createdBorrowBatch: PositionBatch | undefined;
       for (let i = 0; i < normalizedPositions.length; i++) {
         if (normalizedPositions[i].fullCode === fullCode && !normalizedPositions[i].isClosed) {
-          const na = Math.max(0, normalizedPositions[i].currentAmount - diff);
-          normalizedPositions[i] = { ...normalizedPositions[i], currentAmount: na, isClosed: na <= 0 };
+          const p = normalizedPositions[i];
+          // 创建出借批次（kind='borrow'），替代直接扣减 currentAmount
+          // price 使用卖出流的加权均价（而非底仓成本价），让 UI 展示真实卖出价格
+          const borrowBatch: PositionBatch = {
+            id: generateId(),
+            timestamp: new Date().toISOString(),
+            type: 'reduce',
+            price: avgSellPrice,
+            amount: -diff,
+            kind: 'borrow',
+            costPrice: p.currentCost, // 底仓成本价，用于显示成本对照
+            costAfter: p.currentCost, // 成本不变（出借不改变底仓均价）
+            amountAfter: Math.max(0, p.currentAmount - diff),
+            note: `倒T出借（${formatTradeNo(new Date().toISOString())}）`,
+          };
+          createdBorrowBatch = borrowBatch;
+          const newBatches = [...p.batches, borrowBatch];
+          const snap = recomputePositionSnapshot(newBatches);
+          normalizedPositions[i] = {
+            ...p,
+            batches: newBatches,
+            currentAmount: snap.currentAmount,
+            currentCost: snap.currentCost,
+            totalInvested: snap.totalInvested,
+            realizedPnL: snap.realizedPnL,
+            isClosed: snap.currentAmount <= 0,
+          };
           break;
         }
       }
-      for (const s of updatedStreams) { if (s.fullCode === fullCode && s.direction === 'sell') s.baseDeductedAmount = (s.baseDeductedAmount ?? 0) + diff / initialSellCount * s.amount; }
+      if (createdBorrowBatch) {
+        for (const s of updatedStreams) { if (s.fullCode === fullCode && s.direction === 'sell') { s.baseDeductedAmount = (s.baseDeductedAmount ?? 0) + diff / initialSellCount * s.amount; s.borrowBatchId = createdBorrowBatch.id; } }
+      }
     }
   }
   return { streams: updatedStreams, positions: normalizedPositions };
+}
+
+/** 自动调整批次的备注前缀（用于识别/剥离倒T超额买回归并批次） */
+const STREAM_MERGE_NOTE_PREFIX = '倒T超额归并';
+const STREAM_BORROW_NOTE_PREFIX = '倒T出借';
+
+/**
+ * 判断是否为流水驱动的自动调整批次（出借/归并）。
+ * 优先通过 kind 字段，兼容存量 note 前缀。
+ */
+function isStreamAdjustmentBatch(b: PositionBatch): boolean {
+  if (b.kind === 'borrow' || b.kind === 'merge') return true;
+  return !!b.note && (b.note.startsWith(STREAM_MERGE_NOTE_PREFIX) || b.note.startsWith(STREAM_BORROW_NOTE_PREFIX));
+}
+
+/**
+ * 全量对账：以持仓批次履历为基线，依据当前流水池状态重建底仓。
+ *
+ * 每个写操作（新增/删除/修改流水、清空流水池）后调用，保证：
+ *  - 倒T首笔卖出扣减（normalizeShortTDeductions）与超额买回归并（applyShortExcessMerge）
+ *    始终与当前流水池状态一致；
+ *  - 删除/修改流水后，已不存在的归并批次与扣减会自动回滚（不再残留于底仓）；
+ *  - 天然幂等：每次从「剥离自动归并批次后的基线」出发重新计算，归并/扣减不会重复叠加。
+ *
+ * @param positions 当前底仓（可能已含历史归并批次/扣减残留）
+ * @param streams 当前流水池（新增/删除/修改后的最新状态）
+ * @param feeConfig 系统费率配置
+ * @returns 对账后的底仓、流水（含最新 baseDeductedAmount/baseMergedAmount 幂等标记）与撮合结果
+ */
+export function reconcilePositionsWithStreams(
+  positions: Position[],
+  streams: TStreamRecord[],
+  feeConfig: FeeConfig,
+): { positions: Position[]; streams: TStreamRecord[]; results: StockStreamResult[] } {
+  // ① 剥离历史自动调整批次（出借/归并），回到批次履历基线（数量/成本以批次为准）
+  const cleanPositions = positions.map((p) => {
+    const cleanBatches = p.batches.filter((b) => !isStreamAdjustmentBatch(b));
+    const snap = recomputePositionSnapshot(cleanBatches);
+    const reOpened = snap.currentAmount > 0;
+    return {
+      ...p,
+      batches: cleanBatches,
+      currentCost: snap.currentCost,
+      currentAmount: snap.currentAmount,
+      realizedPnL: snap.realizedPnL,
+      totalInvested: snap.totalInvested,
+      isClosed: !reOpened,
+      closedAt: reOpened ? undefined : p.closedAt,
+    };
+  });
+
+  // ② 重置幂等标记：位置已回到基线，扣减/归并全部重新计算
+  const cleanStreams = streams.map((s) => ({
+    ...s,
+    baseDeductedAmount: undefined,
+    baseMergedAmount: undefined,
+    borrowBatchId: undefined,
+    mergeBatchId: undefined,
+  }));
+
+  // ③ 应用倒T首笔卖出扣减
+  const { streams: deductedStreams, positions: deductedPositions } = normalizeShortTDeductions(cleanStreams, cleanPositions);
+
+  // ④ 计算撮合结果并应用超额买回归并
+  const baseCosts = buildBasePositionCosts(deductedPositions);
+  const results = processAllStreams(deductedStreams, feeConfig, baseCosts);
+  const { positions: finalPositions, streams: finalStreams } = applyShortExcessMerge(results, deductedStreams, deductedPositions);
+
+  return { positions: finalPositions, streams: finalStreams, results };
 }
 
 export const useAppStore = create<AppStore>()((set, get) => ({
@@ -284,39 +418,73 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     }
     const { tStreams, feeConfig, tRounds, positions } = get();
     const rawNext = [...tStreams, record];
-    const normalized = normalizeShortTDeductions(rawNext, positions);
-    const baseCosts = buildBasePositionCosts(normalized.positions);
-    const results = processAllStreams(normalized.streams, feeConfig, baseCosts);
+    const { positions: finalPositions, streams: finalStreams, results } = reconcilePositionsWithStreams(positions, rawNext, feeConfig);
     const stream = results.find(r => r.fullCode === record.fullCode);
 
-    const { positions: finalPositions, streams: finalStreams } = applyShortExcessMerge(results, normalized.streams, normalized.positions);
+    // 检测超额归并：若底仓数量增加，说明发生了倒T超额买回归并，创建中长期记录
+    const excessMergeLTRecord: LongTermRecord | null = (() => {
+      for (const fp of finalPositions) {
+        const op = positions.find(p => p.id === fp.id);
+        if (op && fp.currentAmount > op.currentAmount) {
+          const diff = fp.currentAmount - op.currentAmount;
+          const sr = results.find(r => r.fullCode === fp.fullCode);
+          if (sr && sr.mode === 'short' && sr.status === 'CLEARED') {
+            return {
+              id: generateId(),
+              fullCode: fp.fullCode,
+              stockName: fp.stockName,
+              timestamp: new Date().toISOString(),
+              type: 'merge',
+              price: sr.avgPrice,
+              amount: diff,
+              fee: 0,
+              note: `倒T超额归并底仓（${formatTradeNo(new Date().toISOString())}）`,
+            };
+          }
+        }
+      }
+      return null;
+    })();
 
     const rounds = stream ? archiveRoundIfCleared(stream, tRounds) : tRounds;
-    set({ tStreams: finalStreams, tRounds: rounds, positions: finalPositions });
-    safePersist(async () => { await putTStream(record); const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id)); if (nr) await putTRound(nr); for (const np of finalPositions) { const old = positions.find(p => p.id === np.id); if (old && (old.currentAmount !== np.currentAmount || old.isClosed !== np.isClosed)) await putPosition(np); } });
+    if (excessMergeLTRecord) {
+      set({ tStreams: finalStreams, tRounds: rounds, positions: finalPositions, longTermRecords: [...get().longTermRecords, excessMergeLTRecord] });
+    } else {
+      set({ tStreams: finalStreams, tRounds: rounds, positions: finalPositions });
+    }
+    safePersist(async () => {
+      const savedStream = finalStreams.find(s => s.id === record.id) ?? record;
+      await putTStream(savedStream);
+      const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id));
+      if (nr) await putTRound(nr);
+      for (const np of finalPositions) {
+        const old = positions.find(p => p.id === np.id);
+        if (old && (old.currentAmount !== np.currentAmount || old.currentCost !== np.currentCost || old.isClosed !== np.isClosed || old.batches.length !== np.batches.length || JSON.stringify(old.batches) !== JSON.stringify(np.batches))) {
+          await replacePositionSnapshotWithBatches(np, np.batches);
+        }
+      }
+      if (excessMergeLTRecord) {
+        const { putLongTermRecord } = await import('../db/index');
+        await putLongTermRecord(excessMergeLTRecord);
+      }
+    });
     return { cleared: stream?.status === 'CLEARED', netProfit: stream?.transferProfit, avgPrice: stream?.avgPrice };
   },
 
   removeStreamRecord: (id) => {
     const { tStreams, feeConfig, tRounds, positions } = get();
     const filtered = tStreams.filter(s => s.id !== id);
-    const normalized = normalizeShortTDeductions(filtered, positions);
-    const baseCosts = buildBasePositionCosts(normalized.positions);
-    const results = processAllStreams(normalized.streams, feeConfig, baseCosts);
-    const { positions: finalPositions, streams: finalStreams } = applyShortExcessMerge(results, normalized.streams, normalized.positions);
+    const { positions: finalPositions, streams: finalStreams, results } = reconcilePositionsWithStreams(positions, filtered, feeConfig);
     let rounds = [...tRounds];
     for (const r of results) { if (r.status === 'CLEARED') rounds = archiveRoundIfCleared(r, rounds); }
     set({ tStreams: finalStreams, tRounds: rounds, positions: finalPositions });
-    safePersist(async () => { await deleteTStream(id); const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id)); if (nr) await putTRound(nr); for (const np of finalPositions) { const old = positions.find(p => p.id === np.id); if (old && (old.currentAmount !== np.currentAmount || old.isClosed !== np.isClosed)) await putPosition(np); } });
+    safePersist(async () => { await deleteTStream(id); const nr = rounds.find(r => !tRounds.some(tr => tr.id === r.id)); if (nr) await putTRound(nr); for (const np of finalPositions) { const old = positions.find(p => p.id === np.id); if (old && (old.currentAmount !== np.currentAmount || old.currentCost !== np.currentCost || old.isClosed !== np.isClosed || old.batches.length !== np.batches.length || JSON.stringify(old.batches) !== JSON.stringify(np.batches))) await replacePositionSnapshotWithBatches(np, np.batches); } });
   },
 
   updateStreamRecord: (id, updates) => {
     const { tStreams, feeConfig, tRounds, positions } = get();
     const updatedStreams = tStreams.map(st => st.id === id ? { ...st, ...updates } : st);
-    const normalized = normalizeShortTDeductions(updatedStreams, positions);
-    const baseCosts = buildBasePositionCosts(normalized.positions);
-    const results = processAllStreams(normalized.streams, feeConfig, baseCosts);
-    const { positions: finalPositions, streams: finalStreams } = applyShortExcessMerge(results, normalized.streams, normalized.positions);
+    const { positions: finalPositions, streams: finalStreams, results } = reconcilePositionsWithStreams(positions, updatedStreams, feeConfig);
     let rounds = [...tRounds];
     for (const r of results) { if (r.status === 'CLEARED') rounds = archiveRoundIfCleared(r, rounds); }
     set({ tStreams: finalStreams, tRounds: rounds, positions: finalPositions });
@@ -327,12 +495,24 @@ export const useAppStore = create<AppStore>()((set, get) => ({
       if (nr) await putTRound(nr);
       for (const np of finalPositions) {
         const old = positions.find(p => p.id === np.id);
-        if (old && (old.currentAmount !== np.currentAmount || old.isClosed !== np.isClosed))
-          await putPosition(np);
+        if (old && (old.currentAmount !== np.currentAmount || old.currentCost !== np.currentCost || old.isClosed !== np.isClosed || old.batches.length !== np.batches.length || JSON.stringify(old.batches) !== JSON.stringify(np.batches)))
+          await replacePositionSnapshotWithBatches(np, np.batches);
       }
     });
   },
-  clearStreams: () => { const ids = get().tStreams.map(s => s.id); const oldPositions = get().positions; const fixedPositions = oldPositions.map(p => { const batchAmount = p.batches.reduce((sum, b) => sum + b.amount, 0); if (batchAmount !== p.currentAmount) { return { ...p, currentAmount: batchAmount, isClosed: batchAmount <= 0 }; } return p; }); const changed = fixedPositions.filter((p, i) => p !== oldPositions[i]); set({ tStreams: [], positions: fixedPositions }); safePersist(async () => { await bulkDeleteTStreams(ids); for (const p of changed) { await putPosition(p); } }); },
+  clearStreams: () => {
+    const ids = get().tStreams.map(s => s.id);
+    const oldPositions = get().positions;
+    // 清空流水池后全量对账：剥离自动归并批次、回滚倒T扣减，恢复批次履历基线
+    const { positions: fixedPositions } = reconcilePositionsWithStreams(oldPositions, [], get().feeConfig);
+    const changed = fixedPositions.filter((p, i) => {
+      const old = oldPositions[i];
+      if (!old) return true;
+      return old.currentAmount !== p.currentAmount || old.currentCost !== p.currentCost || old.isClosed !== p.isClosed || old.batches.length !== p.batches.length || JSON.stringify(old.batches) !== JSON.stringify(p.batches);
+    });
+    set({ tStreams: [], positions: fixedPositions });
+    safePersist(async () => { await bulkDeleteTStreams(ids); for (const p of changed) { await replacePositionSnapshotWithBatches(p, p.batches); } });
+  },
 
   importLegacyTRecords: () => {
     const { tRecords } = get(); if (tRecords.length === 0) return 0;
@@ -362,8 +542,27 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const state = get(); const round = state.tRounds.find(r => r.id === id);
     if (!round) return { ok: false, message: '战报不存在或已被删除' };
     let nextPositions = state.positions;
+    // 1. 级联删除该 round 对应的出借/归并批次（做T数据删除后不影响中长期仓位）
+    if (round.adjustmentBatchIds && round.adjustmentBatchIds.length > 0) {
+      const batchIds = new Set(round.adjustmentBatchIds);
+      nextPositions = nextPositions.map(p => {
+        if (p.fullCode !== round.fullCode) return p;
+        const filteredBatches = p.batches.filter(b => !batchIds.has(b.id));
+        const snap = recomputePositionSnapshot(filteredBatches);
+        return {
+          ...p,
+          batches: filteredBatches,
+          currentCost: snap.currentCost,
+          currentAmount: snap.currentAmount,
+          realizedPnL: snap.realizedPnL,
+          totalInvested: snap.totalInvested,
+          isClosed: snap.currentAmount <= 0,
+        };
+      });
+    }
+    // 2. 归并回滚（transferAmount 场景，与 adjustmentBatchIds 互斥）
     if (round.transferAmount && round.transferAmount > 0) {
-      const rb = rollbackTransferPosition(state.positions, round.fullCode, round.transferAmount, round.avgPrice ?? 0);
+      const rb = rollbackTransferPosition(nextPositions, round.fullCode, round.transferAmount, round.avgPrice ?? 0);
       if (!rb.ok) return { ok: false, message: rb.message };
       nextPositions = rb.positions;
     }
@@ -396,7 +595,11 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     let pos = positions.find(p => p.fullCode === fullCode && !p.isClosed);
     if (!pos) { pos = { id: generateId(), stockName: stream.stockName, fullCode, currentCost: 0, currentAmount: 0, batches: [], isClosed: false, createdAt: now, realizedPnL: 0, totalInvested: 0 }; created = true; }
     const posDef = pos; const addQty = toTransfer;
-    const totalBefore = posDef.currentAmount; const investedBefore = posDef.totalInvested ?? 0;
+    // 剥离流水驱动的调整批次（出借/归并），以真实底仓基线计算划转
+    const cleanBatches = posDef.batches.filter(b => !isStreamAdjustmentBatch(b));
+    const cleanSnap = recomputePositionSnapshot(cleanBatches);
+    const totalBefore = cleanSnap.currentAmount;
+    const investedBefore = cleanSnap.totalInvested;
     const addInvested = avg * addQty + txnFee; const newAmount = totalBefore + addQty;
     const newInvested = investedBefore + addInvested; const newCost = newAmount > 0 ? newInvested / newAmount : 0;
     const batch: PositionBatch = { id: generateId(), timestamp: now, type: 'add', price: avg, amount: addQty, costAfter: newCost, amountAfter: newAmount, note: `做T划转底仓（P_avg=${avg}）`, fee: txnFee };
@@ -404,7 +607,7 @@ export const useAppStore = create<AppStore>()((set, get) => ({
       const ob: PositionBatch = { id: generateId(), timestamp: now, type: 'open', price: avg, amount: addQty, costAfter: newCost, amountAfter: newAmount, note: `做T划转新建底仓（P_avg=${avg}）`, fee: txnFee };
       newPositions = [...newPositions, { ...posDef, currentCost: newCost, currentAmount: newAmount, totalInvested: newInvested, batches: [ob] }];
     } else {
-      newPositions = newPositions.map(p => p.id === posDef.id ? { ...p, currentCost: newCost, currentAmount: newAmount, totalInvested: newInvested, batches: [...p.batches, batch] } : p);
+      newPositions = newPositions.map(p => p.id === posDef.id ? { ...p, currentCost: newCost, currentAmount: newAmount, totalInvested: newInvested, batches: [...cleanBatches, batch] } : p);
     }
     const archiveRound: TRoundArchive = { id: generateId(), fullCode, stockName: stream.stockName, mode: stream.mode, roundCode: formatTradeNo(now), settleType: 'partial', transactions: stream.entries.map(e => ({ id: e.id, timestamp: e.timestamp, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: stream.transferProfit, totalFees: stream.totalFee, sellAmount: stream.realizedSellAmount, avgPrice: stream.avgPrice, buyAmount: stream.buyAmount, tradeCount: stream.tradeCount, holdingDays: stream.holdingDays, win: stream.transferProfit >= 0, openedAt: stream.openedAt ?? stream.entries[0]?.timestamp ?? now, closedAt: now, transferAmount: toTransfer };
     const ltRecord: LongTermRecord = { id: generateId(), fullCode, stockName: stream.stockName, timestamp: now, type: 'merge', price: avg, amount: toTransfer, fee: txnFee, sourceReportId: archiveRound.id, note: `做T划转底仓（${formatTradeNo(now)}）` };
@@ -421,10 +624,99 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const result = processAllStreams(streams, feeConfig, baseCosts).find(r => r.fullCode === fullCode);
     if (!result || result.mode !== 'short') return { ok: false, message: '当前不是倒T模式' };
     const now = new Date().toISOString();
-    const round: TRoundArchive = { id: generateId(), fullCode, stockName: result.stockName, mode: 'short', roundCode: formatTradeNo(now), settleType: result.shortPendingAmount === 0 ? 'clear' : 'partial', transactions: result.entries.map(e => ({ id: e.id, timestamp: e.timestamp, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: result.transferProfit, totalFees: result.totalFee, sellAmount: result.realizedSellAmount, avgPrice: result.avgPrice, buyAmount: result.buyAmount, tradeCount: result.tradeCount, holdingDays: result.holdingDays, win: result.transferProfit >= 0, openedAt: result.openedAt ?? result.entries[0]?.timestamp ?? now, closedAt: now };
-    set(s => ({ tStreams: s.tStreams.filter(st => st.fullCode !== fullCode), tRounds: [...s.tRounds, round] }));
-    safePersist(() => completeRoundClear(fullCode, streams.map(st => st.id), round));
-    return { ok: true, message: `倒T已结算，净收益 ¥${result.transferProfit.toFixed(2)}` };
+    // 收集出借/归并批次 ID，只收集当前 round 的流对应的批次，避免误删其他 round 的批次
+    const adjustmentBatchIds = Array.from(new Set([
+      ...streams.filter(s => s.borrowBatchId).map(s => s.borrowBatchId!),
+      ...streams.filter(s => s.mergeBatchId).map(s => s.mergeBatchId!),
+    ]));
+    const shortPendingAmount = result.shortPendingAmount ?? 0;
+    const isPartial = shortPendingAmount > 0;
+    const avgSellPrice = result.sellAmount > 0 ? result.sellValue / result.sellAmount : result.avgPrice;
+    const avgBuyPrice = result.buyAmount > 0 ? result.buyTotal / result.buyAmount : 0;
+    const totalBorrow = result.sellAmount + shortPendingAmount; // 总借出数量（已匹配 + 未回补）
+    // 先创建 round（adjustmentBatchIds 引用会在后续被修改，JS 对象引用机制会同步更新）
+    const round: TRoundArchive = { id: generateId(), fullCode, stockName: result.stockName, mode: 'short', roundCode: formatTradeNo(now), settleType: isPartial ? 'partial' : 'clear', transactions: result.entries.map(e => ({ id: e.id, timestamp: e.timestamp, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: result.transferProfit, totalFees: result.totalFee, sellAmount: result.realizedSellAmount, avgPrice: result.avgPrice, buyAmount: result.buyAmount, tradeCount: result.tradeCount, holdingDays: result.holdingDays, win: result.transferProfit >= 0, openedAt: result.openedAt ?? result.entries[0]?.timestamp ?? now, closedAt: now, adjustmentBatchIds };
+    let newLongTermRecords: LongTermRecord[] = [];
+    const cleanedPositions = positions.map(p => {
+      if (p.fullCode !== fullCode || p.isClosed) return p;
+      // 结算方案：移除出借批次（解除），未回补部分转为真实卖出，长期记录记解除+回补
+      const kind = matchSecurityKind('', fullCode.replace(/^sh|sz|bj/, ''));
+      // 移除所有出借批次（解除出借，归还底仓）
+      let mergedBatches = p.batches.filter(b => b.kind !== 'borrow');
+      if (isPartial) {
+        // 部分结清：未回补部分转为真实卖出批次
+        const unmatchedAmount = shortPendingAmount;
+        if (unmatchedAmount > 0) {
+          const sellFee = calcTradeFees(avgSellPrice, unmatchedAmount, 'sell', feeConfig, kind).total;
+          const reduceBatch: PositionBatch = {
+            id: generateId(),
+            timestamp: now,
+            type: 'reduce',
+            price: avgSellPrice,
+            amount: -unmatchedAmount,
+            costAfter: 0,
+            amountAfter: 0,
+            note: `倒T未回补转真实卖出（${formatTradeNo(now)}）`,
+            fee: sellFee,
+          };
+          mergedBatches.push(reduceBatch);
+          // 将真实卖出批次 ID 加入 adjustmentBatchIds，确保删除轮次时一并删除
+          adjustmentBatchIds.push(reduceBatch.id);
+        }
+      }
+      // 中长期记录：解除出借（视为卖出）
+      if (totalBorrow > 0) {
+        const sellFee = calcTradeFees(avgSellPrice, totalBorrow, 'sell', feeConfig, kind).total;
+        newLongTermRecords.push({
+          id: generateId(),
+          fullCode,
+          stockName: result.stockName,
+          timestamp: now,
+          type: 'sell',
+          price: avgSellPrice,
+          amount: totalBorrow,
+          fee: sellFee,
+          sourceReportId: round.id,
+          note: `做T出借解除${totalBorrow}股（${formatTradeNo(now)}）`,
+        });
+      }
+      // 中长期记录：回补（视为买入）
+      if (result.buyAmount > 0) {
+        const buyFee = calcTradeFees(avgBuyPrice, result.buyAmount, 'buy', feeConfig, kind).total;
+        newLongTermRecords.push({
+          id: generateId(),
+          fullCode,
+          stockName: result.stockName,
+          timestamp: now,
+          type: 'buy',
+          price: avgBuyPrice,
+          amount: result.buyAmount,
+          fee: buyFee,
+          sourceReportId: round.id,
+          note: `做T回补${result.buyAmount}股（${formatTradeNo(now)}）`,
+        });
+      }
+      const snap = recomputePositionSnapshot(mergedBatches);
+      // realizedPnL = 真实卖出盈亏(snap.realizedPnL) + 做T利润(transferProfit)
+      return { ...p, batches: mergedBatches, ...snap, realizedPnL: snap.realizedPnL + result.transferProfit, isClosed: snap.currentAmount <= 0 };
+    });
+    set(s => ({ tStreams: s.tStreams.filter(st => st.fullCode !== fullCode), tRounds: [...s.tRounds, round], positions: cleanedPositions, longTermRecords: [...s.longTermRecords, ...newLongTermRecords] }));
+    safePersist(async () => {
+      await completeRoundClear(fullCode, streams.map(st => st.id), round);
+      for (const np of cleanedPositions) {
+        const old = positions.find(p => p.id === np.id);
+        if (old && (old.currentAmount !== np.currentAmount || old.currentCost !== np.currentCost || old.isClosed !== np.isClosed || old.batches.length !== np.batches.length || JSON.stringify(old.batches) !== JSON.stringify(np.batches))) {
+          await replacePositionSnapshotWithBatches(np, np.batches);
+        }
+      }
+      for (const ltr of newLongTermRecords) {
+        await putLongTermRecord(ltr);
+      }
+    });
+    const msg = isPartial
+      ? `倒T已结算（部分结清），做T收益 ¥${result.transferProfit.toFixed(2)}，未回补 ${shortPendingAmount} 股已转为底仓卖出`
+      : `倒T已结算，净收益 ¥${result.transferProfit.toFixed(2)}`;
+    return { ok: true, message: msg };
   },
 
   addPosition: (pos) => { set(s => ({ positions: [...s.positions, pos] })); safePersist(() => putPositionWithBatches(pos, pos.batches)); },

@@ -176,11 +176,10 @@ removeRound(id)
 ├─ 公共：
 │    → longTermRecords 过滤 sourceReportId === id（台账级联删除）
 │    → set({ tRounds 去掉该 round, positions, longTermRecords })
-│    → safePersist: deleteRoundWithCascade（单事务）
-│        tRounds.delete(id)
-│        tTransactions.where(roundId).delete
-│        longTermRecords.where(sourceReportId).delete
-│        positions.put + positionBatches 全量替换
+│    → safePersist: rollbackRound（positionAdjustments 回滚）
+│        positionAdjustmentPort.rollbackRound(id)
+│        persistPositionDiffs(positions, finalPositions)
+│        （reconcilePositionsWithStreams 已剥离该 round 的调整批次）
 ```
 
 ### 4.2 路径 A：删批次 + 履历重建（倒T结算归档）
@@ -246,8 +245,8 @@ adjustmentBatchIds 实际包含：
 - **底仓被后续操作消耗**：路径 B 在 `currentAmount < transferAmount` 时**拒绝删除**
   （路径 A 无此限制，重建后数量不足会自动 isClosed）。
 - **删除在途 OPENED 战报**：走 `clearStreams` 语义（tRounds 移除 + reconcile 自动剥离 borrow）→ 底仓还原。
-- **删除后 CostAveraging 即时一致性**：Zustand 内存态先更新（set），DB 异步删除
-  （`deleteRoundWithCascade` 经 safePersist）；`useArchivedRounds` 对本地 tRounds
+- **删除后 CostAveraging 即时一致性**：Zustand 内存态先更新（set），DB 异步持久化
+  （`rollbackRound` + `persistPositionDiffs` 经 safePersist）；`useArchivedRounds` 对本地 tRounds
   做 ID 过滤，避免 UI 读到删除前的脏数据。
 
 ---
@@ -381,7 +380,7 @@ sequenceDiagram
 | 倒T结算归档（移除出借 + reduce 批次 + 台账） | `src/store/index.ts` `settleShortRound` |
 | 倒T结算 DB 事务 | `src/db/index.ts` `completeRoundClear` |
 | 删除战报（双路径恢复） | `src/store/index.ts` `removeRound` |
-| 删除战报 DB 级联事务 | `src/db/index.ts` `deleteRoundWithCascade` |
+| 删除战报 DB 持久化 | `src/store/index.ts` `removeRound`（`rollbackRound` + `persistPositionDiffs`） |
 | 补差式回滚 | `src/store/utils.ts` `rollbackTransferPosition` |
 | 结仓拦截（双向读） | `src/store/utils.ts` `getCloseBlockReason` |
 | 手续费计算（单边） | `src/utils/mathUtils.ts` `calcTradeFees` |

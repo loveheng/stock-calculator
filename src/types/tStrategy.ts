@@ -36,14 +36,6 @@ export interface TStreamRecord {
   amount: number;
   /** 该笔交易的摩擦成本（由系统费率动态计算） */
   fee: number;
-  /** @deprecated 倒T卖出时从底仓扣减的数量（旧引擎兼容字段） */
-  baseDeductedAmount?: number;
-  /** 倒T买入时已归并到底仓的超额数量（用于幂等，仅在 buy 记录上有值） */
-  baseMergedAmount?: number;
-  /** 该卖出流对应的出借批次 ID（normalizeShortTDeductions 设置） */
-  borrowBatchId?: string;
-  /** 该买入流对应的归并批次 ID（applyShortExcessMerge 设置，多个流共享同一个 ID） */
-  mergeBatchId?: string;
   note?: string;
   quoteId?: string;
   selectedStock?: any;

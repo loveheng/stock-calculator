@@ -28,6 +28,8 @@ export interface PositionBatch {
   kind?: 'borrow' | 'merge';
   /** 该笔操作发生时的底仓成本价（元），仅借仓卖出时记录，用于显示成本对照 */
   costPrice?: number;
+  /** 关联做T轮次 id：做T归档产生的批次用于回滚定位 */
+  sourceRoundId?: string;
 }
 
 // ---- 持仓（成本摊薄账本中的单只股票持仓） ----
@@ -68,15 +70,7 @@ export interface RoundTxn {
   quoteId?: string;
   /** 选股条目快照（恢复 UI 自动补全展示用） */
   selectedStock?: unknown;
-  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
-  baseDeductedAmount?: number;
-  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
-  baseMergedAmount?: number;
-  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
-  borrowBatchId?: string;
-  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
-  mergeBatchId?: string;
-}
+  }
 
 // ---- Round 战报归档 ----
 export interface TRoundArchive {
@@ -95,12 +89,12 @@ export interface TRoundArchive {
   closedAt?: string;
   buyAmount?: number;
   sellAmount?: number;
-  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
-  transferAmount?: number;
   avgPrice?: number;
   tradeCount?: number;
   holdingDays?: number;
   win?: boolean;
+  /** 划转底仓数量（transferToPosition 时记录） */
+  transferAmount?: number;
   lastTouched?: string;
   /** @deprecated 兼容旧版 DB 字段名，应使用 `lastTouched` */
   lastUpdated?: number;
@@ -111,9 +105,7 @@ export interface TRoundArchive {
    * 写入路径（归档/结算/导入）必须携带完整明细以保证持久化。
    */
   transactions?: RoundTxn[];
-  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
-  adjustmentBatchIds?: string[];
-}
+  }
 
 // ---- 中长期操作记录 ----
 export interface LongTermRecord {

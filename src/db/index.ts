@@ -283,10 +283,6 @@ function toTransactionEntity(transaction: RoundTxn, roundId: string): TTransacti
     note: transaction.note,
     quoteId: transaction.quoteId,
     selectedStock: transaction.selectedStock as Record<string, unknown> | undefined,
-    baseDeductedAmount: transaction.baseDeductedAmount,
-    baseMergedAmount: transaction.baseMergedAmount,
-    borrowBatchId: transaction.borrowBatchId,
-    mergeBatchId: transaction.mergeBatchId,
     createdAt: parseTimestamp(transaction.timestamp),
     updatedAt: parseTimestamp(transaction.timestamp),
     isDeleted: 0,
@@ -317,10 +313,6 @@ function toRoundTxn(transaction: TTransactionEntity): RoundTxn {
     note: transaction.note,
     quoteId: transaction.quoteId,
     selectedStock: transaction.selectedStock,
-    baseDeductedAmount: transaction.baseDeductedAmount,
-    baseMergedAmount: transaction.baseMergedAmount,
-    borrowBatchId: transaction.borrowBatchId,
-    mergeBatchId: transaction.mergeBatchId,
   };
 }
 
@@ -1034,32 +1026,8 @@ export async function deleteLongTermRecordsBySourceReportId(sourceReportId: stri
 // 原子化组合操作（多步写入在同一 Dexie 事务中完成）
 // ============================================================
 
-/**
- * 删除 Round 及其关联数据（单事务原子操作）。
- * 同时删除 Round 本身、交易明细、中长期记录，并更新持仓。
- */
-export async function deleteRoundWithCascade(
-  roundId: string,
-  sourceReportId: string,
-  positions: PositionRow[],
-): Promise<void> {
-  await db.transaction('rw', db.tRounds, db.tTransactions, db.longTermRecords, db.positions, db.positionBatches, async () => {
-    await db.tRounds.delete(roundId);
-    await db.tTransactions.where({ roundId }).delete();
-    await db.longTermRecords.where({ sourceReportId }).delete();
-    for (const pos of positions) {
-      await db.positions.put(cleanUndefined(withTimestamps(toPositionEntity(pos))));
-      // 同步持久化批次履历，保证批次与快照一致
-      await db.positionBatches.where({ positionId: pos.id }).delete();
-      if (pos.batches.length > 0) {
-        const now = Date.now();
-        await db.positionBatches.bulkPut(pos.batches.map((b) =>
-          cleanUndefined({ ...toPositionBatchEntity(b, pos.id), updatedAt: now, createdAt: now, isDeleted: 0 })
-        ));
-      }
-    }
-  });
-}
+// deleteRoundWithCascade 已移除：该函数写入 stale 内存态数据覆盖 DB 正确值，
+// 现由 removeRound 中的 reconcilePositionsWithStreams + rollbackRound + persistPositionDiffs 替代。
 
 /**
  * 做T划转底仓结算归档（单事务原子操作）。

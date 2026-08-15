@@ -14,9 +14,10 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { reconcilePositionsWithStreams, type Position, type PositionBatch } from '../store';
+import { reconcilePositionsWithStreams, type Position, type PositionBatch, type TRoundArchive } from '../store';
 import type { TStreamRecord } from '../types/tStrategy';
 import type { FeeConfig } from '../utils/mathUtils';
+import { generateId } from '../store/utils';
 
 // ---- 测试用费率配置（与 tStreamEngine.test.ts 一致） ----
 const FEE_CONFIG: FeeConfig = {
@@ -55,6 +56,34 @@ function createStream(overrides: Partial<TStreamRecord> & { direction: 'buy' | '
   };
 }
 
+/** 从流数组创建 Round（v8 架构：流水必须归属于 Round） */
+function createRound(streams: TStreamRecord[]): TRoundArchive {
+  const firstSell = streams.find(s => s.direction === 'sell');
+  return {
+    id: generateId(),
+    fullCode: 'sh600000',
+    stockName: '浦发银行',
+    mode: firstSell ? 'short' : 'long',
+    status: 'OPENED',
+    roundCode: 'TEST',
+    settleType: 'clear',
+    netProfit: 0,
+    totalFees: 0,
+    openedAt: streams[0]?.timestamp ?? new Date().toISOString(),
+    transactions: streams.map(s => ({
+      id: s.id,
+      timestamp: s.timestamp,
+      fullCode: s.fullCode,
+      stockName: s.stockName,
+      direction: s.direction,
+      price: s.price,
+      amount: s.amount,
+      fee: s.fee,
+      note: s.note,
+    })),
+  };
+}
+
 /** 底仓基线：1000 股 @24.11 */
 function basePosition(): Position {
   const batch: PositionBatch = {
@@ -85,7 +114,8 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
 
   test('新增卖出 200：底仓扣减 200 → 800 股，成本不变', () => {
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
-    const { positions, streams } = reconcilePositionsWithStreams([basePosition()], [sell], FEE_CONFIG);
+    const round = createRound([sell]);
+    const { positions } = reconcilePositionsWithStreams([basePosition()], [sell], FEE_CONFIG, [round]);
     const p = positions[0];
     expect(p.currentAmount).toBe(800);
     expect(p.currentCost).toBeCloseTo(24.11, 3);
@@ -93,13 +123,13 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
     expect(p.batches.length).toBe(2);
     expect(p.batches[1].kind).toBe('borrow');
     expect(p.batches[1].amount).toBe(-200);
-    expect(streams[0].baseDeductedAmount).toBe(200); // 幂等标记已记录
   });
 
   test('卖出 200 + 买入 300：回补 200 归还底仓 + 超额 100 股归并 → 1100 股，加权成本 = (24.11*1000+16*100)/1100', () => {
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
     const buy = createStream({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, timestamp: '2026-08-13T02:00:00.000Z' });
-    const { positions, streams, results } = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG);
+    const round = createRound([sell, buy]);
+    const { positions, results } = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG, [round]);
 
     const p = positions[0];
     // 净借出 = 卖出 200 - 买回 300 ≤ 0 → 底仓不扣减；超额买回 100 归并底仓
@@ -118,22 +148,19 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
     expect(sr?.mode).toBe('short');
     expect(sr?.status).toBe('CLEARED');
     expect(sr!.buyAmount - sr!.realizedSellAmount).toBe(100);
-
-    // 幂等标记已记录
-    expect(streams.find((s) => s.id === 'b1')?.baseMergedAmount).toBe(100);
-    // 买回已覆盖全部卖出 → 无净借出，无 baseDeductedAmount
-    expect(streams.find((s) => s.id === 's1')?.baseDeductedAmount ?? 0).toBe(0);
   });
 
   test('删除买入流水：100 股归并随流水删除而撤销 → 回到净借出扣减后 800 股', () => {
-    // 先构造「已归并」的持仓状态（等价于 addStreamRecord 后的持久化状态）
+    // 先构造「已归并」的持仓状态
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
     const buy = createStream({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, timestamp: '2026-08-13T02:00:00.000Z' });
-    const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG);
+    const round = createRound([sell, buy]);
+    const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG, [round]);
     expect(first.positions[0].currentAmount).toBe(1100);
 
     // 删除买入流水（模拟 removeStreamRecord）
-    const { positions, streams } = reconcilePositionsWithStreams(first.positions, [sell], FEE_CONFIG);
+    const sellOnlyRound = createRound([sell]);
+    const { positions } = reconcilePositionsWithStreams(first.positions, [sell], FEE_CONFIG, [sellOnlyRound]);
     const p = positions[0];
 
     // 归并的 100 股已撤销，买回归还也撤销 → 净借出恢复为 200 → 1000 - 200 = 800，成本还原为 24.11
@@ -146,19 +173,18 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
     // 卖出扣减对应的出借批次保留（卖出流水仍在）
     expect(p.batches.length).toBe(2);
     expect(p.batches.find((b) => b.kind === 'borrow')).toBeDefined();
-
-    // 卖出扣减保留（卖出流水仍在）
-    expect(streams.find((s) => s.id === 's1')?.baseDeductedAmount).toBe(200);
   });
 
   test('再删除卖出流水：200 股扣减随流水删除而撤销 → 回到基线 1000 股', () => {
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
     const buy = createStream({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, timestamp: '2026-08-13T02:00:00.000Z' });
-    const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG);
+    const round = createRound([sell, buy]);
+    const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG, [round]);
 
     // 先删买入，再删卖出（完整倒T 删除）
-    const afterBuyDeleted = reconcilePositionsWithStreams(first.positions, [sell], FEE_CONFIG);
-    const { positions } = reconcilePositionsWithStreams(afterBuyDeleted.positions, [], FEE_CONFIG);
+    const sellOnlyRound = createRound([sell]);
+    const afterBuyDeleted = reconcilePositionsWithStreams(first.positions, [sell], FEE_CONFIG, [sellOnlyRound]);
+    const { positions } = reconcilePositionsWithStreams(afterBuyDeleted.positions, [], FEE_CONFIG, []);
     const p = positions[0];
 
     expect(p.currentAmount).toBe(1000);
@@ -170,10 +196,11 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
   test('清空流水池（clearStreams 路径）：归并与扣减全部撤销 → 回到基线', () => {
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
     const buy = createStream({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, timestamp: '2026-08-13T02:00:00.000Z' });
-    const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG);
+    const round = createRound([sell, buy]);
+    const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG, [round]);
     expect(first.positions[0].currentAmount).toBe(1100);
 
-    const { positions } = reconcilePositionsWithStreams(first.positions, [], FEE_CONFIG);
+    const { positions } = reconcilePositionsWithStreams(first.positions, [], FEE_CONFIG, []);
     const p = positions[0];
     expect(p.currentAmount).toBe(1000);
     expect(p.currentCost).toBeCloseTo(24.11, 3);
@@ -183,8 +210,9 @@ describe('reconcilePositionsWithStreams 倒T 归并随流水删除而回滚（Bu
   test('幂等：对已归并状态重复执行相同流水池，不重复归并/扣减', () => {
     const sell = createStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200, timestamp: '2026-08-13T01:00:00.000Z' });
     const buy = createStream({ id: 'b1', direction: 'buy', price: 16.00, amount: 300, timestamp: '2026-08-13T02:00:00.000Z' });
-    const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG);
-    const second = reconcilePositionsWithStreams(first.positions, [sell, buy], FEE_CONFIG);
+    const round = createRound([sell, buy]);
+    const first = reconcilePositionsWithStreams([basePosition()], [sell, buy], FEE_CONFIG, [round]);
+    const second = reconcilePositionsWithStreams(first.positions, [sell, buy], FEE_CONFIG, [round]);
 
     const p = second.positions[0];
     expect(p.currentAmount).toBe(1100);

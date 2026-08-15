@@ -45,7 +45,7 @@ export function useArchivedRounds(): {
     } else {
       // ── 非首次加载：同步 tRounds 变化，立即从本地 state 中移除已删除的战报 ──
       // 当 removeRound 执行后，Zustand 的 tRounds 已同步删除该战报，
-      // 但 DB 的异步删除（deleteRoundWithCascade 经 safePersist）可能尚未完成。
+      // 但 DB 的异步持久化（rollbackRound + persistPositionDiffs 经 safePersist）可能尚未完成。
       // 如果此时去 DB 重查，会拿到仍包含已删除战报的脏数据。
       // 这里先根据 tRounds 的 ID 集合进行本地过滤，实现毫秒级 UI 响应。
       const tRoundIds = new Set(tRounds.map((r) => r.id));

@@ -195,10 +195,6 @@ export function activeStreamsFromRounds(rounds: TRoundArchive[]): TStreamRecord[
         note: t.note,
         quoteId: t.quoteId,
         selectedStock: t.selectedStock,
-        baseDeductedAmount: t.baseDeductedAmount,
-        baseMergedAmount: t.baseMergedAmount,
-        borrowBatchId: t.borrowBatchId,
-        mergeBatchId: t.mergeBatchId,
       });
     }
   }

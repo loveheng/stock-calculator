@@ -236,7 +236,7 @@ interface AppStore {
 | `removeStreamRecord(id)` | 删流水 + 重算撮合（空 Round 整轮删除） | `deleteTransaction` + `putTRound`/`deleteTRoundWithTransactions` + `putPosition`(diff) |
 | `updateStreamRecord(id, up)` | 更新流水 + 归一化 + 重算 + 归档 | `putTransaction` + `putTRound` + `putPosition`(diff) |
 | `clearStreams()` | 清空 OPENED Round（保留 COMPLETED 归档）+ 持仓还原 | `deleteTRoundWithTransactions` + `putPosition`(diff) |
-| `removeRound(id)` | 删战报 + 剥离底仓 + 级联中长期 | `deleteRoundWithCascade` |
+| `removeRound(id)` | 删战报 + reconcile 对账剥离调整批次 + rollbackRound + 级联中长期 | `rollbackRound` + `persistPositionDiffs` |
 | `transferToPosition(...)` | 划转底仓 + 复用 Round 结清 + 记中长期 | `completeRoundWithMerge` |
 | `settleShortRound(fullCode)` | 倒T结算（复用 Round 结清） | `completeRoundClear` |
 | `addPosition(pos)` | 新建持仓 | `putPositionWithBatches` |
@@ -390,7 +390,7 @@ OPENED Round.transactions（流水池，v8 取代独立 tStreams）
 | `clearStreams()` | store/index.ts | 清空流水 + 持仓还原 |
 | `transferToPosition(fullCode)` | store/index.ts | 正T归并/倒T划转底仓（completeRoundWithMerge） |
 | `settleShortRound(fullCode)` | store/index.ts | 倒T清仓结算（completeRoundClear） |
-| `removeRound(id)` | store/index.ts | 删战报 + 剥离底仓 + 级联中长期（deleteRoundWithCascade） |
+| `removeRound(id)` | store/index.ts | 删战报 + reconcile 对账剥离调整批次 + rollbackRound + 级联中长期（persistPositionDiffs） |
 | `validateStreamTrade` | tStreamEngine.ts | 卖出/买入数量校验（可卖数量上限、倒T首笔底仓校验） |
 | `processAllStreams` | tStreamEngine.ts | 批量撮合入口（按 fullCode 分组，FIFO 配对结算） |
 | `stepTEngine` | tStreamEngine.ts | 状态机单步推进（交互展示用） |

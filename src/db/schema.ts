@@ -135,8 +135,6 @@ export interface TRoundEntity extends BaseEntity {
   buyAmount?: number;
   /** 累计卖出金额（元） */
   sellAmount?: number;
-  /** 划转底仓数量（股，仅划转结算时存在） */
-  transferAmount?: number;
   /** 加权平均价（元） */
   avgPrice?: number;
   /** 成交笔数 */
@@ -145,10 +143,10 @@ export interface TRoundEntity extends BaseEntity {
   holdingDays?: number;
   /** 是否盈利 */
   win?: boolean;
+  /** 划转底仓数量（transferToPosition 时记录） */
+  transferAmount?: number;
   /** 最近一次活动时间戳（毫秒） */
   lastUpdated?: number;
-  /** 该 round 对应在中长期仓位中的自动调整批次 ID（出借/归并），删除时级联移除 */
-  adjustmentBatchIds?: string[];
 }
 
 /**
@@ -187,14 +185,6 @@ export interface TTransactionEntity extends BaseEntity {
   quoteId?: string;
   /** 选股条目快照（恢复 UI 自动补全展示用） */
   selectedStock?: Record<string, unknown>;
-  /** 倒T卖出时从底仓扣减的数量（股） */
-  baseDeductedAmount?: number;
-  /** 倒T买入时已归并到底仓的超额数量（用于幂等，仅在 buy 记录上有值） */
-  baseMergedAmount?: number;
-  /** 该卖出流对应的出借批次 ID（normalizeShortTDeductions 设置） */
-  borrowBatchId?: string;
-  /** 该买入流对应的归并批次 ID（applyShortExcessMerge 设置，多个流共享同一个 ID） */
-  mergeBatchId?: string;
 }
 
 /** 现金账户实体（accountCash 表）。单行记录（id 固定为 1）。 */

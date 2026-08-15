@@ -2,9 +2,12 @@
  * @file Home.tsx
  * @description 首页仪表盘：聚合展示做T总览（实时已实现收益/待对冲持仓/底仓状态）、
  *              近 N 日收益趋势、持仓分布、账户现金流（现金/总资产）与做T异动预警。
- *              数据来源：useStreamResults（流水池撮合引擎）+ Store positions（持仓账本）。
+ *              数据来源：useStreamResults（流水池撮合引擎）+ Store positions（持仓账本）
+ *              + tRounds（已完成战报归档）。
+ *              v8+ 适配：合并统计 OPENED 流水池（active streams）与 COMPLETED 战报（archived rounds）
+ *              的净收益数据，做T降本最多仓位与当前仓位总盈利体现全量做T收益。
  * @layer UI
- * @storage_impact 只读消费：positions（底仓持仓）、tRounds（做T轮次）与 cashTransactions（现金账户）；
+ * @storage_impact 只读消费：positions（底仓持仓）、tRounds（做T轮次，含 OPENED + COMPLETED）；
  *                 不直接写入任何 IndexedDB 表，跳转类操作委托各功能页完成。
  * @author 开发团队
  */
@@ -62,6 +65,7 @@ export default function Home() {
   const navigate = useNavigate();
   const streamResults = useStreamResults();
   const positions = useAppStore((s) => s.positions);
+  const tRounds = useAppStore((s) => s.tRounds);
 
   // ---- 时间筛选状态 ----
   const [timeRange, setTimeRange] = useState<TimeRange>('7d');
@@ -93,6 +97,41 @@ export default function Home() {
     [streamResults],
   );
 
+  // ---- 已完成战报归档（COMPLETED rounds） ----
+  const completedRounds = useMemo(
+    () => tRounds.filter((r) => r.status === 'COMPLETED'),
+    [tRounds],
+  );
+
+  // ---- 按时间筛选已完成战报 ----
+  const filteredCompletedRounds = useMemo(() => {
+    if (timeRange === 'all') return completedRounds;
+    return completedRounds.filter((r) => {
+      const closeTime = r.closedAt ? new Date(r.closedAt).getTime() : 0;
+      return closeTime >= timeBoundary;
+    });
+  }, [completedRounds, timeRange, timeBoundary]);
+
+  // ---- 全量做T收益归集（按 fullCode 合并 active streams + completed rounds） ----
+  const combinedProfitByCode = useMemo(() => {
+    const profitMap: Record<string, { stockName: string; totalProfit: number }> = {};
+    // 来自进行中流水池的 transferProfit
+    for (const s of streamResults) {
+      if (!profitMap[s.fullCode]) {
+        profitMap[s.fullCode] = { stockName: s.stockName, totalProfit: 0 };
+      }
+      profitMap[s.fullCode].totalProfit += s.transferProfit;
+    }
+    // 来自已完成战报的 netProfit（已落袋收益）
+    for (const r of completedRounds) {
+      if (!profitMap[r.fullCode]) {
+        profitMap[r.fullCode] = { stockName: r.stockName, totalProfit: 0 };
+      }
+      profitMap[r.fullCode].totalProfit += r.netProfit;
+    }
+    return profitMap;
+  }, [streamResults, completedRounds]);
+
   // ==============================
   // 模块 1：做T战况统计
   // ==============================
@@ -109,11 +148,16 @@ export default function Home() {
     }, 0);
   }, [filteredActiveStreams]);
 
-  // 1b. 正在开启做T总数及分布
+  // 1b. 正在开启做T总数及分布（含已完成战报统计）
   const tActiveCount = allActiveStreams.length;
   const tLongCount = allActiveStreams.filter((s) => s.mode === 'long').length;
   const tShortCount = allActiveStreams.filter((s) => s.mode === 'short').length;
   const tFilteredCount = filteredActiveStreams.length;
+  const tCompletedCount = completedRounds.length;
+  const tCompletedWinCount = completedRounds.filter((r) => r.win).length;
+  const tCompletedWinRate = tCompletedCount > 0
+    ? roundTo((tCompletedWinCount / tCompletedCount) * 100, 1)
+    : 0;
 
   // 1c. 区间摩擦成本明细（买入规费 / 卖出规费）
   const tFeeDetails = useMemo(() => {
@@ -130,35 +174,52 @@ export default function Home() {
     return { totalFee, buyFee, sellFee };
   }, [filteredActiveStreams]);
 
-  // 1d. 当前做T盈亏明细（正T盈亏 / 倒T盈亏）
+  // 1d. 当前做T盈亏明细（正T盈亏 / 倒T盈亏，合并进行中 + 已完成）
   const tProfitDetails = useMemo(() => {
     let totalProfit = 0;
     let longProfit = 0;
     let shortProfit = 0;
+    // 进行中流水池
     for (const s of filteredActiveStreams) {
       totalProfit += s.transferProfit;
       if (s.mode === 'long') longProfit += s.transferProfit;
       else shortProfit += s.transferProfit;
     }
+    // 已完成战报
+    for (const r of filteredCompletedRounds) {
+      totalProfit += r.netProfit;
+      if (r.mode === 'long') longProfit += r.netProfit;
+      else shortProfit += r.netProfit;
+    }
     return { totalProfit, longProfit, shortProfit };
-  }, [filteredActiveStreams]);
+  }, [filteredActiveStreams, filteredCompletedRounds]);
 
-  // 1e. 区间最大盈利做T（落袋/浮盈金额最大的单笔做T标的）
+  // 1e. 区间最大盈利做T（落袋/浮盈金额最大的单笔做T标的，合并进行中 + 已完成）
   const topProfitRound = useMemo(() => {
-    if (filteredActiveStreams.length === 0) return null;
-    return filteredActiveStreams.reduce((best, s) =>
-      s.transferProfit > best.transferProfit ? s : best,
-    );
-  }, [filteredActiveStreams]);
+    // 构建统一列表：active streams 用 transferProfit，completed rounds 用 netProfit
+    const candidates: Array<{ stockName: string; fullCode: string; profit: number }> = [];
+    for (const s of filteredActiveStreams) {
+      candidates.push({ stockName: s.stockName, fullCode: s.fullCode, profit: s.transferProfit });
+    }
+    for (const r of filteredCompletedRounds) {
+      candidates.push({ stockName: r.stockName, fullCode: r.fullCode, profit: r.netProfit });
+    }
+    if (candidates.length === 0) return null;
+    return candidates.reduce((best, c) => (c.profit > best.profit ? c : best));
+  }, [filteredActiveStreams, filteredCompletedRounds]);
 
-  // 1f. 区间最大亏损做T（亏损金额最大的单笔做T标的）
+  // 1f. 区间最大亏损做T（亏损金额最大的单笔做T标的，合并进行中 + 已完成）
   const topLossRound = useMemo(() => {
-    const losers = filteredActiveStreams.filter((s) => s.transferProfit < 0);
-    if (losers.length === 0) return null;
-    return losers.reduce((worst, s) =>
-      s.transferProfit < worst.transferProfit ? s : worst,
-    );
-  }, [filteredActiveStreams]);
+    const candidates: Array<{ stockName: string; fullCode: string; profit: number }> = [];
+    for (const s of filteredActiveStreams) {
+      if (s.transferProfit < 0) candidates.push({ stockName: s.stockName, fullCode: s.fullCode, profit: s.transferProfit });
+    }
+    for (const r of filteredCompletedRounds) {
+      if (r.netProfit < 0) candidates.push({ stockName: r.stockName, fullCode: r.fullCode, profit: r.netProfit });
+    }
+    if (candidates.length === 0) return null;
+    return candidates.reduce((worst, c) => (c.profit < worst.profit ? c : worst));
+  }, [filteredActiveStreams, filteredCompletedRounds]);
 
   // 1g. 待办轮动提醒：倒T底仓出空或待平仓项目
   const alertItems = useMemo<AlertItem[]>(() => {
@@ -228,23 +289,12 @@ export default function Home() {
     });
   }, [openPositions]);
 
-  // 2e. 做T降本最多仓位（开启仓位中做T累计落袋收益最高的标的）
+  // 2e. 做T降本最多仓位（开启仓位中做T累计落袋收益最高的标的，合并流水池 + 已完成战报）
   const bestCostReduction = useMemo(() => {
-    // 按 fullCode 汇总所有 streamResult 的 transferProfit
-    const profitByCode: Record<
-      string,
-      { stockName: string; totalProfit: number }
-    > = {};
-    for (const s of streamResults) {
-      if (!profitByCode[s.fullCode]) {
-        profitByCode[s.fullCode] = { stockName: s.stockName, totalProfit: 0 };
-      }
-      profitByCode[s.fullCode].totalProfit += s.transferProfit;
-    }
-    // 只保留有开启仓位的标的
+    // 使用 combinedProfitByCode（已合并 active streams + completed rounds）
     const openCodes = new Set(openPositions.map((p) => p.fullCode));
     let best: { stockName: string; totalProfit: number } | null = null;
-    for (const [code, info] of Object.entries(profitByCode)) {
+    for (const [code, info] of Object.entries(combinedProfitByCode)) {
       if (!openCodes.has(code)) continue;
       if (info.totalProfit <= 0) continue; // 只统计正降本
       if (!best || info.totalProfit > best.totalProfit) {
@@ -252,15 +302,26 @@ export default function Home() {
       }
     }
     return best;
-  }, [streamResults, openPositions]);
+  }, [combinedProfitByCode, openPositions]);
 
-  // 2f. 当前仓位总盈利（浮动盈亏）= 所有开启仓位对应的做T盈亏之和
+  // 2f. 当前仓位总盈利（浮动盈亏）= 所有开启仓位对应的做T收益之和（合并流水池 + 已完成战报）
   const positionTotalProfit = useMemo(() => {
     const openCodes = new Set(openPositions.map((p) => p.fullCode));
-    return streamResults
-      .filter((s) => openCodes.has(s.fullCode))
-      .reduce((sum, s) => sum + s.transferProfit, 0);
-  }, [streamResults, openPositions]);
+    let total = 0;
+    // 来自进行中流水池
+    for (const s of streamResults) {
+      if (openCodes.has(s.fullCode)) {
+        total += s.transferProfit;
+      }
+    }
+    // 来自已完成战报
+    for (const r of completedRounds) {
+      if (openCodes.has(r.fullCode)) {
+        total += r.netProfit;
+      }
+    }
+    return total;
+  }, [streamResults, completedRounds, openPositions]);
 
   // ---- 快捷入口卡片 ----
   const quickCards = [
@@ -275,8 +336,8 @@ export default function Home() {
       label: '涨跌幅计算',
       icon: TrendingUp,
       path: '/change-rate',
-      color: 'text-green-400',
-      bg: 'bg-green-500/10',
+      color: 'text-slate-400',
+      bg: 'bg-slate-500/10',
     },
     {
       label: '成本摊薄',
@@ -405,6 +466,19 @@ export default function Home() {
             </div>
           </div>
 
+          {/* 已完成战报统计 */}
+          <div className="rounded-2xl bg-slate-950/80 p-3">
+            <div className="text-[11px] text-slate-500">
+              已完成战报
+            </div>
+            <div className="mt-1.5 text-base font-bold text-slate-400 sm:text-lg">
+              {tCompletedCount} 笔
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-500">
+              胜率 {tCompletedWinRate}% ({tCompletedWinCount}胜/{tCompletedCount - tCompletedWinCount}负)
+            </div>
+          </div>
+
           {/* 区间摩擦成本明细 */}
           <div className="rounded-2xl bg-slate-950/80 p-3">
             <div className="text-[11px] text-slate-500">
@@ -426,8 +500,8 @@ export default function Home() {
             <div
               className={`mt-1.5 text-base font-bold sm:text-lg ${
                 tProfitDetails.totalProfit >= 0
-                  ? 'text-green-400'
-                  : 'text-red-400'
+                  ? 'text-red-400'
+                  : 'text-green-400'
               }`}
             >
               {tProfitDetails.totalProfit >= 0 ? '+' : ''}
@@ -438,8 +512,8 @@ export default function Home() {
               <span
                 className={
                   tProfitDetails.longProfit >= 0
-                    ? 'text-green-400'
-                    : 'text-red-400'
+                    ? 'text-red-400'
+                    : 'text-green-400'
                 }
               >
                 {tProfitDetails.longProfit >= 0 ? '+' : ''}
@@ -449,8 +523,8 @@ export default function Home() {
               <span
                 className={
                   tProfitDetails.shortProfit >= 0
-                    ? 'text-green-400'
-                    : 'text-red-400'
+                    ? 'text-red-400'
+                    : 'text-green-400'
                 }
               >
                 {tProfitDetails.shortProfit >= 0 ? '+' : ''}
@@ -465,13 +539,13 @@ export default function Home() {
               区间最大盈利做T
             </div>
             <div className="mt-1.5 text-sm font-bold text-white leading-tight">
-              {topProfitRound && topProfitRound.transferProfit > 0 ? (
+              {topProfitRound && topProfitRound.profit > 0 ? (
                 <>
                   <span className="truncate block">
                     {topProfitRound.stockName}
                   </span>
-                  <span className="text-base text-green-400">
-                    +¥{topProfitRound.transferProfit.toFixed(2)}
+                  <span className="text-base text-red-400">
+                    +¥{topProfitRound.profit.toFixed(2)}
                   </span>
                 </>
               ) : (
@@ -491,8 +565,8 @@ export default function Home() {
                   <span className="truncate block">
                     {topLossRound.stockName}
                   </span>
-                  <span className="text-base text-red-400">
-                    ¥{topLossRound.transferProfit.toFixed(2)}
+                  <span className="text-base text-green-400">
+                    ¥{topLossRound.profit.toFixed(2)}
                   </span>
                 </>
               ) : (
@@ -560,8 +634,8 @@ export default function Home() {
       <div className="card !p-0 overflow-hidden border-slate-700/80 bg-gradient-to-br from-slate-900 to-slate-950">
         {/* 卡片标题 */}
         <div className="flex items-center gap-2.5 px-5 pt-5 pb-0">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600/20">
-            <Wallet className="h-4 w-4 text-emerald-400" />
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-600/20">
+            <Wallet className="h-4 w-4 text-slate-400" />
           </div>
           <span className="text-sm font-semibold text-slate-200">
             仓位统计
@@ -657,7 +731,7 @@ export default function Home() {
                   <span className="truncate block">
                     {bestCostReduction.stockName}
                   </span>
-                  <span className="text-base text-emerald-400">
+                  <span className="text-base text-red-400">
                     累计降本 +¥{bestCostReduction.totalProfit.toFixed(2)}
                   </span>
                 </>
@@ -675,8 +749,8 @@ export default function Home() {
             <div
               className={`mt-1.5 text-base font-bold sm:text-lg ${
                 positionTotalProfit >= 0
-                  ? 'text-green-400'
-                  : 'text-red-400'
+                  ? 'text-red-400'
+                  : 'text-green-400'
               }`}
             >
               {positionTotalProfit >= 0 ? '+' : ''}

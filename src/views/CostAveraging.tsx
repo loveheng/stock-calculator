@@ -170,10 +170,10 @@ function ClearPositionModal({
           「{stockName}」标的持股已全部卖出！<br />
           本次建仓周期最终实现净盈亏为：
         </p>
-        <p className={`text-2xl font-bold mb-1 ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        <p className={`text-2xl font-bold mb-1 ${realizedPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
           {realizedPnL >= 0 ? '+' : ''}¥{realizedPnL.toFixed(2)}
         </p>
-        <p className={`text-sm mb-4 ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        <p className={`text-sm mb-4 ${realizedPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
           {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%
         </p>
         <p className="text-xs text-slate-500 mb-4">
@@ -260,6 +260,7 @@ function PositionLedger() {
   const [openPrice, setOpenPrice] = useState('');
   const [openAmount, setOpenAmount] = useState('');
   const [openNote, setOpenNote] = useState('');
+  const [noFrictionCost, setNoFrictionCost] = useState(false);
   // 重复建仓提示（同一股票代码已存在进行中持仓）
   const [dupAlert, setDupAlert] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -291,9 +292,8 @@ function PositionLedger() {
       return;
     }
 
-    // 计算买入规费
-    const buyFee = calcTradeFees(price, amount, 'buy', feeConfig, matchSecurityKind(selectedStock?.SecurityType ?? '', selectedStock?.Code ?? ''));
-    const totalFee = buyFee.total;
+    // 计算买入规费（勾选「不计摩擦成本」时免去手续费，适用于录入已有仓位）
+    const totalFee = noFrictionCost ? 0 : calcTradeFees(price, amount, 'buy', feeConfig, matchSecurityKind(selectedStock?.SecurityType ?? '', selectedStock?.Code ?? '')).total;
     const totalInvested = price * amount + totalFee;
 
     const now = new Date().toISOString();
@@ -328,6 +328,7 @@ function PositionLedger() {
     setOpenPrice('');
     setOpenAmount('');
     setOpenNote('');
+    setNoFrictionCost(false);
   };
 
   // 加仓/减仓（通过弹窗）
@@ -528,13 +529,33 @@ function PositionLedger() {
             />
           </div>
         </div>
-        <div className="form-row">
-          <div className="form-group flex items-end">
-            <button onClick={handleOpenPosition} className="btn btn-primary btn-block">
-              <Plus className="w-4 h-4" />
-              建仓
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={noFrictionCost}
+              onClick={() => setNoFrictionCost((v) => !v)}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+                noFrictionCost ? 'bg-blue-600' : 'bg-slate-700 hover:bg-slate-600'
+              }`}
+              title={noFrictionCost ? '已开启：本次建仓不计摩擦成本' : '录入已有仓位时可开启，本次建仓不计摩擦成本'}
+            >
+              <span
+                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${
+                  noFrictionCost ? 'translate-x-5' : ''
+                }`}
+              />
             </button>
-          </div>
+            <span className="text-xs text-slate-300">
+              不计摩擦成本
+              <span className="ml-1.5 text-[11px] text-slate-500">录入已有仓位</span>
+            </span>
+          </label>
+          <button onClick={handleOpenPosition} className="btn btn-primary basis-full sm:basis-auto sm:ml-auto sm:px-8">
+            <Plus className="w-4 h-4" />
+            建仓
+          </button>
         </div>
       </div>
 
@@ -615,7 +636,7 @@ function PositionLedger() {
                   {/* 回本所需涨幅：相对动态保本价的缺口，做T/加仓后会实时更新 */}
                   <span className="flex items-center gap-1">
                     <span className="text-slate-500">回本所需涨幅</span>
-                    <span className={`font-medium ${requiredRisePercent > 0 ? 'text-amber-300' : 'text-green-400'}`}>
+                    <span className={`font-medium ${requiredRisePercent > 0 ? 'text-amber-300' : 'text-red-400'}`}>
                       {requiredRisePercent > 0 ? `+${requiredRisePercent.toFixed(2)}%` : '已回本'}
                     </span>
                   </span>
@@ -635,7 +656,7 @@ function PositionLedger() {
               </div>
               <div>
                 <span className="text-slate-500">做T / 调仓落袋利润 🔥</span>
-                <p className={`font-medium ${snap.accumulatedTPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                <p className={`font-medium ${snap.accumulatedTPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
                   {snap.accumulatedTPnL >= 0 ? '+' : ''}¥{snap.accumulatedTPnL.toFixed(2)}
                 </p>
                 <p className="text-[10px] text-slate-600 leading-tight mt-0.5">已折抵本金</p>
@@ -691,8 +712,8 @@ function PositionLedger() {
                         <span className={`px-1.5 py-0.5 rounded text-xs ${
                           batch.kind === 'borrow' ? 'bg-amber-500/20 text-amber-400' :
                           batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
-                          batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
-                          batch.type === 'reduce' ? 'bg-red-500/20 text-red-400' :
+                          batch.type === 'add' ? 'bg-blue-500/20 text-blue-400' :
+                          batch.type === 'reduce' ? 'bg-purple-500/20 text-purple-400' :
                           'bg-slate-500/20 text-slate-400'
                         }`}>
                           {batch.kind === 'borrow' ? '出借' : batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结仓'}
@@ -954,7 +975,7 @@ function TargetCostCalculator() {
               </div>
               <div className="mt-2 pt-2 border-t border-slate-800">
                 <span className="text-xs text-slate-500">推算后成本价</span>
-                <p className="text-green-400 font-bold">¥{result.actualCost.toFixed(3)}</p>
+                <p className="text-slate-400 font-bold">¥{result.actualCost.toFixed(3)}</p>
               </div>
             </div>
           )}
@@ -965,7 +986,7 @@ function TargetCostCalculator() {
                 <h4 className="text-xs font-medium text-slate-500 mb-2">向下整手</h4>
                 <p className="text-lg font-bold text-slate-200">{result.downLot.amount.toLocaleString()}股</p>
                 <p className="text-sm text-slate-400 mt-1">资金 ¥{result.downLot.capital.toFixed(2)}</p>
-                <p className="text-sm text-green-400">成本 ¥{result.downLot.actualCost.toFixed(3)}</p>
+                <p className="text-sm text-slate-400">成本 ¥{result.downLot.actualCost.toFixed(3)}</p>
                 <button onClick={handleFillDown} className="btn btn-outline btn-sm mt-2 w-full">
                   <CheckCircle className="w-3 h-3" /> 填充
                 </button>
@@ -976,7 +997,7 @@ function TargetCostCalculator() {
                 <h4 className="text-xs font-medium text-slate-500 mb-2">向上整手</h4>
                 <p className="text-lg font-bold text-slate-200">{result.upLot.amount.toLocaleString()}股</p>
                 <p className="text-sm text-slate-400 mt-1">资金 ¥{result.upLot.capital.toFixed(2)}</p>
-                <p className="text-sm text-green-400">成本 ¥{result.upLot.actualCost.toFixed(3)}</p>
+                <p className="text-sm text-slate-400">成本 ¥{result.upLot.actualCost.toFixed(3)}</p>
                 <button onClick={handleFillUp} className="btn btn-outline btn-sm mt-2 w-full">
                   <CheckCircle className="w-3 h-3" /> 填充
                 </button>

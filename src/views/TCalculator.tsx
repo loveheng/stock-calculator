@@ -82,7 +82,7 @@ function pnlColor(value: number): string {
 function StreamStatusBadge({ result }: { result: StockStreamResult }) {
   if (result.status === 'CLEARED') {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-500/15 text-emerald-400">
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-blue-500/15 text-blue-400">
         ✓ 已完全结清
       </span>
     );
@@ -110,14 +110,14 @@ function StreamStatusBadge({ result }: { result: StockStreamResult }) {
 
 /** 步骤节点颜色映射 */
 const STEP_COLORS: Record<string, string> = {
-  buy: 'bg-red-500/10 border-red-500/30',
-  sell: 'bg-emerald-500/10 border-emerald-500/30',
+  buy: 'bg-blue-500/10 border-blue-500/30',
+  sell: 'bg-purple-500/10 border-purple-500/30',
 };
 
 /** 结算标签颜色映射 */
 const SETTLE_LABEL_COLORS: Record<string, string> = {
-  green: 'bg-emerald-500/15 text-emerald-400',
-  red: 'bg-red-500/15 text-red-400',
+  green: 'bg-blue-500/15 text-blue-400',
+  red: 'bg-purple-500/15 text-purple-400',
   blue: 'bg-blue-500/15 text-blue-400',
   purple: 'bg-purple-500/15 text-purple-400',
   orange: 'bg-orange-500/15 text-orange-400',
@@ -137,7 +137,7 @@ function StepNodeCard({ node }: { node: TStepNode }) {
         <div className="flex items-center gap-2">
           <span className="text-slate-500 font-mono tabular-nums">#{node.index}</span>
           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-            isBuy ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'
+            isBuy ? 'bg-blue-500/15 text-blue-400' : 'bg-purple-500/15 text-purple-400'
           }`}>
             {isBuy ? '买入' : '卖出'}
           </span>
@@ -210,7 +210,7 @@ function SettlementCardView({ card }: { card: TSettlementCard }) {
         </div>
         <div>
           <span className="text-slate-500">总摩擦成本</span>
-          <div className="font-mono font-semibold text-red-400 tabular-nums">{formatCurrency(card.totalFrictionCost)}</div>
+          <div className="font-mono font-semibold text-slate-400 tabular-nums">{formatCurrency(card.totalFrictionCost)}</div>
         </div>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -581,7 +581,7 @@ function CurrentProjectCard({
           <span className="text-xs bg-slate-700/80 text-slate-200 px-1.5 py-0.5 rounded-full font-bold shrink-0">
             {roundCode}
           </span>
-          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${result.mode === 'short' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${result.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
             {result.mode === 'short' ? '倒T' : '正T'}
           </span>
           <StreamStatusBadge result={result} />
@@ -676,8 +676,8 @@ function CurrentProjectCard({
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                           entry.direction === 'buy'
-                            ? 'bg-red-500/15 text-red-400'
-                            : 'bg-emerald-500/15 text-emerald-400'
+                            ? 'bg-blue-500/15 text-blue-400'
+                            : 'bg-purple-500/15 text-purple-400'
                         }`}
                       >
                         {entry.direction === 'buy' ? '买入' : '卖出'}
@@ -954,7 +954,7 @@ function ArchiveRoundCard({
           <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full font-bold shrink-0">
             {round.roundCode}
           </span>
-          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.mode === 'short' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
             {round.mode === 'short' ? '倒T' : '正T'}
           </span>
         </div>
@@ -1038,9 +1038,9 @@ function ArchiveRoundCard({
                   <span
                     className={`px-1 rounded text-[10px] font-bold shrink-0 ${
                       t.direction === 'buy'
-                        ? 'bg-red-500/15 text-red-400'
+                        ? 'bg-blue-500/15 text-blue-400'
                         : t.direction === 'sell'
-                        ? 'bg-emerald-500/15 text-emerald-400'
+                        ? 'bg-purple-500/15 text-purple-400'
                         : 'bg-purple-500/15 text-purple-400'
                     }`}
                   >
@@ -1371,7 +1371,7 @@ export default function TCalculator() {
                 : 'bg-slate-900 text-slate-400 hover:bg-slate-700'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
+            <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />
             正T · 买入
           </button>
           <button
@@ -1382,7 +1382,7 @@ export default function TCalculator() {
                 : 'bg-slate-900 text-slate-400 hover:bg-slate-700'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
+            <span className="w-2 h-2 rounded-full bg-purple-400 inline-block" />
             倒T · 卖出
           </button>
         </div>

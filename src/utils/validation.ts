@@ -2,7 +2,7 @@
  * @file validation.ts
  * @description 交易流水表单校验：两级阶梯式卖出持仓校验。
  *              级别 1 → 做 T 池待处理数量（pendingBuyAmount）
- *              级别 2 → 中长期底仓数量（basePositionAmount）
+ *              级别 2 → 中长期底仓可用数量（availableForT）
  * @layer Utility
  */
 
@@ -27,19 +27,19 @@ export interface SellValidationResult {
  * 1. **第一级：做T池持仓** — 检查 `pendingBuyAmount`（已买入未对冲的待处理数量）
  *    - 若 `sellAmount <= pendingBuyAmount` → 纯做T内平仓，校验通过
  *
- * 2. **第二级：中长期底仓** — 若做T池不够，检查 `basePositionAmount`
- *    - 若 `neededBase <= basePositionAmount` → 需借仓对冲，校验通过 + 提示
- *    - 若 `neededBase > basePositionAmount` → 总数不足，校验失败
+ * 2. **第二级：中长期底仓** — 若做T池不够，检查 `availableForT`
+ *    - 若 `neededBase <= availableForT` → 需借仓对冲，校验通过 + 提示
+ *    - 若 `neededBase > availableForT` → 总数不足，校验失败
  *
  * @param sellAmount       用户输入的卖出数量
  * @param pendingBuyAmount 做T池中已买入未对冲的待处理数量（netPendingAmount）
- * @param basePositionAmount 中长期底仓可用数量
+ * @param availableForT    中长期底仓可借上限（currentAmount - reservedForT）
  * @returns 校验结果
  */
 export function validateSellOrder(
   sellAmount: number,
   pendingBuyAmount: number,
-  basePositionAmount: number,
+  availableForT: number,
 ): SellValidationResult {
   if (sellAmount <= 0) {
     return {
@@ -49,7 +49,7 @@ export function validateSellOrder(
     };
   }
 
-  const totalAvailable = pendingBuyAmount + basePositionAmount;
+  const totalAvailable = pendingBuyAmount + availableForT;
 
   // 第一级校验：纯做T内平仓（无需占用底仓）
   if (sellAmount <= pendingBuyAmount) {
@@ -62,7 +62,7 @@ export function validateSellOrder(
   // 第二级校验：需要借仓对冲
   const neededBase = sellAmount - pendingBuyAmount;
 
-  if (neededBase <= basePositionAmount) {
+  if (neededBase <= availableForT) {
     return {
       valid: true,
       maxSellable: totalAvailable,
@@ -76,7 +76,7 @@ export function validateSellOrder(
   return {
     valid: false,
     maxSellable: totalAvailable,
-    error: `❌ 卖出失败：做T池可用 ${pendingBuyAmount} 股，中长期底仓可用 ${basePositionAmount} 股，合计 ${totalAvailable} 股，不满足卖出需求 ${sellAmount} 股`,
+    error: `❌ 卖出失败：做T池可用 ${pendingBuyAmount} 股，中长期底仓可用 ${availableForT} 股，合计 ${totalAvailable} 股，不满足卖出需求 ${sellAmount} 股`,
     needsBasePosition: true,
     neededBaseAmount: neededBase,
   };
@@ -88,16 +88,19 @@ export function validateSellOrder(
  * @param streamResult 做T引擎结果（含 netPendingAmount）
  * @param basePosition 该股票的中长期底仓（可能为 undefined）
  * @param sellAmount 用户输入的卖出数量
+ * @param reservedForT 该股票在途出借占用（来自 positionAdjustments 端口）
  */
 export function validateSellWithStreamResult(
   streamResult: StockStreamResult | null,
   basePosition: Position | undefined,
   sellAmount: number,
+  reservedForT: number = 0,
 ): SellValidationResult {
   // 倒T（short）模式下 netPendingAmount = buyAmount - sellAmount 可能为负值，
   // 此时 pendingBuyAmount 应视作 0（没有已买入未对冲的持仓），
-  // 否则 totalAvailable = pendingBuyAmount + basePositionAmount 会低估可卖数量。
+  // 否则 totalAvailable = pendingBuyAmount + availableForT 会低估可卖数量。
   const pendingBuyAmount = Math.max(0, streamResult?.netPendingAmount ?? 0);
-  const basePositionAmount = basePosition?.currentAmount ?? 0;
-  return validateSellOrder(sellAmount, pendingBuyAmount, basePositionAmount);
+  const currentAmount = basePosition?.currentAmount ?? 0;
+  const availableForT = Math.max(0, currentAmount - reservedForT);
+  return validateSellOrder(sellAmount, pendingBuyAmount, availableForT);
 }

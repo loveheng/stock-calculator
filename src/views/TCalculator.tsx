@@ -471,15 +471,9 @@ function CurrentProjectCard({
   const baseHolding = basePosition?.currentAmount ?? 0;
 
   const handleSettleShort = async () => {
-    // 有底仓 → 优先归并超额到中长期持仓；若无可归并数量或操作失败 → 结算归档，不出借回退
-    if (basePosition && basePosition.currentAmount > 0) {
-      const res = await transferToPosition(result.fullCode);
-      if (res.ok) {
-        addToast(res.message ?? '操作完成');
-        return;
-      }
-      // 无可归并数量（netPending=0）时降级为结算归档
-    }
+    // 倒T结算：直接走 settleShortRound（移除出借 + 未回补转真实卖出）
+    // 不能用 transferToPosition，因为倒T下 netPendingAmount 代表「未回补卖出量」
+    // 而非可划转的买入持仓，传给 transferToPosition 会导致错误加仓（如卖出300买回200 → 加仓100而非减仓100）
     const res = await settleShortRound(result.fullCode);
     if (res.ok) {
       addToast(res.message ?? '操作完成');

@@ -47,12 +47,12 @@ import {
   loadStocksFromDB,
   } from '../db/index';
 import { isInitialLoadDone } from '../db/storeInit';
+import { positionAdjustmentPort } from '../services/positionAdjustmentPort';
 import {
   generateId,
   formatTradeNo,
   buildBasePositionCosts,
   recomputePositionSnapshot,
-  rollbackTransferPosition,
   finalizeRoundIfCleared,
   activeStreamsFromRounds,
 } from './utils';
@@ -82,7 +82,7 @@ export type {
   AppStore,
 } from './types';
 export { EXPORT_VERSION } from './types';
-export { generateId, buildBasePositionCosts, recomputePositionSnapshot, getCloseBlockReason, rollbackTransferPosition, useStreamResults, activeStreamsFromRounds } from './utils';
+export { generateId, buildBasePositionCosts, recomputePositionSnapshot, getCloseBlockReason, useStreamResults, activeStreamsFromRounds } from './utils';
 export type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 
 let persistError: string | null = null;
@@ -705,7 +705,11 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const state = get(); const round = state.tRounds.find(r => r.id === id);
     if (!round) return { ok: false, message: '战报不存在或已被删除' };
     let nextPositions = state.positions;
-    // 1. 级联删除该 round 对应的出借/归并批次（做T数据删除后不影响中长期仓位）
+    // 优先通过 positionAdjustmentPort 回滚（新架构），兜底走旧路径
+    // 尝试通过 positionAdjustmentPort.rollbackRound 回滚
+    // 注意：rollbackRound 操作 DB 而非内存，这里仅在持久化阶段调用；
+    // 内存中的 positions 在下一次 reload 时同步
+    // 对于旧路径存量的 adjustmentBatchIds，继续使用级联删除逻辑
     if (round.adjustmentBatchIds && round.adjustmentBatchIds.length > 0) {
       const batchIds = new Set(round.adjustmentBatchIds);
       nextPositions = nextPositions.map(p => {
@@ -722,19 +726,22 @@ export const useAppStore = create<AppStore>()((set, get) => ({
           isClosed: snap.currentAmount <= 0,
         };
       });
-    }
-    // 2. 归并回滚（transferAmount 场景，与 adjustmentBatchIds 互斥）
-    if (round.transferAmount && round.transferAmount > 0) {
-      const rb = rollbackTransferPosition(nextPositions, round.fullCode, round.transferAmount, round.avgPrice ?? 0);
-      if (!rb.ok) return { ok: false, message: rb.message };
-      nextPositions = rb.positions;
+    } else {
+      // 新架构：通过 positionAdjustmentPort 回滚（存量数据无 adjustmentBatchIds 时触发）
+      // 此路径由 positionedAdjustmentPort.rollbackRound 在持久化阶段处理
     }
     set({
       tRounds: state.tRounds.filter(r => r.id !== id),
       positions: nextPositions,
       longTermRecords: state.longTermRecords.filter(r => r.sourceReportId !== id && r.id !== id),
     });
-    safePersist(() => deleteRoundWithCascade(id, id, nextPositions));
+    safePersist(async () => {
+      // 尝试通过新端口回滚（若该 round 在 positionAdjustments 中有登记）
+      if (!round.adjustmentBatchIds || round.adjustmentBatchIds.length === 0) {
+        await positionAdjustmentPort.rollbackRound(id, { capacityConflict: 'truncate' });
+      }
+      await deleteRoundWithCascade(id, id, nextPositions);
+    });
     return { ok: true };
   },
 
@@ -747,6 +754,11 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     if (streams.length === 0) return { ok: false, message: '该股票没有做T流水，无法划转' };
     const result = processAllStreams(streams, feeConfig, baseCosts).find(r => r.fullCode === fullCode);
     const stream = result ?? processStockStream(streams, feeConfig, baseCosts.get(fullCode));
+    // 倒T（short）模式下 netPendingAmount = shortPendingAmount（未回补卖出量），
+    // 不是可划转的买入持仓，不允许划转，必须走 settleShortRound
+    if (stream.mode === 'short') {
+      return { ok: false, message: '倒T模式不支持划转底仓，请使用「结算倒T」' };
+    }
     const pending = stream.netPendingAmount;
     const avg = transferPrice && transferPrice > 0 ? transferPrice : stream.avgPrice;
     const toTransfer = transferAmount && transferAmount > 0 ? Math.min(transferAmount, pending) : pending;

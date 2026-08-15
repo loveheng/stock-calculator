@@ -68,13 +68,13 @@ export interface RoundTxn {
   quoteId?: string;
   /** 选股条目快照（恢复 UI 自动补全展示用） */
   selectedStock?: unknown;
-  /** 倒T卖出时从底仓扣减的数量（股） */
+  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
   baseDeductedAmount?: number;
-  /** 倒T买入时已归并到底仓的超额数量（用于幂等，仅在 buy 记录上有值） */
+  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
   baseMergedAmount?: number;
-  /** 该卖出流对应的出借批次 ID */
+  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
   borrowBatchId?: string;
-  /** 该买入流对应的归并批次 ID */
+  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
   mergeBatchId?: string;
 }
 
@@ -95,6 +95,7 @@ export interface TRoundArchive {
   closedAt?: string;
   buyAmount?: number;
   sellAmount?: number;
+  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
   transferAmount?: number;
   avgPrice?: number;
   tradeCount?: number;
@@ -110,10 +111,7 @@ export interface TRoundArchive {
    * 写入路径（归档/结算/导入）必须携带完整明细以保证持久化。
    */
   transactions?: RoundTxn[];
-  /**
-   * 该 round 对应在中长期仓位中的自动调整批次 ID（出借/归并）。
-   * 删除 round 时级联移除这些批次，保证做T数据删除后不影响中长期仓位。
-   */
+  /** @deprecated 旧胶水字段，已由 positionAdjustments 取代，保留以兼容存量数据 */
   adjustmentBatchIds?: string[];
 }
 
@@ -123,7 +121,7 @@ export interface LongTermRecord {
   fullCode: string;
   stockName: string;
   timestamp: string;
-  type: 'buy' | 'sell' | 'merge';
+  type: 'buy' | 'sell' | 'merge' | 't-round';
   price: number;
   amount: number;
   fee: number;

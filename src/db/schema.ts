@@ -73,6 +73,12 @@ export interface PositionEntity extends BaseEntity {
   accumulatedTPnL?: number;
   /** 初始建仓均价（元）：底仓真实买入（open 与未被做T对配消耗的 add）按数量加权的含规费均价；存量数据可能缺省 */
   initialCost?: number;
+  /**
+   * 做T在途占用的底仓股数（reservedForT）：物化快照字段，与 positionAdjustments 中的 in-flight 命令同步更新。
+   * 日常读底仓时 O(1) 直取，无需扫描 positionAdjustments 表。
+   * 仅中长线侧维护（applyRoundAdjustments / rollbackRound），做T侧只读。
+   */
+  reservedForT?: number;
 }
 
 /** 持仓批次实体（positionBatches 表）。记录每次开仓/加仓/减仓操作对成本与数量的影响。 */
@@ -99,6 +105,8 @@ export interface PositionBatchEntity extends BaseEntity {
   kind?: 'borrow' | 'merge';
   /** 该笔操作发生时的底仓成本价（元），仅借仓卖出时记录，用于显示成本对照 */
   costPrice?: number;
+  /** 关联做T轮次 id：做T归档产生的批次用于回滚定位 */
+  sourceRoundId?: string;
 }
 
 /** 做T轮次实体（tRounds 表）。一个 Round 代表一次完整/进行中的做T项目，采用绝对现金流法核算净收益。 */
@@ -283,8 +291,8 @@ export interface FeeConfigEntity {
 export interface LongTermRecordEntity extends BaseEntity {
   /** 关联标的完整代码 */
   fullCode: string;
-  /** 操作类型：buy / sell / merge */
-  type: 'buy' | 'sell' | 'merge';
+  /** 操作类型：buy / sell / merge / t-round */
+  type: 'buy' | 'sell' | 'merge' | 't-round';
   /** 成交单价 */
   price: number;
   /** 成交数量 */
@@ -295,6 +303,72 @@ export interface LongTermRecordEntity extends BaseEntity {
   timestamp: number;
   /** 关联短线战报 id（仅 type=merge 时有值） */
   sourceReportId?: string;
+  /** 底仓净变动（仅 type='t-round' 有效） */
+  qtyNet?: number;
+  /** 倒T总借出量（仅 type='t-round' 有效） */
+  totalBorrow?: number;
+  /** 倒T回补量（仅 type='t-round' 有效） */
+  buyBack?: number;
+  /** 做T落袋利润（仅 type='t-round' 有效） */
+  profit?: number;
+  /** 备注 */
+  note?: string;
+}
+
+/**
+ * 中间表实体（positionAdjustments 表）：命令登记簿 + 占用视图 + 物化快照三职责合一。
+ * 中长线侧独占维护，做T侧只经端口读。
+ * @see docs/position-ledger-spec.md §1.4
+ */
+export interface PositionAdjustmentEntity extends BaseEntity {
+  /** 命令 id = `${roundId}-${seq}` */
+  id: string;
+  /** 关联做T轮次 */
+  roundId: string;
+  /** 序号（0 起）：同一 round 内命令全序 */
+  seq: number;
+  /** 命令种类 */
+  kind: 'borrow' | 'return-borrow' | 'finalize-sell' | 'merge-buy';
+  /** 股票完整代码 */
+  fullCode: string;
+  /** 数量 */
+  qty: number;
+  /** 参考成交价 */
+  price?: number;
+  /** 归档落定命令产生的真实批次 id（回滚时按此精确删除批次） */
+  batchId?: string;
+  /** 在途占用 / 已归档落定 */
+  status: 'in-flight' | 'settled';
+  /** 应用时间戳 */
+  appliedAt: number;
+}
+
+/**
+ * 底仓变动痕迹实体（positionEvents 表）：append-only 事件流。
+ * 凡动底仓必记（出借/归还/落定/回滚/手工），删除战报追加 rollback 事件。
+ * 可推导事件（borrow/return/finalize-sell/merge-buy）可从流水重推导，
+ * 但**不参与重放重建**；不可推导事件（rollback/manual-add/manual-reduce）是独立事实记录。
+ * @see docs/position-ledger-spec.md §1.5
+ */
+export interface PositionEventEntity extends BaseEntity {
+  /** 全局唯一 ID */
+  id: string;
+  /** 股票完整代码 */
+  fullCode: string;
+  /** 做T驱动时关联轮次 */
+  roundId?: string;
+  /** 事件类型 */
+  eventType: 'borrow' | 'return' | 'finalize-sell' | 'merge-buy' | 'manual-add' | 'manual-reduce' | 'rollback';
+  /** 数量 */
+  qty: number;
+  /** 参考价格 */
+  price?: number;
+  /** 手续费 */
+  fee?: number;
+  /** 真实批次 id（若有） */
+  batchId?: string;
+  /** 事件发生时间戳 */
+  timestamp: number;
   /** 备注 */
   note?: string;
 }
@@ -351,11 +425,22 @@ const STORES_V8 = {
 } as const;
 
 /**
+ * v9：新增 positionAdjustments（中间表：命令登记簿 + 占用视图 + 物化快照）+ positionEvents（底仓变动痕迹）。
+ * 两条表均为中长线侧独占，做T侧只经端口读写。
+ * @see docs/position-ledger-spec.md §1.4 / §1.5
+ */
+const STORES_V9 = {
+  ...STORES_V8,
+  positionAdjustments: 'id, roundId, fullCode, kind, status, appliedAt, updatedAt, isDeleted',
+  positionEvents: 'id, fullCode, roundId, eventType, timestamp, updatedAt, isDeleted',
+} as const;
+
+/**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
- * @description 集中管理全部 9 张规范化表，并声明各表的索引字段以支持高效查询。
+ * @description 集中管理全部 11 张规范化表，并声明各表的索引字段以支持高效查询。
  * @note 索引字符串格式为 Dexie schema：主键在前（`++` 自增 / 普通字段），逗号分隔的字段均会被建立索引。
- * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V8 常量定义。
+ * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V9 常量定义。
  */
 export class TradingLedgerDB extends Dexie {
   /** 股票基础信息表 */
@@ -380,8 +465,14 @@ export class TradingLedgerDB extends Dexie {
   /** 中长期操作记录表 */
   longTermRecords!: Table<LongTermRecordEntity, string>;
 
+  /** 中间表：命令登记簿 + 占用视图 + 物化快照 */
+  positionAdjustments!: Table<PositionAdjustmentEntity, string>;
+
+  /** 底仓变动痕迹表（append-only 事件流） */
+  positionEvents!: Table<PositionEventEntity, string>;
+
   /**
-   * 初始化数据库结构（版本链 v2→v8）。
+   * 初始化数据库结构（版本链 v2→v9）。
    *
    * @description 声明各表的主键与索引；后续结构变更须升级 version 并添加 stores/upgrade 迁移逻辑。
    *              新增版本时在 STORES_Vx 链尾部追加增量定义即可，无需全量复制。
@@ -412,6 +503,7 @@ export class TradingLedgerDB extends Dexie {
           });
       });
     this.version(8).stores(STORES_V8 as Record<string, string | null>);
+    this.version(9).stores(STORES_V9 as Record<string, string | null>);
   }
 }
 

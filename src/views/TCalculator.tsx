@@ -35,6 +35,7 @@ import {
   resolveOverBuyAutoHedge,
   resolveOverBuyHedgeThenReverse,
   cancelDefenseDialog,
+  calcHedgeBreakeven,
   type TStreamRecord,
   type StockStreamResult,
 } from '../utils/tStreamEngine';
@@ -129,7 +130,17 @@ const SETTLE_LABEL_COLORS: Record<string, string> = {
  * @description 渲染做 T 状态机中的单步快照：动作、本步支出/回收、摩擦成本、
  *              累计利润、当前持仓成本与数量。
  */
-function StepNodeCard({ node }: { node: TStepNode }) {
+function StepNodeCard({
+  node,
+  baseCost,
+  baseQty,
+  netPendingQty,
+}: {
+  node: TStepNode;
+  baseCost: number;
+  baseQty: number;
+  netPendingQty: number;
+}) {
   const isBuy = node.direction === 'buy';
   return (
     <div className={`rounded-lg border p-2.5 text-xs space-y-1 ${STEP_COLORS[node.direction]}`}>
@@ -171,11 +182,13 @@ function StepNodeCard({ node }: { node: TStepNode }) {
           </div>
         </div>
         <div>
-          <span className="text-slate-500">当前持仓</span>
+          <span className="text-slate-500">底仓基准</span>
           <div className="font-mono font-semibold text-blue-400 tabular-nums">
-            ¥{node.currentCost.toFixed(3)}
+            {baseQty} 股 @ ¥{baseCost.toFixed(3)}
           </div>
-          <span className="text-[10px] text-slate-500 tabular-nums">{node.currentQuantity} 股</span>
+          <span className="text-[10px] text-amber-400 tabular-nums">
+            在途敞口 +{netPendingQty} 股
+          </span>
         </div>
       </div>
       {node.note && <div className="text-[10px] text-slate-500 italic">{node.note}</div>}
@@ -312,8 +325,8 @@ function TStateMachinePanel({
   const [defenseSMCopy, setDefenseSMCopy] = useState<TStateMachineState | null>(null);
 
   // 逐条推进状态机
-  const { smState, triggeredDefense } = useMemo(() => {
-    if (!basePosition || entries.length === 0) return { smState: null, triggeredDefense: false };
+  const { smState, triggeredDefense, pendingPerStep } = useMemo(() => {
+    if (!basePosition || entries.length === 0) return { smState: null, triggeredDefense: false, pendingPerStep: [] as number[] };
     // 按时间升序排列流水
     const sorted = [...entries].sort((a, b) => {
       const ta = new Date(a.timestamp).getTime();
@@ -323,6 +336,7 @@ function TStateMachinePanel({
 
     let state = createInitialState(basePosition);
     let defense = false;
+    const pendingPerStep: number[] = [];
     for (const entry of sorted) {
       if (!feeConfig) break;
       const output = stepTEngine({
@@ -332,6 +346,12 @@ function TStateMachinePanel({
         basePosition,
       });
       state = output.newState;
+      // 在途敞口：正T = 未平买入剩余量；倒T = 未回补卖出剩余量
+      const pendingQty =
+        state.mode === 'long'
+          ? (state.pendingBuys ?? []).reduce((s, b) => s + b.quantity, 0)
+          : (state.pendingSells ?? []).reduce((s, b) => s + b.quantity, 0);
+      pendingPerStep.push(pendingQty);
       if (output.triggeredDefense) {
         defense = true;
         setDefenseSMCopy(state);
@@ -339,7 +359,7 @@ function TStateMachinePanel({
       }
       if (state.isClosed) break;
     }
-    return { smState: state, triggeredDefense: defense };
+    return { smState: state, triggeredDefense: defense, pendingPerStep };
   }, [entries, basePosition, feeConfig]);
 
   const handleDefenseSelect = (key: string) => {
@@ -393,8 +413,14 @@ function TStateMachinePanel({
       {expanded && (
         <div className="mt-2 space-y-2">
           {/* 步骤节点卡片 */}
-          {smState.steps.map((step) => (
-            <StepNodeCard key={step.recordId} node={step} />
+          {smState.steps.map((step, i) => (
+            <StepNodeCard
+              key={step.recordId}
+              node={step}
+              baseCost={basePosition.cost}
+              baseQty={basePosition.quantity}
+              netPendingQty={pendingPerStep[i] ?? 0}
+            />
           ))}
 
           {/* 结算卡片 */}
@@ -470,6 +496,26 @@ function CurrentProjectCard({
 
   const baseHolding = basePosition?.currentAmount ?? 0;
 
+  // ── 决策辅助派生量（仅 UI 展示，不参与底层撮合/状态机） ──
+  const remainingQty = Math.max(0, result.netPendingAmount);
+  const hasLivePrice = !!quote && quote.currentPrice > 0;
+  // 浮动盈亏（口径见下）：正T = (现价 - 加权买入均价) × 剩余；倒T = (平均卖出价 - 现价) × 剩余
+  const floatPnl = (() => {
+    if (!hasLivePrice || remainingQty <= 0) return null;
+    const cp = (quote as StockQuoteSummary).currentPrice;
+    if (result.mode === 'long') {
+      const basis = result.weightedBuyCost;
+      if (basis <= 0) return null;
+      return { amount: (cp - basis) * remainingQty, pct: ((cp - basis) / basis) * 100 };
+    }
+    const sellAmount = result.sellAmount > 0 ? result.sellAmount : 1;
+    const avgSell = result.sellValue / sellAmount;
+    if (avgSell <= 0) return null;
+    return { amount: (avgSell - cp) * remainingQty, pct: ((avgSell - cp) / avgSell) * 100 };
+  })();
+  // 保本对冲价（≥ ：正T 应卖出到位；≤ ：倒T 应回补至此价内）
+  const breakeven = calcHedgeBreakeven(result, feeConfig);
+
   const handleSettleShort = async () => {
     // 倒T结算：直接走 settleShortRound（移除出借 + 未回补转真实卖出）
     // 不能用 transferToPosition，因为倒T下 netPendingAmount 代表「未回补卖出量」
@@ -489,6 +535,18 @@ function CurrentProjectCard({
     } else {
       addToast(`🛑 ${res.message}`);
     }
+  };
+
+  // ---- [⚡ 快捷对冲]：自动带入剩余股数与最新价，打开追加弹窗（方向=卖出） ----
+  const handleQuickHedge = () => {
+    const remaining = Math.max(0, result.netPendingAmount);
+    if (remaining <= 0) return;
+    setApDir('sell');
+    setApAmount(String(remaining));
+    if (quote?.currentPrice && quote.currentPrice > 0) {
+      setApPrice(String(quote.currentPrice));
+    }
+    setShowAppend(true);
   };
 
   // ---- [+ 追加记录] 快速录入（同标的便捷追加，走同一撮合引擎） ----
@@ -626,6 +684,19 @@ function CurrentProjectCard({
           <div className={`font-mono font-semibold tabular-nums ${pnlColor(result.realizedPnL)}`}>
             {formatCurrency(result.realizedPnL)}
           </div>
+          {floatPnl && (
+            <div className="mt-0.5 font-mono text-[10px] tabular-nums">
+              <span className="text-slate-500">浮动 </span>
+              <span className={pnlColor(floatPnl.amount)}>
+                {floatPnl.amount >= 0 ? '+' : ''}{formatCurrency(floatPnl.amount)}
+              </span>
+              <span className="text-slate-500">（</span>
+              <span className={pnlColor(floatPnl.pct)}>
+                {floatPnl.pct >= 0 ? '+' : ''}{floatPnl.pct.toFixed(1)}%
+              </span>
+              <span className="text-slate-500">）</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -643,6 +714,15 @@ function CurrentProjectCard({
         <div>
           已卖 {result.realizedSellAmount} 股 / 总买 {result.buyAmount} 股 / {result.tradeCount} 笔 / 持股 {result.holdingDays} 天
         </div>
+        {/* 决策辅助：保本对冲价（正T ≥ 卖出到位；倒T ≤ 回补到位） */}
+        {breakeven && remainingQty > 0 && (
+          <div>
+            保本对冲价：
+            <span className="font-mono font-semibold text-amber-400 tabular-nums">
+              {breakeven.symbol === 'gte' ? '≥' : '≤'} ¥{breakeven.price.toFixed(3)}
+            </span>
+          </div>
+        )}
         {/* 倒T成本继承：底仓 (P_base × N_sell) 并入 P_avg 加权池，全部卖出统一按融合 P_avg 结算 */}
         {result.firstSellCostBasis && result.firstSellCostBasis > 0 && result.inheritedBaseAmount && (
           <div className="text-xs">
@@ -714,17 +794,33 @@ function CurrentProjectCard({
                       )}
                     </div>
                     <div className="flex flex-wrap gap-2 items-center">
-                      <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
-                      <span
-                        className={
-                          entry.realizedProfit >= 0
-                            ? 'text-red-400'
-                            : 'text-green-400'
-                        }
-                      >
-                        {entry.realizedProfit >= 0 ? '+' : ''}
-                        {formatCurrency(entry.realizedProfit)}
-                      </span>
+                      {entry.direction === 'buy' ? (
+                        /* BUY（开仓腿）：无撮合收益，仅展示对冲进度，隐藏误导性的 +¥0.00 */
+                        <span
+                          className={`font-mono tabular-nums ${
+                            entry.matchedAmount > 0 ? 'text-sky-400' : 'text-amber-400'
+                          }`}
+                        >
+                          {entry.matchedAmount <= 0
+                            ? `待对冲 (${entry.amount}股未平)`
+                            : `已对冲 ${entry.matchedAmount}股 / 余 ${entry.amount - entry.matchedAmount}股`}
+                        </span>
+                      ) : (
+                        /* SELL（平仓腿）：保持原有撮合量与收益展示 */
+                        <>
+                          <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
+                          <span
+                            className={
+                              entry.realizedProfit >= 0
+                                ? 'text-red-400'
+                                : 'text-green-400'
+                            }
+                          >
+                            {entry.realizedProfit >= 0 ? '+' : ''}
+                            {formatCurrency(entry.realizedProfit)}
+                          </span>
+                        </>
+                      )}
                     </div>
                     {entry.note && (
                       <div className="text-slate-500">{entry.note}</div>
@@ -743,18 +839,31 @@ function CurrentProjectCard({
         feeConfig={feeConfig}
       />
 
-      <div className="pt-3 grid grid-cols-4 gap-2">
+      <div className="pt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
         <button
           type="button"
           onClick={() => setShowAppend(true)}
-          className="col-span-4 md:col-span-3 btn btn-primary !py-3"
+          className="col-span-2 md:col-span-2 btn btn-primary !py-3"
         >
           + 追加记录
         </button>
         <button
           type="button"
+          onClick={handleQuickHedge}
+          className={`col-span-1 md:col-span-1 btn !py-3 ${
+            remainingQty > 0
+              ? 'bg-amber-500 hover:bg-amber-400 text-slate-900'
+              : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+          }`}
+          disabled={remainingQty <= 0}
+          title={remainingQty > 0 ? `以最新价 ¥${quote?.currentPrice?.toFixed?.(3) ?? '--'} 对冲剩余 ${remainingQty} 股` : '无剩余待对冲持仓'}
+        >
+          ⚡ 快捷对冲
+        </button>
+        <button
+          type="button"
           onClick={result.mode === 'short' ? handleSettleShort : handleTransfer}
-          className="col-span-4 md:col-span-1 btn btn-warning !py-3"
+          className="col-span-1 md:col-span-1 btn btn-warning !py-3"
           disabled={result.mode !== 'short' && result.netPendingAmount <= 0}
         >
           {result.mode === 'short' ? '结算 / 转底仓' : '一键划转底仓'}

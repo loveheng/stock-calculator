@@ -8,7 +8,7 @@
  */
 
 import Decimal from 'decimal.js';
-import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from './mathUtils';
+import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig, type SecurityKind } from './mathUtils';
 import type {
   BasePosition,
   TMode,
@@ -1082,6 +1082,78 @@ export function compareByTimestamp(a: string, b: string): number {
   if (Number.isNaN(ta)) return -1;
   if (Number.isNaN(tb)) return 1;
   return ta - tb;
+}
+
+// ──────────────────────────────────────────────
+// 注意：汇总行中「在途敞口 / 底仓基准」的决策辅助由 UI 直接消费 result 字段；
+//       「保本对冲价」为纯计算决策阈值，不参与任何状态机/撮合状态改写。
+// ──────────────────────────────────────────────
+
+/**
+ * 求成交单价 P，使得该笔对冲交易的「每股净手续费后回款/成本」恰等于目标值。
+ * 通过定长迭代逼近费率中的最低佣金硬地板等非线性项。
+ *
+ * - direction 'sell'：净回款 = P - feeSell(P)/qty，求 P = target + feeSell(P)/qty；
+ * - direction 'buy' ：净支出 = P + feeBuy(P)/qty， 求 P = target - feeBuy(P)/qty。
+ */
+function solveHedgePrice(
+  targetPerShare: number,
+  qty: number,
+  direction: 'buy' | 'sell',
+  feeConfig: FeeConfig,
+  kind: SecurityKind,
+): number {
+  let guess = targetPerShare;
+  for (let i = 0; i < 50; i++) {
+    const feePerShare = calcTradeFees(guess, qty, direction, feeConfig, kind).total / qty;
+    const next = direction === 'sell' ? targetPerShare + feePerShare : targetPerShare - feePerShare;
+    if (Math.abs(next - guess) < 1e-6) {
+      guess = next;
+      break;
+    }
+    guess = next;
+  }
+  return guess;
+}
+
+/**
+ * 计算本 Round 的「保本对冲价」决策阈值。
+ *
+ * @description 对尚未对冲（正T 未平买入 / 倒T 未回补卖出）的剩余数量，反推「对冲时恰不亏本」的成交价门槛：
+ *              - 正T（long）  ：剩余为待平买入，须以 ≥ 该价卖出才不亏 → symbol 'gte'；
+ *              - 倒T（short） ：剩余为待回补卖出，须以 ≤ 该价买回才不亏 → symbol 'lte'。
+ *              数量为 0、缺少费率或基准价非法时返回 null（UI 不展示）。
+ * @param result - 撮合结果
+ * @param feeConfig - 系统费率配置（可缺省，缺省时不计算）
+ * @returns { price, symbol } 或 null
+ */
+export function calcHedgeBreakeven(
+  result: StockStreamResult,
+  feeConfig?: FeeConfig,
+): { price: number; symbol: 'gte' | 'lte' } | null {
+  if (!feeConfig) return null;
+  const qty = Math.max(0, result.netPendingAmount);
+  if (qty <= 0) return null;
+  const kind = matchSecurityKind('', result.fullCode.replace(/^(sh|sz|bj)/, ''));
+
+  if (result.mode === 'long') {
+    // 正T：剩余为待平买入，基准 = 加权买入均价 + 该段买入规费，卖出净回款须覆盖之。
+    const basisPerShare = result.weightedBuyCost;
+    if (basisPerShare <= 0) return null;
+    const buyFeePerShare = calcTradeFees(basisPerShare, qty, 'buy', feeConfig, kind).total / qty;
+    const targetPerShare = basisPerShare + buyFeePerShare;
+    const price = solveHedgePrice(targetPerShare, qty, 'sell', feeConfig, kind);
+    return { symbol: 'gte', price: roundTo(price, 3) };
+  }
+
+  // 倒T：剩余为待回补卖出，其已保留的净回款 ≈ 平均卖出价扣卖出规费。
+  const sellAmount = result.sellAmount > 0 ? result.sellAmount : 1;
+  const avgSell = result.sellValue / sellAmount;
+  if (avgSell <= 0) return null;
+  const sellFeePerShare = calcTradeFees(avgSell, qty, 'sell', feeConfig, kind).total / qty;
+  const retainedPerShare = avgSell - sellFeePerShare;
+  const price = solveHedgePrice(retainedPerShare, qty, 'buy', feeConfig, kind);
+  return { symbol: 'lte', price: roundTo(price, 3) };
 }
 
 // ──────────────────────────────────────────────

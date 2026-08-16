@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { processStockStream } from '../utils/tStreamEngine';
+import { processStockStream, calcHedgeBreakeven } from '../utils/tStreamEngine';
 import type { TStreamRecord } from '../types/tStrategy';
 import type { FeeConfig } from '../utils/mathUtils';
 
@@ -306,4 +306,67 @@ describe('processStockStream 倒T 战报净收益（回归保护）', () => {
     const excessBuy = result.buyAmount - result.realizedSellAmount;
     expect(excessBuy).toBe(100);
   });
+describe('calcHedgeBreakeven 保本对冲价（决策辅助，UI 展示口径）', () => {
+  test('正T 部分对冲：返回 ≥ 阈值，且高于加权买入均价（覆盖双向规费后回本）', () => {
+    const result = processStockStream(
+      [
+        makeRecord({ id: 'b1', direction: 'buy', price: 10, amount: 100, fee: 0.52 }),
+        makeRecord({ id: 's1', direction: 'sell', price: 10.5, amount: 50, fee: 0.3 }),
+      ],
+      FEE_CONFIG,
+      24.11,
+    );
+    // 买 100 / 卖 50 → 剩余 50 待对冲
+    expect(result.mode).toBe('long');
+    expect(result.netPendingAmount).toBe(50);
+
+    const be = calcHedgeBreakeven(result, FEE_CONFIG);
+    expect(be).not.toBeNull();
+    expect(be!.symbol).toBe('gte');
+    // 保本价应略高于加权买入价 10（需覆盖该段买入规费 + 卖出规费）
+    expect(be!.price).toBeGreaterThan(10);
+    // 以保本价卖出剩余，净回款 ≈ 剩余买入基准 → 结果为正且有界
+    expect(be!.price).toBeGreaterThan(0);
+    // 不免五（minCommission 强制 5 元）下 50 股左右双边规费≈0.2/股，故保本价约 10.2
+    expect(be!.price).toBeGreaterThan(10.15);
+    expect(be!.price).toBeLessThan(10.3);
+  });
+
+  test('正T 完全结清（无待对冲）时返回 null', () => {
+    const result = processStockStream(
+      [
+        makeRecord({ id: 'b1', direction: 'buy', price: 10, amount: 100, fee: 0.52 }),
+        makeRecord({ id: 's1', direction: 'sell', price: 10.5, amount: 100, fee: 0.6 }),
+      ],
+      FEE_CONFIG,
+      24.11,
+    );
+    expect(result.status).toBe('CLEARED');
+    expect(result.netPendingAmount).toBe(0);
+    expect(calcHedgeBreakeven(result, FEE_CONFIG)).toBeNull();
+    // 缺省费率时同样不计算
+    expect(calcHedgeBreakeven(result, undefined)).toBeNull();
+  });
+
+  test('倒T 待回补：返回 ≤ 阈值，且低于平均卖出价（回补至此价内保本）', () => {
+    const result = processStockStream(
+      [
+        makeRecord({ id: 's1', direction: 'sell', price: 12, amount: 100, fee: 1 }),
+        makeRecord({ id: 'b1', direction: 'buy', price: 11, amount: 50, fee: 0.6 }),
+      ],
+      FEE_CONFIG,
+      { cost: 20, quantity: 500 },
+    );
+    // 首卖 100（借底仓 500） → 回补 50 → 剩余 50 待回补
+    expect(result.mode).toBe('short');
+    expect(result.netPendingAmount).toBe(50);
+
+    const be = calcHedgeBreakeven(result, FEE_CONFIG);
+    expect(be).not.toBeNull();
+    expect(be!.symbol).toBe('lte');
+    // 回补价格应低于平均卖出价 12
+    expect(be!.price).toBeLessThan(12);
+    expect(be!.price).toBeGreaterThan(0);
+  });
+});
 });

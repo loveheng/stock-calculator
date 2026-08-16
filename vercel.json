@@ -1,18 +1,6 @@
 {
   "rewrites": [
     {
-      "source": "/api-gtimg/:path*",
-      "destination": "https://smartbox.gtimg.cn/:path*"
-    },
-    {
-      "source": "/api-qt/:path*",
-      "destination": "https://qt.gtimg.cn/:path*"
-    },
-    {
-      "source": "/api/eastmoney/:path*",
-      "destination": "https://searchapi.eastmoney.com/:path*"
-    },
-    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

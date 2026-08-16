@@ -141,7 +141,7 @@ export default function ChangeRate() {
   };
 
   return (
-    <div className="page-container space-y-5">
+    <div className="page-container space-y-5 pb-[env(safe-area-inset-bottom)]">
       {/* ========== 涨跌幅计算 ========== */}
       <div className="card">
         <h3>涨跌幅计算</h3>
@@ -150,7 +150,7 @@ export default function ChangeRate() {
         <div className="grid grid-cols-2 gap-2 mb-4">
           <button
             onClick={() => setMode('A')}
-            className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            className={`tap-target flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
               mode === 'A'
                 ? 'bg-blue-600 text-white shadow-lg'
                 : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
@@ -161,7 +161,7 @@ export default function ChangeRate() {
           </button>
           <button
             onClick={() => setMode('B')}
-            className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            className={`tap-target flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
               mode === 'B'
                 ? 'bg-blue-600 text-white shadow-lg'
                 : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
@@ -212,8 +212,8 @@ export default function ChangeRate() {
 
         {/* 模式 A 结果 */}
         {targetResult && (
-          <div className="mt-4 p-4 bg-slate-900 rounded-lg">
-            <div className="grid grid-cols-2 gap-4">
+          <div className="mt-4 p-3 md:p-4 bg-slate-900 rounded-lg">
+            <div className="grid grid-cols-2 gap-3 md:gap-4">
               <div>
                 <span className="text-xs text-slate-500">目标价格</span>
                 <p className="text-lg font-bold text-blue-400">
@@ -232,8 +232,8 @@ export default function ChangeRate() {
 
         {/* 模式 B 结果 */}
         {changeResult && (
-          <div className="mt-4 p-4 bg-slate-900 rounded-lg">
-            <div className="grid grid-cols-2 gap-4">
+          <div className="mt-4 p-3 md:p-4 bg-slate-900 rounded-lg">
+            <div className="grid grid-cols-2 gap-3 md:gap-4">
               <div>
                 <span className="text-xs text-slate-500">涨跌幅</span>
                 <p className={`text-lg font-bold ${changeResult.percent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
@@ -255,14 +255,14 @@ export default function ChangeRate() {
       <div className="card">
         <h3>连续涨跌停阶梯</h3>
 
-        {/* 方向拆分的快捷预设（桌面一行5个 / 移动端自动2列换行） */}
-        <div className="grid grid-cols-5 gap-2 mb-4">
+        {/* 方向拆分的快捷预设（桌面一行5个 / 移动端2列） */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
           {BOARD_OPTIONS.map((opt) => (
             <button
               key={opt.key}
               type="button"
               onClick={() => setBoard(opt.key)}
-              className={`min-h-11 px-2 py-2.5 rounded-xl text-xs font-medium transition-all whitespace-nowrap ${
+              className={`min-h-11 px-2 py-2.5 rounded-xl text-xs font-medium transition-all whitespace-nowrap tap-target ${
                 board === opt.key
                   ? 'bg-blue-600 text-white shadow-lg'
                   : 'bg-slate-800 text-slate-400 hover:bg-slate-700'

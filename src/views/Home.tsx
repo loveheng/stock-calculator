@@ -401,7 +401,7 @@ export default function Home() {
   };
 
   return (
-    <div className="page-container space-y-5 pb-8">
+    <div className="page-container space-y-5 pb-[calc(env(safe-area-inset-bottom)+16px)]">
       {/* ============================ */}
       {/* 模块 1：做T战况统计 (T-Trading Metrics) */}
       {/* ============================ */}
@@ -760,6 +760,37 @@ export default function Home() {
         </div>
       </div>
 
+      {/* 持仓标的列表（移动端紧凑，点击直达做T/底仓详情） */}
+      {openPositions.length > 0 && (
+        <div>
+          <h3 className="text-base font-semibold text-slate-300 mb-3">
+            持仓标的
+          </h3>
+          <div className="space-y-2">
+            {openPositions.map((pos) => (
+              <button
+                key={pos.id}
+                onClick={() => navigate(`/t-calculator?fullCode=${pos.fullCode}`)}
+                className="tap-target w-full flex items-center justify-between gap-3 p-3 bg-slate-900 rounded-xl border border-slate-700 hover:border-slate-600 transition-colors text-left"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-slate-200 truncate">{pos.stockName}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">{pos.fullCode}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-base font-bold text-slate-100 tabular-nums">
+                    {pos.currentCost > 0 ? `¥${pos.currentCost.toFixed(3)}` : '--'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 tabular-nums">
+                    {pos.currentAmount} 股
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 快捷入口 */}
       <div>
         <h3 className="text-base font-semibold text-slate-300 mb-3">
@@ -772,7 +803,7 @@ export default function Home() {
               <button
                 key={card.path}
                 onClick={() => navigate(card.path)}
-                className="card flex items-center gap-3 p-4 hover:bg-slate-750 transition-colors cursor-pointer border-slate-700 hover:border-slate-600 mb-0"
+                className="card tap-target flex items-center gap-3 p-4 hover:bg-slate-750 transition-colors cursor-pointer border-slate-700 hover:border-slate-600 mb-0"
               >
                 <div className={`p-2.5 rounded-lg ${card.bg}`}>
                   <Icon className={`w-5 h-5 ${card.color}`} />

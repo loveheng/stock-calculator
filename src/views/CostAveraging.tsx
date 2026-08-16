@@ -75,8 +75,8 @@ function BatchFormModal({
         <div className="mb-3">
           <label className="block text-xs text-slate-500 mb-1">单价（元）</label>
           <input
-            type="number"
-            step="0.001"
+            type="text"
+            inputMode="decimal"
             placeholder="交易单价"
             value={price}
             onChange={(e) => setPrice(e.target.value)}
@@ -90,8 +90,8 @@ function BatchFormModal({
             {isReduce ? '减仓数量（股）' : '数量（100整数倍）'}
           </label>
           <input
-            type="number"
-            step="100"
+            type="text"
+            inputMode="numeric"
             placeholder={isReduce ? '卖出股数' : '至少100股'}
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
@@ -500,8 +500,8 @@ function PositionLedger() {
           <div className="form-group">
             <label>建仓单价（元）</label>
             <input
-              type="number"
-              step="0.001"
+              type="text"
+              inputMode="decimal"
               placeholder="买入单价"
               value={openPrice}
               onChange={(e) => setOpenPrice(e.target.value)}
@@ -512,8 +512,8 @@ function PositionLedger() {
           <div className="form-group">
             <label>建仓数量（100整数倍）</label>
             <input
-              type="number"
-              step="100"
+              type="text"
+              inputMode="numeric"
               placeholder="至少100股"
               value={openAmount}
               onChange={(e) => setOpenAmount(e.target.value)}
@@ -585,6 +585,10 @@ function PositionLedger() {
         const floatPnLPercent = hasPrice && snap.currentCost > 0 ? ((cp - snap.currentCost) / snap.currentCost) * 100 : 0;
         // 回本所需涨幅 = (动态保本价 - 现价) / 现价 × 100%；现价高于保本价时为负（已回本）
         const requiredRisePercent = hasPrice && snap.currentCost > 0 ? ((snap.currentCost - cp) / cp) * 100 : 0;
+        // 出借总量（做T在途借出部分）
+        const totalBorrow = pos.batches
+          .filter((b) => b.kind === 'borrow')
+          .reduce((sum, b) => sum + Math.abs(b.amount), 0);
 
         return (
           <div key={pos.id} className="p-4 bg-slate-900 rounded-lg border border-slate-700">
@@ -597,9 +601,14 @@ function PositionLedger() {
                     底仓出空
                   </span>
                 )}
+                {totalBorrow > 0 && (
+                  <span className="lending-badge">
+                    出借中 {totalBorrow} 股
+                  </span>
+                )}
                 <button
                   onClick={() => setDeleteTickerConfirm(pos.id)}
-                  className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
+                  className="tap-target p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
                   title="删除标的"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -693,7 +702,7 @@ function PositionLedger() {
             {/* 批次明细 */}
             <button
               onClick={() => setExpandedId(expandedId === pos.id ? null : pos.id)}
-              className="mt-3 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300"
+              className="tap-target mt-3 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300"
             >
               {expandedId === pos.id ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
               操作记录（{pos.batches.length}条）
@@ -707,10 +716,10 @@ function PositionLedger() {
                   );
                   const isFirstBatch = (batchId: string) => sortedBatches.length >= 1 && sortedBatches[0].id === batchId;
                   return sortedBatches.map((batch) => (
-                    <div key={batch.id} className="flex items-center justify-between text-xs text-slate-400 py-1.5 border-b border-slate-800 last:border-0">
-                      <div className="flex items-center gap-2">
-                        <span className={`px-1.5 py-0.5 rounded text-xs ${
-                          batch.kind === 'borrow' ? 'bg-amber-500/20 text-amber-400' :
+                    <div key={batch.id} className="flex items-center justify-between text-xs text-slate-400 py-1.5 border-b border-slate-800 last:border-0 md:flex-row flex-col gap-1.5">
+                      <div className="flex items-center gap-2 flex-wrap md:flex-nowrap">
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                          batch.kind === 'borrow' ? 'lending-badge' :
                           batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
                           batch.type === 'add' ? 'bg-blue-500/20 text-blue-400' :
                           batch.type === 'reduce' ? 'bg-purple-500/20 text-purple-400' :
@@ -718,8 +727,8 @@ function PositionLedger() {
                         }`}>
                           {batch.kind === 'borrow' ? '出借' : batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结仓'}
                         </span>
-                        <span>¥{batch.price.toFixed(3)}</span>
-                        <span>× {Math.abs(batch.amount)}股</span>
+                        <span className="font-mono tabular-nums">¥{batch.price.toFixed(3)}</span>
+                        <span className="font-mono tabular-nums">× {Math.abs(batch.amount)}股</span>
                         {batch.kind === 'borrow' && batch.costPrice !== undefined && (
                           <span className="text-slate-600">成本¥{batch.costPrice.toFixed(3)}</span>
                         )}
@@ -727,11 +736,11 @@ function PositionLedger() {
                           <span className="text-slate-600">费¥{batch.fee.toFixed(2)}</span>
                         )}
                         {batch.note && (
-                          <span className="text-slate-600 italic">「{batch.note}」</span>
+                          <span className="text-slate-600 italic truncate max-w-[120px]">「{batch.note}」</span>
                         )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-slate-500">
+                      <div className="flex items-center gap-2 w-full md:w-auto justify-between md:justify-end">
+                        <span className="text-slate-500 text-[10px] md:text-xs">
                           {new Date(batch.timestamp).toLocaleDateString()}
                         </span>
                         <div className="relative group">
@@ -742,7 +751,7 @@ function PositionLedger() {
                               setDeleteBatchConfirm({ positionId: pos.id, batchId: batch.id });
                             }}
                             disabled={isFirstBatch(batch.id) || batch.kind === 'borrow' || batch.kind === 'merge'}
-                            className={`p-1 rounded ${
+                            className={`tap-target p-1 rounded ${
                               isFirstBatch(batch.id) || batch.kind === 'borrow' || batch.kind === 'merge'
                                 ? 'text-slate-700 cursor-not-allowed'
                                 : 'hover:bg-slate-800 text-slate-600 hover:text-red-400'
@@ -913,8 +922,8 @@ function TargetCostCalculator() {
           <div className="form-group">
             <label>当前成本价（元）</label>
             <input
-              type="number"
-              step="0.001"
+              type="text"
+              inputMode="decimal"
               placeholder="当前持仓成本"
               value={currentCost}
               onChange={(e) => setCurrentCost(e.target.value)}
@@ -923,8 +932,8 @@ function TargetCostCalculator() {
           <div className="form-group">
             <label>当前持仓（股）</label>
             <input
-              type="number"
-              step="100"
+              type="text"
+              inputMode="numeric"
               placeholder="100整数倍"
               value={currentAmount}
               onChange={(e) => setCurrentAmount(e.target.value)}
@@ -935,8 +944,8 @@ function TargetCostCalculator() {
           <div className="form-group">
             <label>计划补仓单价（元）</label>
             <input
-              type="number"
-              step="0.001"
+              type="text"
+              inputMode="decimal"
               placeholder="补仓买入价"
               value={plannedPrice}
               onChange={(e) => setPlannedPrice(e.target.value)}
@@ -945,15 +954,15 @@ function TargetCostCalculator() {
           <div className="form-group">
             <label>目标成本价（元）</label>
             <input
-              type="number"
-              step="0.001"
+              type="text"
+              inputMode="decimal"
               placeholder="期望最终成本"
               value={targetCost}
               onChange={(e) => setTargetCost(e.target.value)}
             />
           </div>
         </div>
-        <button onClick={handleCalculate} className="btn btn-primary btn-block mt-2">
+        <button onClick={handleCalculate} className="btn btn-primary btn-block mt-2 tap-target">
           推算补仓数量
         </button>
       </div>
@@ -1035,7 +1044,7 @@ export default function CostAveraging() {
   const [tab, setTab] = useState<'ledger' | 'target'>('ledger');
 
   return (
-    <div className="page-container">
+    <div className="page-container pb-[env(safe-area-inset-bottom)]">
       <div className="card">
         <h3>仓位管理</h3>
 

@@ -1010,10 +1010,12 @@ function CurrentProjectCard({
  * 归档历史库 Round 战报卡片。
  *
  * @description 展示已归档做T战报：Round 编号、正/倒T标签、结算类型（平仓/归并/划转）、
- *              净收益、卖出数量、融合均价、成交明细穿透；
+ *              顶部一行状态徽章（左侧）+ 右上角结算徽章；中部 2×2 核心指标：
+ *              落袋净收益（高亮）/ 已对冲数量 / 买·卖加权均价 / 归并底仓（或「全部结清」）；
+ *              成交明细穿透逐行标注「撮合量+已实现收益」「买入规费」「归并」对冲状态；
  *              提供「删除战报」操作，自动级联撤销归并底仓数据。
  * @param {{ round: TRound; onRemove: (id) => { ok: boolean; message?: string } }} props
- *  - round: 归档战报记录（列表加载为轮次摘要，不含明细；展开「查看成交明细」时按需查询）
+ *  - round: 归档战报记录（列表加载为轮次摘要，不含明细；卡片挂载时预取一次明细用于推导买/卖均价）
  *  - onRemove: 删除回调，返回删除结果
  * @returns {JSX.Element} 战报卡片视图
  * @note 删除属于写操作，通过 store.removeRound 落库，自动处理归并回滚
@@ -1027,17 +1029,13 @@ function ArchiveRoundCard({
 }) {
   const [showTxns, setShowTxns] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  // 成交明细按需加载：列表加载器只返回轮次摘要（不含 transactions），
-  // 首次展开时才查询 IndexedDB（fetchTransactionsByRoundId）
+  // 成交明细按需加载：列表加载器只返回轮次摘要（不含 transactions）。
+  // 为在卡片主体直接呈现「买/卖均价」，需在挂载时预取一次明细；
+  // 展开/收起仅切换可视性（toggleTxns），不再重复查询。
   const [txns, setTxns] = useState<RoundTxn[]>([]);
   const [txnsLoading, setTxnsLoading] = useState(false);
   const txnsLoadedRef = useRef(false);
-  const toggleTxns = () => {
-    if (showTxns) {
-      setShowTxns(false);
-      return;
-    }
-    setShowTxns(true);
+  const loadTxns = useCallback(() => {
     if (txnsLoadedRef.current) return;
     txnsLoadedRef.current = true;
     setTxnsLoading(true);
@@ -1046,10 +1044,28 @@ function ArchiveRoundCard({
       .then((list) => setTxns(list))
       .catch(() => setTxns([]))
       .finally(() => setTxnsLoading(false));
-  };
+  }, [round.id]);
+  useEffect(() => {
+    loadTxns();
+  }, [loadTxns]);
+  // 明细已在挂载时预取（见 loadTxns/useEffect），此处仅切换展开/收起。
+  const toggleTxns = () => setShowTxns((v) => !v);
 
   const hasMerge = round.transferAmount && round.transferAmount > 0;
   const mergeLabel = round.mode === 'long' ? '正T归并' : '倒T归并';
+
+  // ── 由成交明细派生的核心指标（买/卖加权均价、已对冲数量）──
+  // 买均价优先用明细加权实算；缺明细时回退到 round.avgPrice（= 买入加权均价 buyTotal/buyAmount）。
+  const buyAmt = txns.filter((t) => t.direction === 'buy').reduce((s, t) => s + t.amount, 0);
+  const buyVal = txns.filter((t) => t.direction === 'buy').reduce((s, t) => s + t.price * t.amount, 0);
+  const sellAmt = txns.filter((t) => t.direction === 'sell').reduce((s, t) => s + t.amount, 0);
+  const sellVal = txns.filter((t) => t.direction === 'sell').reduce((s, t) => s + t.price * t.amount, 0);
+  const buyAvg = buyAmt > 0 ? buyVal / buyAmt : (round.avgPrice ?? NaN);
+  const sellAvg = sellAmt > 0 ? sellVal / sellAmt : NaN;
+  const hasSellAvg = Number.isFinite(sellAvg) && sellAvg > 0;
+  const fmtAvg = (v: number) => (Number.isFinite(v) && v > 0 ? v.toFixed(3) : '--');
+  // 已对冲数量 = 已撮合卖出量（round.sellAmount 即 realizedSellAmount）
+  const hedgedQty = Math.max(0, round.sellAmount ?? 0);
 
   const deleteConfirmMessage = hasMerge
     ? `删除此战报将同步撤销归并的 ${round.transferAmount} 股持仓及对应金额（约 ¥${((round.avgPrice ?? 0) * (round.transferAmount ?? 0)).toFixed(2)}），底仓成本将重新计算，并同步删除中长期记录中对应的【归并】历史，是否确认删除？`
@@ -1092,38 +1108,46 @@ function ArchiveRoundCard({
           )}
         </div>
       </div>
-      {round.netProfit !== 0 && (
-        <div>
-          <span className={`px-2 py-0.5 rounded-full text-xs font-bold shrink-0 ${round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
-            {round.win ? '✓ 盈利' : '✗ 亏损'}
-          </span>
-        </div>
-      )}
       <div className="text-xs text-slate-500">
         {new Date(round.openedAt ?? '').toLocaleDateString()} ~ {new Date(round.closedAt ?? '').toLocaleDateString()} · 持股 {round.holdingDays ?? 0} 天 · {round.tradeCount ?? 0} 笔
+        {round.totalFees ? ` · 规费合计 ¥${round.totalFees.toFixed(2)}` : ''}
       </div>
-      <div className="grid grid-cols-3 gap-2 text-xs">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg bg-slate-900/70 border border-slate-700/60 p-3">
+        {/* 落袋净收益（Round 绝对现金流净收益） */}
         <div>
-          <span className="text-slate-500">净收益</span>
-          <div className={`font-mono font-semibold tabular-nums ${pnlColor(round.netProfit)}`}>
-            {formatCurrency(round.netProfit)}
+          <div className="text-[11px] text-slate-500">落袋净收益</div>
+          <div className={`font-mono text-xl font-bold tabular-nums mt-0.5 leading-tight ${pnlColor(round.netProfit)}`}>
+            {round.netProfit >= 0 ? '+' : ''}{formatCurrency(round.netProfit)}
           </div>
         </div>
+        {/* 已对冲数量（已撮合卖出量） */}
         <div>
-          <span className="text-slate-500">卖出</span>
-          <div className="font-mono font-semibold text-slate-200 tabular-nums">{round.sellAmount} 股</div>
+          <div className="text-[11px] text-slate-500">已对冲数量</div>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums mt-0.5">{hedgedQty} 股</div>
         </div>
+        {/* 买 / 卖均价（加权实算，缺明细时回退） */}
         <div>
-          <span className="text-slate-500">均价</span>
-          <div className="font-mono font-semibold text-blue-400 tabular-nums">¥{(round.avgPrice ?? 0).toFixed(3)}</div>
+          <div className="text-[11px] text-slate-500">买 / 卖均价</div>
+          {/* 紧凑双行排列，避免均值被 truncate 截断成 "¥17..." */}
+          <div className="font-mono font-semibold tabular-nums mt-0.5 leading-snug">
+            <div className="whitespace-nowrap text-blue-400">买 ¥{fmtAvg(buyAvg)}</div>
+            <div className={hasSellAvg ? 'whitespace-nowrap text-purple-400' : 'whitespace-nowrap text-slate-500'}>
+              卖 ¥{fmtAvg(sellAvg)}
+            </div>
+          </div>
+        </div>
+        {/* 归并底仓：有归并则高亮数量与价位；无归并显示全部结清 */}
+        <div>
+          <div className="text-[11px] text-slate-500">归并底仓</div>
+          <div className="font-mono font-semibold tabular-nums mt-0.5 leading-tight">
+            {hasMerge ? (
+              <span className="text-amber-400">+{round.transferAmount} 股 @ ¥{(round.avgPrice ?? 0).toFixed(3)}</span>
+            ) : (
+              <span className="text-emerald-400">全部结清</span>
+            )}
+          </div>
         </div>
       </div>
-      {/* 成交明细穿透（含撮合配对与划转记录） */}
-      {round.transferAmount && (
-        <div className="text-xs text-slate-400 pb-2">
-          划转底仓：{round.transferAmount} 股 @ ¥{(round.avgPrice ?? 0).toFixed(3)}
-        </div>
-      )}
       <div>
         <button
           onClick={toggleTxns}
@@ -1138,37 +1162,58 @@ function ArchiveRoundCard({
             {txnsLoading ? (
               <div className="text-[11px] text-slate-500 py-1">成交明细加载中…</div>
             ) : txns.length > 0 ? (
-              txns.map((t) => (
+              txns.map((t) => {
+              const isSell = t.direction === 'sell';
+              const isMerge = t.direction === 'merge';
+              // 卖出行=平仓腿：以成交量为撮合量；仅当明细持久化了有效 matchedAmount(>0) 时
+              // 才用它覆盖（归档写路径缺 matchedAmount，读回恒为 0，需回退到成交量）。
+              const matched = isSell ? ((t.matchedAmount ?? 0) > 0 ? t.matchedAmount : t.amount) : 0;
+              const hasProfit = isSell && (t.realizedProfit ?? 0) !== 0;
+              return (
                 <div
                   key={t.id}
                   className="flex items-center justify-between gap-2 text-[11px] text-slate-400"
                 >
-                  <span className="shrink-0">{new Date(t.timestamp).toLocaleString()}</span>
-                  <span
-                    className={`px-1 rounded text-[10px] font-bold shrink-0 ${
-                      t.direction === 'buy'
-                        ? 'bg-blue-500/15 text-blue-400'
-                        : t.direction === 'sell'
-                        ? 'bg-purple-500/15 text-purple-400'
-                        : 'bg-purple-500/15 text-purple-400'
-                    }`}
-                  >
-                    {t.direction === 'buy' ? '买' : t.direction === 'sell' ? '卖' : '转'}
-                  </span>
-                  <span className="font-mono shrink-0">
-                    {t.amount} 股  ¥{t.price.toFixed(2)}
-                  </span>
-                  <span className="font-mono tabular-nums shrink-0">
-                    {(t.matchedAmount ?? 0) > 0 ? `⚡${t.matchedAmount}股 ` : ''}
-                    {t.realizedProfit !== 0 &&
-                      (t.direction === 'sell' ? (
-                        <span className={pnlColor(t.realizedProfit ?? 0)}>{formatCurrency(t.realizedProfit ?? 0)}</span>
-                      ) : (
-                        <span className="text-slate-500">--</span>
-                      ))}
-                  </span>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="shrink-0">{new Date(t.timestamp).toLocaleString()}</span>
+                    <span
+                      className={`px-1 rounded text-[10px] font-bold shrink-0 ${
+                        t.direction === 'buy'
+                          ? 'bg-blue-500/15 text-blue-400'
+                          : isMerge
+                          ? 'bg-amber-500/15 text-amber-400'
+                          : 'bg-purple-500/15 text-purple-400'
+                      }`}
+                    >
+                      {t.direction === 'buy' ? '买' : isMerge ? '归' : '卖'}
+                    </span>
+                    <span className="font-mono shrink-0">
+                      {t.amount} 股 ¥{t.price.toFixed(2)}
+                    </span>
+                  </div>
+                  {/* 右侧：对冲/归并状态 */}
+                  {isMerge ? (
+                    <span className="font-mono tabular-nums text-amber-400 shrink-0">
+                      归并 {t.amount} 股
+                    </span>
+                  ) : isSell ? (
+                    <span className="font-mono tabular-nums shrink-0">
+                      <span className="text-slate-200">撮合 {matched} 股</span>
+                      {hasProfit && (
+                        <span className={pnlColor(t.realizedProfit ?? 0)}>
+                          {(t.realizedProfit ?? 0) >= 0 ? ' +' : ' '}
+                          {formatCurrency(t.realizedProfit ?? 0)}
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="font-mono tabular-nums text-slate-500 shrink-0">
+                      规费 ¥{t.fee.toFixed(2)}
+                    </span>
+                  )}
                 </div>
-              ))
+              );
+            })
             ) : (
               <div className="text-[11px] text-slate-500 py-1">暂无成交明细</div>
             )}

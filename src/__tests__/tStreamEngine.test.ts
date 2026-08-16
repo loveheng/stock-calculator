@@ -186,6 +186,39 @@ describe('processStockStream 正T 战报净收益（Bug 回归）', () => {
     // 6) Round 未结清（仍有 200 股待处理持仓）
     expect(result.status).toBe('PARTIAL');
   });
+
+  test('Bug 回归「买200→卖100→买100→卖100」：第二笔卖出的撮合量必须为 100 而非 0', () => {
+    const buyFee1 = 0.83; // 200×16.00=3200：佣金 0.8 + 过户费 0.03
+    const sell1Fee = 1.37; // 100×17.00=1700：佣金最低 0.5 + 印花税 0.85 + 过户费 0.02
+    const buyFee2 = 0.52; // 100×16.00=1600：佣金最低 0.5 + 过户费 0.02
+    const sell2Fee = 1.42; // 100×17.60=1760：佣金最低 0.5 + 印花税 0.88 + 过户费 0.02
+    const result = processStockStream(
+      [
+        makeRecord({ id: 'b1', direction: 'buy', price: 16.0, amount: 200, fee: buyFee1, timestamp: '2026-08-13T01:00:00.000Z' }),
+        makeRecord({ id: 's1', direction: 'sell', price: 17.0, amount: 100, fee: sell1Fee, timestamp: '2026-08-13T02:00:00.000Z' }),
+        makeRecord({ id: 'b2', direction: 'buy', price: 16.0, amount: 100, fee: buyFee2, timestamp: '2026-08-13T03:00:00.000Z' }),
+        makeRecord({ id: 's2', direction: 'sell', price: 17.6, amount: 100, fee: sell2Fee, timestamp: '2026-08-13T04:00:00.000Z' }),
+      ],
+      FEE_CONFIG,
+      24.11,
+    );
+
+    // 两笔卖出均被 FIFO 撮合：首卖匹配 b1 前 100 股；次卖匹配 b1 剩余 100 股
+    // （先开先配对，未触及后续 b2）→ 第二笔卖出的撮合量必须是 100，绝不可为 0
+    const [b1, s1, b2, s2] = result.entries;
+    expect(s2.direction).toBe('sell');
+    expect(s2.matchedAmount).toBe(100);
+    expect(s1.matchedAmount).toBe(100);
+
+    expect(b1.matchedAmount).toBeCloseTo(200, 2); // 全部被两笔卖出消耗
+    expect(b1.remaining).toBeCloseTo(0, 2);
+    expect(b2.matchedAmount).toBeCloseTo(0, 2); // 未平仓（待归并底仓）
+    expect(b2.remaining).toBeCloseTo(100, 2);
+
+    expect(result.realizedSellAmount).toBe(200);
+    expect(result.netPendingAmount).toBe(100); // 总买 300 - 已卖 200
+    expect(result.status).toBe('PARTIAL');
+  });
 });
 
 // ---- 倒T 回归：确保 P_base 仅用于倒 T 首笔对冲定值，波段收益逻辑不受影响 ----

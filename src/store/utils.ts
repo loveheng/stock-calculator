@@ -241,8 +241,23 @@ export function finalizeRoundIfCleared(
   );
   if (idx >= 0) {
     const existing = rounds[idx];
+    // 归档明细：用最终撮合后的权威 entries 重建，携带 matchedAmount + 单笔 realizedProfit
+    const transactions: RoundTxn[] = stream.entries.map((e) => ({
+      id: e.id,
+      timestamp: e.timestamp,
+      fullCode: stream.fullCode,
+      stockName: stream.stockName,
+      direction: e.direction,
+      price: e.price,
+      amount: e.amount,
+      fee: e.fee,
+      matchedAmount: e.matchedAmount ?? 0,
+      realizedProfit: e.realizedProfit ?? 0,
+      note: e.note,
+    }));
     const updated: TRoundArchive = {
       ...existing,
+      transactions,
       status: 'COMPLETED',
       roundCode: existing.roundCode || roundCode,
       settleType: 'clear',

@@ -38,6 +38,10 @@ import {
   restoreFromCloud,
   testWebDAVConnection,
   mergeSync,
+  // 新增：全局唯一执行锁 + 10s 冷却
+  backupToWebDAV,
+  scheduleBackup,
+  __resetWebDAVAutoBackup,
 } from '../services/webdavSync';
 import type { AppStoreExport, TRoundArchive, Position } from '../store/types';
 import type { FeeConfig } from '../utils/mathUtils';
@@ -595,5 +599,223 @@ describe('上传互斥锁 isUploading', () => {
 
     // 两次上传均真正发起了网络请求（说明锁已被正确释放）
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});
+// ============================================================
+// 9. 跨标签页写入互斥（Web Locks API）—— 防止多标签页重叠 PUT 导致文件大小跳变
+// ============================================================
+
+describe('跨标签页写入互斥（Web Locks API）', () => {
+  const buildConfig = () => ({
+    webdavUrl: 'https://dav.example.com/dav/',
+    username: 'test',
+    password: 'app_pass',
+    remotePath: '/stock-calculator/data-backup.json',
+    autoSync: false,
+  });
+  const LOCK_NAME = 'stock-calculator-webdav-write';
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('写方法 PUT（backupToCloud）会请求全局 Web Locks 写锁', async () => {
+    const lockNames: string[] = [];
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: async (name: string, fn: () => Promise<unknown>) => {
+          lockNames.push(name);
+          return fn();
+        },
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 201 }));
+    const json = serializeSnapshot(createMockSnapshot());
+    const r = await backupToCloud(buildConfig(), json, false, true);
+    expect(r.ok).toBe(true);
+    expect(lockNames).toEqual([LOCK_NAME]);
+  });
+
+  it('写方法 MKCOL（ensureParentDir 自动建目录）也请求全局写锁', async () => {
+    const lockNames: string[] = [];
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: async (name: string, fn: () => Promise<unknown>) => {
+          lockNames.push(name);
+          return fn();
+        },
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 201 }));
+    const ok = await ensureParentDir(buildConfig(), '/stock-calculator/data-backup.json');
+    expect(ok).toBe(true);
+    expect(lockNames).toContain(LOCK_NAME);
+  });
+
+  it('只读 GET（restoreFromCloud）不请求写锁', async () => {
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: async (_name: string, _fn: () => Promise<unknown>) => {
+          throw new Error('只读请求不应请求写锁');
+        },
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(createMockSnapshot()), { status: 200 }),
+    );
+    const rr = await restoreFromCloud(buildConfig(), true); // _skipLock=true：跳过冷却时间，专注验证 GET 不请求写锁
+    expect(rr.ok).toBe(true);
+  });
+
+  it('并发写操作在 Web Locks 下被串行化，同一时刻仅 1 个写请求在途',
+    async () => {
+      // 模拟浏览器 Web Locks 的同名互斥队列语义：后到者在前者完成后才执行
+      let chain: Promise<void> = Promise.resolve();
+      const inFlight: number[] = [];
+      let maxInFlight = 0;
+      vi.stubGlobal('navigator', {
+        locks: {
+          request: async (name: string, fn: () => Promise<unknown>) => {
+            const run = chain.then(async () => {
+              inFlight.push(1);
+              maxInFlight = Math.max(maxInFlight, inFlight.length);
+              try {
+                return await fn();
+              } finally {
+                inFlight.pop();
+              }
+            });
+            chain = run.then(() => undefined, () => undefined);
+            return run;
+          },
+        },
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 20)); // 制造重叠窗口
+        return new Response(null, { status: 201 });
+      });
+
+      // ensureParentDir 不受模块级 isUploading 守卫，可真实并发；
+      // 用它证明底层写锁能把原本会重叠的写请求串行化到 1 个在途。
+      const config = buildConfig();
+      const [a, b] = await Promise.all([
+        ensureParentDir(config, '/stock-calculator/data-backup.json'),
+        ensureParentDir(config, '/stock-calculator/data-backup.json'),
+      ]);
+      expect(a).toBe(true);
+      expect(b).toBe(true);
+      expect(maxInFlight).toBe(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    },
+  );
+});
+
+// ============================================================
+// 10. backupToWebDAV 全局唯一执行锁 + 10s 绝对冷却
+// ============================================================
+
+describe('backupToWebDAV 全局唯一执行锁 + 10s 绝对冷却', () => {
+  const buildConfig = () => ({
+    webdavUrl: 'https://dav.example.com/dav/',
+    username: 'test',
+    password: 'app_pass',
+    remotePath: '/stock-calculator/data-backup.json',
+    autoSync: false,
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    saveWebDAVConfig(buildConfig());
+    vi.restoreAllMocks();
+    __resetWebDAVAutoBackup();
+  });
+
+  it('成功上传：返回 success 并写入独立同步元数据', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 201 }));
+    const r = await backupToWebDAV({ version: 1 }, true);
+    expect(r.success).toBe(true);
+    expect(getLastSyncTime()).not.toBeNull();
+    expect(getSyncHistory()[0].type).toBe('backup');
+    expect(getSyncHistory()[0].success).toBe(true);
+  });
+
+  it('冷却期内再次触发（非 force）被静默合并，不产生新的网络请求', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 201 }));
+
+    await backupToWebDAV({ v: 1 }, true); // 成功 → 进入 10s 绝对冷却
+    const second = await backupToWebDAV({ v: 2 }); // 非 force → 冷却合并
+    expect(second.success).toBe(true);
+    expect(second.message).toContain('冷却');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('并发调用：在途时第二个调用复用同一 Promise，PUT 仅发出 1 次', async () => {
+    let resolveFetch!: (r: Response) => void;
+    const pending = new Promise<Response>((res) => { resolveFetch = res; });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockReturnValueOnce(pending)
+      .mockResolvedValue(new Response(null, { status: 201 }));
+
+    const first = backupToWebDAV({ v: 1 }, true);
+    const second = backupToWebDAV({ v: 2 }, true);
+
+    resolveFetch(new Response(null, { status: 201 }));
+    const [r1, r2] = await Promise.all([first, second]);
+    expect(r1.success).toBe(true);
+    expect(r2.success).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('force 可绕过冷却期并发出新的上传', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 201 }));
+
+    await backupToWebDAV({ v: 1 }, true); // 进入冷却
+    const second = await backupToWebDAV({ v: 2 }, true); // force 绕过
+    expect(second.success).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('未配置时返回失败且不发请求', async () => {
+    localStorage.clear(); // 清空配置
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = await backupToWebDAV({ v: 1 }, true);
+    expect(r.success).toBe(false);
+    expect(r.message).toContain('未配置');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('scheduleBackup 防抖：多个连续触发合并为最后一次并仅执行一次备份', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response(null, { status: 201 }));
+
+      scheduleBackup({ v: 1 }, 800);
+      scheduleBackup({ v: 2 }, 800);
+      scheduleBackup({ v: 3 }, 800);
+      // 防抖窗口内定时器尚未触发，应无请求
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(810);
+      await Promise.resolve(); // 等待内部 async 完成
+      await Promise.resolve();
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      __resetWebDAVAutoBackup();
+    }
   });
 });

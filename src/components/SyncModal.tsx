@@ -13,8 +13,8 @@ import {
 import {
   getWebDAVConfig, saveWebDAVConfig, clearWebDAVConfig,
   getLastSyncTime, getSyncHistory,
-  testWebDAVConnection, backupToCloud, restoreFromCloud, mergeSync,
-  formatRelativeTime, serializeSnapshot,
+  testWebDAVConnection, backupToWebDAV, restoreFromCloud, mergeSync,
+  formatRelativeTime,
   type WebDAVConfig, type SyncHistoryEntry,
 } from '../services/webdavSync';
 import { useAppStore } from '../store';
@@ -92,9 +92,9 @@ export default function SyncModal({ open, onClose }: SyncModalProps) {
     setStatusMessage('正在备份到云端...');
     try {
       const snapshot = exportData();
-      const json = serializeSnapshot(snapshot);
-      const result = await backupToCloud(config, json);
-      setSyncStatus(result.ok ? 'success' : 'error');
+      if (!snapshot) { setStatusMessage('导出数据失败'); setSyncStatus('error'); refresh(); return; }
+      const result = await backupToWebDAV(snapshot, true);
+      setSyncStatus(result.success ? 'success' : 'error');
       setStatusMessage(result.message);
     } catch (err) {
       setSyncStatus('error');

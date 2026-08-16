@@ -16,8 +16,8 @@ import {
 import {
   getWebDAVConfig, saveWebDAVConfig, clearWebDAVConfig,
   getLastSyncTime, getSyncHistory,
-  testWebDAVConnection, backupToCloud, restoreFromCloud, mergeSync,
-  formatRelativeTime, serializeSnapshot,
+  testWebDAVConnection, backupToWebDAV, restoreFromCloud, mergeSync,
+  formatRelativeTime,
   type WebDAVConfig, type SyncHistoryEntry,
 } from '../services/webdavSync';
 import { useAppStore } from '../store';
@@ -121,11 +121,10 @@ export default function WebDAVConfigPage() {
     try {
       const snapshot = exportData();
       if (!snapshot) { setStatusMessage('导出数据失败'); setSyncStatus('error'); return; }
-      const json = serializeSnapshot(snapshot);
-      const result = await backupToCloud(config, json);
-      setSyncStatus(result.ok ? 'success' : 'error');
+      const result = await backupToWebDAV(snapshot, true);
+      setSyncStatus(result.success ? 'success' : 'error');
       setStatusMessage(result.message);
-      if (result.ok) refresh();
+      if (result.success) refresh();
     } catch (err) {
       setSyncStatus('error');
       setStatusMessage(err instanceof Error ? err.message : '备份失败');

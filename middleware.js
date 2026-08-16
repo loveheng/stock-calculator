@@ -1,21 +1,24 @@
 /**
  * @file middleware.js
- * @description Vercel Edge Middleware：统一代理与请求头清洗体系。
+ * @description Vercel Edge Middleware：纯白名单代理转发体系。
  *
  * 拦截以下路径并转发到上游：
  *   - /api-gtimg/*      → https://smartbox.gtimg.cn/*
  *   - /api-qt/*         → https://qt.gtimg.cn/*
  *   - /api/eastmoney/*  → https://searchapi.eastmoney.com/*
- *   - /api/webdav       → 动态目标 URL（从 ?url= 查询参数获取）
+ *   - /api-webdav       → 动态目标 URL（从 ?url= 查询参数获取，纯白名单头转发）
+ *   - /api/webdav       → 兼容别名（同上）
  *
- * 【WebDAV 代理核心设计】
- *   1. 所有 WebDAV 请求统一走 /api/webdav?url=... 同源路径，
- *      彻底规避浏览器端 CORS 跨域限制。
- *   2. OPTIONS 预检请求直接返回 200 + 允许所有 WebDAV 方法的 CORS 头。
- *   3. 请求头严格清洗：剔除 host / referer / origin / cookie /
- *      x-vercel-* / x-forwarded-*，保留 authorization / content-type /
- *      depth / overwrite / if-match，设置统一 User-Agent。
- *   4. 请求体完整透传至上游。
+ * 【纯白名单代理层 · WebDAV 核心设计】
+ *   1. OPTIONS 预检请求在函数【首行】直接拦截返回 200（解决 405）：
+ *      预检必须由中间件立即响应，严禁转发给上游（转发会导致 405）。
+ *   2. 严格白名单头转发（解决 403）：只透传 WebDAV 必需头
+ *      （authorization / content-type / depth / overwrite / if-match /
+ *      if-none-match），彻底剥离浏览器特征头（host / origin / referer /
+ *      cookie / sec-fetch-* / accept-language / accept-encoding /
+ *      x-vercel-* / x-forwarded-*）。这些特征头被 Koofr 等 WebDAV 服务器
+ *      判定为异常，会触发 403。
+ *   3. 统一设置干净的 User-Agent，不携带任何浏览器指纹。
  *
  * @deployment 部署至 Vercel Edge Runtime，运行于全球边缘节点。
  */
@@ -27,15 +30,11 @@
 const UPSTREAMS = {
   '/api-gtimg': {
     base: 'https://smartbox.gtimg.cn',
-    headers: {
-      Referer: 'https://finance.qq.com/',
-    },
+    headers: { Referer: 'https://finance.qq.com/' },
   },
   '/api-qt': {
     base: 'https://qt.gtimg.cn',
-    headers: {
-      Referer: 'https://finance.qq.com/',
-    },
+    headers: { Referer: 'https://finance.qq.com/' },
   },
   '/api/eastmoney': {
     base: 'https://searchapi.eastmoney.com',
@@ -45,50 +44,22 @@ const UPSTREAMS = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
   },
-  /**
-   * WebDAV 代理：动态转发到目标 WebDAV 服务器。
-   * 客户端通过 /api/webdav?url=<encodeURIComponent(目标URL)> 传递地址。
-   * 不匹配子路径，仅匹配 /api/webdav 精确路径（查询参数不影响路径匹配）。
-   */
-  '/api/webdav': {
-    base: '',      // 动态 base：从 ?url= 查询参数提取
-    headers: {},   // 动态注入：从请求头清洗后透传
-    dynamic: true, // 标记为动态路由，需特殊处理
-  },
+  /** WebDAV 动态代理：从 ?url= 查询参数解析目标地址，纯白名单头转发。 */
+  '/api/webdav': { base: '', headers: {}, dynamic: true },
+  '/api-webdav': { base: '', headers: {}, dynamic: true },
 };
 
-/**
- * 匹配路径前缀（按长度降序排序，避免 `/api/eastmoney` 被 `/api` 误匹配）。
- */
+/** 匹配路径前缀（按长度降序，避免 `/api/eastmoney` 被 `/api` 误匹配）。 */
 const SORTED_PREFIXES = Object.keys(UPSTREAMS).sort((a, b) => b.length - a.length);
 
-/**
- * 请求头清洗配置：
- *  - BLOCKED_HEADERS：严格剔除的请求头（小写）
- *  - BLOCKED_PREFIXES：剔除的前缀（小写）
- *  - ALLOWED_HEADERS：显式保留的请求头（小写），优先级高于 BLOCKED_*
- */
-const BLOCKED_HEADERS = new Set([
-  'host', 'referer', 'origin', 'cookie',
-]);
-const BLOCKED_PREFIXES = ['x-vercel-', 'x-forwarded-'];
-const ALLOWED_HEADERS = new Set([
-  'authorization', 'content-type', 'depth', 'overwrite', 'if-match',
+/** WebDAV 严格白名单：仅透传以下必需头。 */
+const WEBDAV_ALLOWED_HEADERS = new Set([
+  'authorization', 'content-type', 'depth', 'overwrite',
+  'if-match', 'if-none-match',
 ]);
 
-/**
- * 判断请求头是否应被剔除。
- * @param {string} lowerKey - 小写的请求头名称
- * @returns {boolean}
- */
-function isHeaderBlocked(lowerKey) {
-  // 显式允许的头始终保留
-  if (ALLOWED_HEADERS.has(lowerKey)) return false;
-  // 命中剔除前缀
-  if (BLOCKED_PREFIXES.some((prefix) => lowerKey.startsWith(prefix))) return true;
-  // 命中剔除名单
-  return BLOCKED_HEADERS.has(lowerKey);
-}
+/** 静态代理需剔除的 Vercel 内部头前缀。 */
+const BLOCKED_PREFIXES = ['x-vercel-', 'x-forwarded-'];
 
 // ============================================================
 // 2. Vercel Edge Middleware 配置
@@ -96,10 +67,14 @@ function isHeaderBlocked(lowerKey) {
 
 export const config = {
   matcher: [
+    '/api/:path*',
+    '/api-webdav',
+    '/api-webdav/:path*',
+    '/api/webdav',
+    '/api/webdav/:path*',
     '/api-gtimg/:path*',
     '/api-qt/:path*',
     '/api/eastmoney/:path*',
-    '/api/webdav',
   ],
 };
 
@@ -110,6 +85,9 @@ export const config = {
 /**
  * 默认中间件处理函数。
  *
+ * 对 WebDAV（/api-webdav）执行纯白名单代理；对静态上游（gtimg/qt/eastmoney）
+ * 注入业务头并转发。所有跨源响应都追加统一 CORS 头。
+ *
  * @param {Request} request - 原始请求对象（Web API Request）
  * @returns {Promise<Response>} 转发后的响应对象
  */
@@ -118,9 +96,10 @@ export default async function middleware(request) {
   const pathname = url.pathname;
 
   // ----------------------------------------------------------
-  // 3a. 处理 OPTIONS 预检请求（必须在匹配上游之前响应）
+  // 3a. 【首行】处理 OPTIONS 预检请求 → 直接返回 200（解决 405）
   // ----------------------------------------------------------
-  if (request.method === 'OPTIONS' && pathname === '/api/webdav') {
+  // 预检请求必须由中间件立即响应，严禁转发给上游；无论是否有 ?url= 参数。
+  if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 200,
       headers: {
@@ -142,41 +121,33 @@ export default async function middleware(request) {
   }
 
   const upstream = UPSTREAMS[matchedPrefix];
-
-  // ----------------------------------------------------------
-  // 3c. 构建转发请求头（严格清洗）
-  // ----------------------------------------------------------
   const forwardHeaders = new Headers();
   let upstreamUrl;
 
   if (upstream.dynamic) {
-    // ============ 动态路由：/api/webdav ============
+    // ---------- WebDAV 动态代理：纯白名单转发 ----------
     const targetUrl = url.searchParams.get('url');
     if (!targetUrl) {
       return new Response('Missing url parameter', { status: 400 });
     }
     upstreamUrl = targetUrl;
 
-    // 严格清洗：仅保留允许的请求头，剔除所有可能干扰上游的浏览器/代理头
+    // 严格白名单：仅透传 WebDAV 必需头，绝不透传浏览器特征头。
     for (const [key, value] of request.headers.entries()) {
-      const lowerKey = key.toLowerCase();
-      if (!isHeaderBlocked(lowerKey)) {
+      if (WEBDAV_ALLOWED_HEADERS.has(key.toLowerCase())) {
         forwardHeaders.set(key, value);
       }
     }
-
-    // 设置统一 User-Agent（部分 WebDAV 服务器要求）
-    forwardHeaders.set('User-Agent', 'Mozilla/5.0 (compatible; WebDAVClient/1.0)');
+    // 统一干净的 User-Agent，不带浏览器指纹。
+    forwardHeaders.set('User-Agent', 'Stock-Calculator-WebDAV/1.0');
   } else {
-    // ============ 静态路由：/api-gtimg / /api-qt / /api/eastmoney ============
+    // ---------- 静态代理：注入上游所需头 + 剔除 Vercel 内部头 ----------
     const upstreamPath = pathname.slice(matchedPrefix.length) || '/';
     upstreamUrl = `${upstream.base}${upstreamPath}${url.search}`;
 
-    // 1. 注入上游要求的头（Referer, User-Agent 等）
     for (const [key, value] of Object.entries(upstream.headers)) {
       forwardHeaders.set(key, value);
     }
-    // 2. 透传原始请求头（仅剔除 host 和 Vercel 内部头）
     for (const [key, value] of request.headers.entries()) {
       const lowerKey = key.toLowerCase();
       if (lowerKey === 'host') continue;
@@ -186,39 +157,34 @@ export default async function middleware(request) {
   }
 
   // ----------------------------------------------------------
-  // 3d. 构造上游请求
+  // 3c. 构造上游请求
   // ----------------------------------------------------------
   const requestInit = {
     method: request.method,
     headers: forwardHeaders,
   };
 
-  // 非 GET/HEAD 请求透传 body
+  // 非 GET/HEAD 请求透传 body。流式 PUT 请求体必须声明 duplex: 'half'，
+  // 否则 Edge Runtime 会拒绝流式 body，导致上游/代理返回 405 或 100。
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     requestInit.body = request.body;
+    requestInit.duplex = 'half';
   }
 
   // ----------------------------------------------------------
-  // 3e. 转发请求并返回响应
+  // 3d. 转发请求并返回响应
   // ----------------------------------------------------------
   try {
     const upstreamResponse = await fetch(upstreamUrl, requestInit);
 
-    // 构建响应头：透传上游头 + CORS 头
+    // 透传上游头 + 统一追加 CORS 头。
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.set('Access-Control-Allow-Origin', '*');
     responseHeaders.set(
       'Access-Control-Allow-Methods',
       'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS',
     );
-    responseHeaders.set(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Depth, Destination, Overwrite',
-    );
-    responseHeaders.set(
-      'Access-Control-Expose-Headers',
-      'Content-Type, Content-Length, ETag',
-    );
+    responseHeaders.set('Access-Control-Allow-Headers', '*');
 
     return new Response(upstreamResponse.body, {
       status: upstreamResponse.status,

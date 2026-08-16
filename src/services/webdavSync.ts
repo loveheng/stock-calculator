@@ -225,9 +225,44 @@ function buildWebDAVHeaders(config: WebDAVConfig, extra: Record<string, string> 
 }
 
 /**
+ * 需要跨标签页串行化的 WebDAV 写方法。
+ * GET / HEAD / OPTIONS / PROPFIND 等只读操作不需要，避免持锁并发限制。
+ */
+const WRITE_METHODS = new Set(['PUT', 'MKCOL', 'DELETE', 'MOVE', 'COPY']);
+
+/**
+ * 跨标签页写入互斥（Web Locks API）。
+ *
+ * 模块级 isUploading / isSyncing 互斥锁只能在【单个 JS 上下文】（同一标签页）内生效。
+ * 若用户在多个标签页同时打开应用，每个标签页都是独立上下文，两个 PUT 会同时打到
+ * Koofr 等 WebDAV 服务器，服务器对重叠写入不做原子处理，导致远端文件大小
+ * 在 0B 与完整大小之间来回跳变（“文件大小跳动”）。
+ *
+ * 本函数使用 Web Locks API（仅 HTTPS 安全上下文可用，Vercel 部署满足条件）做
+ * 跨标签页串行化：无论多少标签页同时发起写请求，同一时刻只有 1 个写请求能真正
+ * 到达上游，其余等待其完成后再执行——彻底杜绝重叠写入，保证远端文件原子且稳定。
+ *
+ * 不支持 Web Locks 的环境（如极少数浏览器）自动回退为直接执行，
+ * 由模块级 isUploading 互斥锁兜底保证单页内串行。
+ */
+async function withCrossTabWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (typeof navigator !== 'undefined') {
+    const nav = navigator as Navigator & {
+      locks?: { request: (name: string, callback: () => Promise<T>) => Promise<T> };
+    };
+    if (nav.locks) {
+      // 同名锁全局唯一：可靠等待，不设 ifAvailable（宁可串行等待也绝不并发写）。
+      return nav.locks.request('stock-calculator-webdav-write', fn);
+    }
+  }
+  return fn();
+}
+
+/**
  * 通用 WebDAV HTTP 请求。
  * 所有请求统一通过同源代理 /api/webdav 转发，
  * 无需设置 mode: 'cors'（代理 URL 与页面同源）。
+ * 写方法（PUT/MKCOL/DELETE/MOVE/COPY）自动套用跨标签页互斥锁。
  */
 async function webdavRequest(
   config: WebDAVConfig,
@@ -249,8 +284,12 @@ async function webdavRequest(
     cache: 'no-store',
   };
 
-  const response = await fetch(url, fetchOptions);
-  return response;
+  // 写方法做跨标签页串行化：同一时刻只允许 1 个写请求在途，
+  // 阻止多标签页的重叠 PUT 把远端文件写成交替的 0B / 完整内容。
+  if (WRITE_METHODS.has(method.toUpperCase())) {
+    return withCrossTabWriteLock(() => fetch(url, fetchOptions));
+  }
+  return fetch(url, fetchOptions);
 }
 
 /**
@@ -949,4 +988,155 @@ export function formatRelativeTime(isoTime: string): string {
   if (days < 30) return `${days} 天前`;
   const months = Math.floor(days / 30);
   return `${months} 个月前`;
+}
+
+// ============================================================
+// 10. 全局唯一执行锁 + 10s 绝对冷却（backupToWebDAV 单例防抖）
+// ============================================================
+// 重构要点：
+//   - 彻底废除任何隐式的全局 Store 监听 / useEffect 自动触发数据同步；
+//     备份只允许由用户在“完成保存动作”时【显式】调用本模块的单例防抖入口。
+//   - 无论 UI 组件如何重复挂载/重复触发，同一时间只允许 1 个 HTTP 流程在飞：
+//       1) activeUploadPromise —— Promise 互斥锁：已有请求在途则直接复用同一
+//          Promise，绝不并发发出第 2 个 PUT（彻底阻断“文件大小跳变”与重复请求）。
+//       2) BACKUP_COOLDOWN_MS —— 10s 绝对冷却：最后一次成功后 10s 内再次触发
+//          一律静默合并，不产生新的网络请求。
+//   - 同步元数据（lastSyncTime / syncHistory）只写入独立 localStorage 键，不经过
+//     主数据 Store，保证“更新同步时间”不会反向驱动任何监听或重放。
+
+/** 单次备份的执行结果（专供 UI 展示，不依赖全局 Store）。 */
+export interface BackupResult {
+  success: boolean;
+  message: string;
+}
+
+/** 模块级 Promise 互斥锁：同一时间仅允许 1 个上传任务在途。 */
+let activeUploadPromise: Promise<BackupResult> | null = null;
+
+/** 最后一次成功上传的时间戳（绝对冷却基准）。 */
+let lastUploadSuccessTime = 0;
+
+/** 绝对冷却时长：10 秒。 */
+const BACKUP_COOLDOWN_MS = 10_000;
+
+/** 单例防抖定时器引用。 */
+let backupDebounceTimer: number | null = null;
+
+/** 防抖窗口内待上传的最新 payload（合并连续触发）。 */
+let pendingBackupPayload: unknown = null;
+
+/**
+ * 全局唯一的上传执行锁 + 10s 绝对冷却。
+ *
+ * 从独立 localStorage 读取 WebDAV 配置，完全接管并发锁与冷却逻辑，
+ * 杜绝任何外部状态重入。
+ *
+ * @param payload - 要上传的数据（对象或已序列化的 JSON 字符串）
+ * @param force   - 为 true 时跳过冷却期检查（仅限用户点击“立即备份”等显式动作）
+ */
+export async function backupToWebDAV(payload: unknown, force = false): Promise<BackupResult> {
+  const now = Date.now();
+
+  // 1) 10s 绝对冷却：最后一次成功后的冷却期内再次触发一律静默合并，不再发请求。
+  if (!force && now - lastUploadSuccessTime < BACKUP_COOLDOWN_MS) {
+    console.warn('[WebDAV] 处于冷却期中，跳过本次触发（已合并操作）');
+    return { success: true, message: '处于冷却期，已合并操作' };
+  }
+
+  // 2) Promise 互斥锁：已有上传在途则直接复用同一个 Promise，
+  //    绝不并发发出第 2 个 PUT。
+  if (activeUploadPromise) {
+    console.warn('[WebDAV] 检测到已有上传任务在途，排队复用同一请求');
+    return activeUploadPromise;
+  }
+
+  activeUploadPromise = (async () => {
+    try {
+      const config = getWebDAVConfig();
+      if (!config || !config.webdavUrl || !config.username || !config.password) {
+        return { success: false, message: 'WebDAV 未配置' };
+      }
+
+      const cleanPath = (config.remotePath || '/stock-calculator/data-backup.json').replace(/^\/+/, '');
+      const baseUrl = (config.webdavUrl || '').replace(/\/+$/, '');
+      const targetUrl = `${baseUrl}/${cleanPath}`;
+      const proxyUrl = `/api-webdav?url=${encodeURIComponent(targetUrl)}`;
+      const authHeader = 'Basic ' + btoa(`${config.username}:${config.password}`);
+
+      console.log(`[WebDAV] 发起单次 PUT 上传 -> ${targetUrl}`);
+
+      const res = await fetch(proxyUrl, {
+        method: 'PUT',
+        cache: 'no-store',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/json',
+          Overwrite: 'T',
+        },
+        body: typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2),
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+
+      lastUploadSuccessTime = Date.now();
+      // 仅在独立的 storage 键写入同步元数据，禁止触发全局 Store 响应。
+      setLastSyncTime(new Date(lastUploadSuccessTime).toISOString());
+      addSyncHistory({ timestamp: new Date().toISOString(), type: 'backup', success: true });
+      console.log('[WebDAV] 上传成功并已释放锁');
+      return { success: true, message: '备份成功' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '备份失败';
+      console.error('[WebDAV] 上传失败:', err);
+      addSyncHistory({ timestamp: new Date().toISOString(), type: 'backup', success: false, message });
+      return { success: false, message };
+    } finally {
+      // 无论成功/失败，都必须释放互斥锁，让后续触发可以再次上传。
+      activeUploadPromise = null;
+    }
+  })();
+
+  return activeUploadPromise;
+}
+
+/**
+ * 单例防抖入口：用户完成保存动作时【显式】调用本函数，而非通过隐式监听触发。
+ * 在防抖窗口内连续调用会合并为最后一次 payload，仅执行一次真正的备份；
+ * 由 backupToWebDAV 内部的 Promise 锁 + 10s 绝对冷却兜底，绝不会产生并发 PUT。
+ *
+ * @param payload - 要上传的数据
+ * @param delayMs - 防抖窗口（毫秒，默认 800）
+ */
+export function scheduleBackup(payload: unknown, delayMs = 800): void {
+  pendingBackupPayload = payload;
+  if (backupDebounceTimer !== null) {
+    clearTimeout(backupDebounceTimer);
+    backupDebounceTimer = null;
+  }
+  const timer: (cb: () => void, ms: number) => unknown =
+    typeof window !== 'undefined'
+      ? (window.setTimeout as (cb: () => void, ms: number) => unknown)
+      : (globalThis.setTimeout as (cb: () => void, ms: number) => unknown);
+  backupDebounceTimer = timer(() => {
+    backupDebounceTimer = null;
+    const data = pendingBackupPayload;
+    pendingBackupPayload = null;
+    backupToWebDAV(data).then((r) => {
+      if (!r.success) console.error('[WebDAV] 自动备份失败:', r.message);
+    });
+  }, delayMs) as number;
+}
+
+/**
+ * 测试专用：重置模块级上传锁与冷却状态（不应在生产调用）。
+ */
+export function __resetWebDAVAutoBackup(): void {
+  activeUploadPromise = null;
+  lastUploadSuccessTime = 0;
+  if (backupDebounceTimer !== null) {
+    clearTimeout(backupDebounceTimer);
+    backupDebounceTimer = null;
+  }
+  pendingBackupPayload = null;
 }

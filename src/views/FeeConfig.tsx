@@ -119,7 +119,7 @@ export default function FeeConfigPage() {
   };
 
   return (
-    <div className="page-container space-y-5">
+    <div className="page-container space-y-5 pb-[env(safe-area-inset-bottom)]">
       {/* 费率配置 */}
       <div className="card">
         <h3>费率配置</h3>
@@ -128,13 +128,13 @@ export default function FeeConfigPage() {
         <div className="flex gap-2 mb-4">
           <button
             onClick={() => applyTemplate('A股标准模板')}
-            className="btn btn-outline btn-sm flex-1"
+            className="btn btn-outline btn-sm flex-1 tap-target"
           >
             A股标准模板
           </button>
           <button
             onClick={() => applyTemplate('港股/美股免佣模板')}
-            className="btn btn-outline btn-sm flex-1"
+            className="btn btn-outline btn-sm flex-1 tap-target"
           >
             港股/美股免佣模板
           </button>
@@ -144,7 +144,7 @@ export default function FeeConfigPage() {
         <div className="flex gap-1 mb-4 bg-slate-800 rounded-lg p-1">
           <button
             onClick={() => setFeeTab('stock')}
-            className={`flex-1 py-1.5 text-sm rounded-md transition-colors ${
+            className={`tap-target flex-1 py-1.5 text-sm rounded-md transition-colors ${
               feeTab === 'stock' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -152,7 +152,7 @@ export default function FeeConfigPage() {
           </button>
           <button
             onClick={() => setFeeTab('etf')}
-            className={`flex-1 py-1.5 text-sm rounded-md transition-colors ${
+            className={`tap-target flex-1 py-1.5 text-sm rounded-md transition-colors ${
               feeTab === 'etf' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -166,8 +166,8 @@ export default function FeeConfigPage() {
             <label>佣金率</label>
             <div className="flex items-center gap-2">
               <input
-                type="number"
-                step="0.00001"
+                type="text"
+                inputMode="decimal"
                 min="0"
                 max="0.003"
                 value={localConfig.commissionRate}
@@ -202,8 +202,8 @@ export default function FeeConfigPage() {
             <div className="form-group">
               <label>自定义最低佣金（元）</label>
               <input
-                type="number"
-                step="0.1"
+                type="text"
+                inputMode="decimal"
                 min="0"
                 value={localConfig.minCommission}
                 onChange={(e) => handleChange('minCommission', Number(e.target.value))}
@@ -215,8 +215,8 @@ export default function FeeConfigPage() {
             <label>过户费率</label>
             <div className="flex items-center gap-2">
               <input
-                type="number"
-                step="0.00001"
+                type="text"
+                inputMode="decimal"
                 min="0"
                 value={localConfig.transferRate}
                 onChange={(e) => handleChange('transferRate', Number(e.target.value))}
@@ -229,8 +229,8 @@ export default function FeeConfigPage() {
             <label>印花税率</label>
             <div className="flex items-center gap-2">
               <input
-                type="number"
-                step="0.00001"
+                type="text"
+                inputMode="decimal"
                 min="0"
                 value={localConfig.stampRate}
                 onChange={(e) => handleChange('stampRate', Number(e.target.value))}
@@ -247,8 +247,8 @@ export default function FeeConfigPage() {
             <label>ETF 佣金率</label>
             <div className="flex items-center gap-2">
               <input
-                type="number"
-                step="0.00001"
+                type="text"
+                inputMode="decimal"
                 min="0"
                 max="0.003"
                 value={localConfig.etfCommissionRate ?? localConfig.commissionRate}
@@ -282,8 +282,8 @@ export default function FeeConfigPage() {
           <div className="form-group">
             <label>ETF 最低佣金（元）</label>
             <input
-              type="number"
-              step="0.1"
+              type="text"
+              inputMode="decimal"
               min="0"
               value={localConfig.etfMinCommission ?? localConfig.minCommission}
               onChange={(e) => handleChange('etfMinCommission', Number(e.target.value))}
@@ -294,8 +294,8 @@ export default function FeeConfigPage() {
             <label>ETF 过户费率</label>
             <div className="flex items-center gap-2">
               <input
-                type="number"
-                step="0.00001"
+                type="text"
+                inputMode="decimal"
                 min="0"
                 value={localConfig.etfTransferRate ?? localConfig.transferRate}
                 onChange={(e) => handleChange('etfTransferRate', Number(e.target.value))}
@@ -308,8 +308,8 @@ export default function FeeConfigPage() {
             <label>ETF 印花税率</label>
             <div className="flex items-center gap-2">
               <input
-                type="number"
-                step="0.00001"
+                type="text"
+                inputMode="decimal"
                 min="0"
                 value={localConfig.etfStampRate ?? localConfig.stampRate}
                 onChange={(e) => handleChange('etfStampRate', Number(e.target.value))}
@@ -325,7 +325,7 @@ export default function FeeConfigPage() {
           <button
             onClick={handleSave}
             disabled={!hasChanges}
-            className="btn btn-primary flex-1"
+            className="btn btn-primary flex-1 tap-target"
           >
             <Save className="w-4 h-4" />
             保存配置
@@ -333,7 +333,7 @@ export default function FeeConfigPage() {
           <button
             onClick={handleReset}
             disabled={!hasChanges}
-            className="btn btn-outline"
+            className="btn btn-outline tap-target"
           >
             <RefreshCw className="w-4 h-4" />
             重置
@@ -349,8 +349,8 @@ export default function FeeConfigPage() {
           <div className="form-group">
             <label>基准价格（元）</label>
             <input
-              type="number"
-              step="0.01"
+              type="text"
+              inputMode="decimal"
               value={benchPrice}
               onChange={(e) => setBenchPrice(e.target.value)}
             />
@@ -358,8 +358,8 @@ export default function FeeConfigPage() {
           <div className="form-group">
             <label>基准数量（股）</label>
             <input
-              type="number"
-              step="100"
+              type="text"
+              inputMode="numeric"
               value={benchAmount}
               onChange={(e) => setBenchAmount(e.target.value)}
             />
@@ -405,15 +405,15 @@ export default function FeeConfigPage() {
       <div className="card">
         <h3>数据管理</h3>
         <div className="grid grid-cols-2 gap-3">
-          <button onClick={handleImport} className="btn btn-outline">
+          <button onClick={handleImport} className="btn btn-outline tap-target">
             <Upload className="w-4 h-4" />
             JSON 导入
           </button>
-          <button onClick={handleExport} className="btn btn-outline">
+          <button onClick={handleExport} className="btn btn-outline tap-target">
             <Download className="w-4 h-4" />
             JSON 导出
           </button>
-          <button onClick={handleExportCSV} className="btn btn-outline col-span-2">
+          <button onClick={handleExportCSV} className="btn btn-outline col-span-2 tap-target">
             <FileSpreadsheet className="w-4 h-4" />
             导出 CSV 做T账本
           </button>

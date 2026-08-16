@@ -477,13 +477,13 @@ export default function Statistics() {
   };
 
   return (
-    <div className="page-container space-y-5 pb-8">
+    <div className="page-container space-y-5 pb-[calc(env(safe-area-inset-bottom)+16px)]">
       {/* 顶部 Tab 切换导航 */}
       <div className="flex rounded-2xl bg-slate-800/80 p-1">
         <button
           type="button"
           onClick={() => setTab('trades')}
-          className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition ${
+          className={`tap-target flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition ${
             tab === 'trades'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-slate-400 hover:text-slate-200'
@@ -495,7 +495,7 @@ export default function Statistics() {
         <button
           type="button"
           onClick={() => setTab('positions')}
-          className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition ${
+          className={`tap-target flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition ${
             tab === 'positions'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-slate-400 hover:text-slate-200'
@@ -512,7 +512,7 @@ export default function Statistics() {
       {tab === 'trades' ? (
         <div className="space-y-4">
           {/* ===== 模块 1：做 T 交易维度统计 (T-Trading Overall) ===== */}
-          <div className="rounded-[28px] border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-5 shadow-sm">
+          <div className="rounded-[28px] border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-4 md:p-5 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-600/20">
                 <BarChart3 className="h-4 w-4 text-blue-400" />
@@ -523,7 +523,7 @@ export default function Statistics() {
               {/* 做T净利润 */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">做T净利润</div>
-                <div className={`mt-1.5 text-lg font-bold ${tStats.totalNetProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                <div className={`mt-1.5 text-base sm:text-lg font-bold ${tStats.totalNetProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
                   {tStats.totalClosedCount > 0
                     ? `${tStats.totalNetProfit >= 0 ? '+' : ''}¥${tStats.totalNetProfit.toFixed(2)}`
                     : '--'}
@@ -532,7 +532,7 @@ export default function Statistics() {
               {/* 累计做T笔数（成功/失败） */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">累计做T笔数</div>
-                <div className="mt-1.5 text-lg font-bold text-slate-100">
+                <div className="mt-1.5 text-base sm:text-lg font-bold text-slate-100">
                   {tStats.totalClosedCount > 0
                     ? `${tStats.totalClosedCount} 笔`
                     : '--'}
@@ -546,7 +546,7 @@ export default function Statistics() {
               {/* 做T胜率 */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">做T胜率</div>
-                <div className={`mt-1.5 text-lg font-bold ${tStats.winRate >= 50 ? 'text-red-400' : 'text-amber-400'}`}>
+                <div className={`mt-1.5 text-base sm:text-lg font-bold ${tStats.winRate >= 50 ? 'text-red-400' : 'text-amber-400'}`}>
                   {tStats.totalClosedCount > 0
                     ? `${tStats.winRate.toFixed(1)}%`
                     : '0.0%'}
@@ -555,7 +555,7 @@ export default function Statistics() {
               {/* 摩擦成本总额 */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">摩擦成本总额</div>
-                <div className="mt-1.5 text-lg font-bold text-slate-100">
+                <div className="mt-1.5 text-base sm:text-lg font-bold text-slate-100">
                   ¥{tStats.totalFees.toFixed(2)}
                 </div>
               </div>
@@ -574,7 +574,7 @@ export default function Statistics() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="输入股票代码或名称搜索（如：茅台 / 600519）"
-                className="w-full rounded-3xl border border-slate-800 bg-slate-950/90 py-3 pl-11 pr-11 text-sm text-slate-100 outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30"
+                className="w-full rounded-3xl border border-slate-800 bg-slate-950/90 py-3 pl-11 pr-11 text-sm text-slate-100 outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 min-h-[44px] tap-target"
               />
               <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
                 {/* 加载中指示器 */}
@@ -586,7 +586,7 @@ export default function Statistics() {
                   <button
                     type="button"
                     onClick={handleClearSearch}
-                    className="text-slate-500 hover:text-slate-200"
+                    className="tap-target text-slate-500 hover:text-slate-200"
                     aria-label="清除搜索"
                   >
                     <X className="h-4 w-4" />
@@ -611,7 +611,7 @@ export default function Statistics() {
                   key={item.value}
                   type="button"
                   onClick={() => setDirectionTab(item.value)}
-                  className={`flex-shrink-0 whitespace-nowrap rounded-full border px-4 py-2 text-sm transition ${
+                  className={`tap-target flex-shrink-0 whitespace-nowrap rounded-full border px-4 py-2 text-sm transition ${
                     directionTab === item.value
                       ? 'border-blue-500 bg-blue-600 text-white'
                       : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'
@@ -629,7 +629,7 @@ export default function Statistics() {
                   key={item.value}
                   type="button"
                   onClick={() => setTimeFilter(item.value)}
-                  className={`flex-shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-sm transition ${
+                  className={`tap-target flex-shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-sm transition ${
                     timeFilter === item.value
                       ? 'bg-slate-100 text-slate-950'
                       : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
@@ -721,7 +721,7 @@ export default function Statistics() {
                         <button
                           type="button"
                           onClick={() => toggleExpand(card.id)}
-                          className="flex w-full items-center justify-between gap-3 text-sm font-medium text-slate-300"
+                          className="tap-target flex w-full items-center justify-between gap-3 text-sm font-medium text-slate-300"
                         >
                           <span className="flex items-center gap-2">
                             <span>查看做T流水细节</span>
@@ -809,7 +809,7 @@ export default function Statistics() {
                     <button
                       type="button"
                       onClick={() => setVisibleCount((prev) => prev + 10)}
-                      className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 px-6 py-3 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 px-6 py-3 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white tap-target"
                     >
                       查看更多历史卡片
                       <ChevronDown className="h-4 w-4" />
@@ -826,7 +826,7 @@ export default function Statistics() {
         /* =============================== */
         <div className="space-y-4">
           {/* ===== 模块 2：仓位维度统计 (Position Overall) ===== */}
-          <div className="rounded-[28px] border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-5 shadow-sm">
+          <div className="rounded-[28px] border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-4 md:p-5 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-600/20">
                 <Wallet className="h-4 w-4 text-slate-400" />
@@ -837,7 +837,7 @@ export default function Statistics() {
               {/* 累计仓位（开启/完结数量） */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">累计仓位</div>
-                <div className="mt-1.5 text-lg font-bold text-slate-100">
+                <div className="mt-1.5 text-base sm:text-lg font-bold text-slate-100">
                   {positionStats.openCount + positionStats.closedCount > 0
                     ? `总 ${positionStats.openCount + positionStats.closedCount} 个`
                     : '--'}
@@ -857,14 +857,14 @@ export default function Statistics() {
               {/* 仓位累计利润 */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">仓位累计利润</div>
-                <div className={`mt-1.5 text-lg font-bold ${positionStats.totalProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                <div className={`mt-1.5 text-base sm:text-lg font-bold ${positionStats.totalProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
                   {positionStats.totalProfit >= 0 ? '+' : ''}¥{positionStats.totalProfit.toFixed(2)}
                 </div>
               </div>
               {/* 开启仓位实时资金占用 */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">开启资金占用</div>
-                <div className="mt-1.5 text-lg font-bold text-blue-400">
+                <div className="mt-1.5 text-base sm:text-lg font-bold text-blue-400">
                   ¥{positionStats.activeCapital.toFixed(2)}
                 </div>
               </div>
@@ -878,7 +878,7 @@ export default function Statistics() {
                 key={item.value}
                 type="button"
                 onClick={() => setPositionFilter(item.value)}
-                className={`flex-shrink-0 whitespace-nowrap rounded-full border px-4 py-2 text-sm transition ${
+                className={`tap-target flex-shrink-0 whitespace-nowrap rounded-full border px-4 py-2 text-sm transition ${
                   positionFilter === item.value
                     ? 'border-blue-500 bg-blue-600 text-white'
                     : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'
@@ -1005,7 +1005,7 @@ export default function Statistics() {
                             else next.add(position.id);
                             setExpandedIds(next);
                           }}
-                          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200"
+                          className="tap-target flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200"
                         >
                           <span>{expandedIds.has(position.id) ? '收起明细' : '展开明细'}</span>
                           {expandedIds.has(position.id) ? (
@@ -1082,7 +1082,7 @@ export default function Statistics() {
                     <button
                       type="button"
                       onClick={() => setVisibleCount((prev) => prev + 10)}
-                      className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 px-6 py-3 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 px-6 py-3 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white tap-target"
                     >
                       查看更多历史卡片
                       <ChevronDown className="h-4 w-4" />

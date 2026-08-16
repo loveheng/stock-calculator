@@ -404,7 +404,7 @@ function TStateMachinePanel({
     <div className="pt-1 border-t border-slate-600/50 mt-1">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="text-xs text-purple-400 hover:text-purple-300 underline"
+        className="tap-target text-xs text-purple-400 hover:text-purple-300 underline"
       >
         {expanded
           ? '🔼 收起状态机详情'
@@ -475,24 +475,25 @@ function CurrentProjectCard({
   basePosition,
   feeConfig,
   quote,
+  onAppend,
+  onQuickHedge,
 }: {
   result: StockStreamResult;
   basePosition: Position | undefined;
   feeConfig: FeeConfig | undefined;
   quote: StockQuoteSummary | null;
+  onAppend: () => void;
+  onQuickHedge: () => void;
 }) {
-  const [showAppend, setShowAppend] = useState(false);
   const [showEntries, setShowEntries] = useState(false);
   const removeStreamRecord = useAppStore((s) => s.removeStreamRecord);
   /** entries 按时间倒序（最新在最上方），仅最新一条可撤销删除 */
   const sortedEntries = [...result.entries].sort(
-    //(a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     (a, b) => b.id.localeCompare(a.id)
   );
   const transferToPosition = useAppStore((s) => s.transferToPosition);
   const settleShortRound = useAppStore((s) => s.settleShortRound);
   const addToast = (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
-  const addStreamRecordFn = useAppStore((s) => s.addStreamRecord);
 
   const baseHolding = basePosition?.currentAmount ?? 0;
 
@@ -537,49 +538,6 @@ function CurrentProjectCard({
     }
   };
 
-  // ---- [⚡ 快捷对冲]：自动带入剩余股数与最新价，打开追加弹窗（方向=卖出） ----
-  const handleQuickHedge = () => {
-    const remaining = Math.max(0, result.netPendingAmount);
-    if (remaining <= 0) return;
-    setApDir('sell');
-    setApAmount(String(remaining));
-    if (quote?.currentPrice && quote.currentPrice > 0) {
-      setApPrice(String(quote.currentPrice));
-    }
-    setShowAppend(true);
-  };
-
-  // ---- [+ 追加记录] 快速录入（同标的便捷追加，走同一撮合引擎） ----
-  const [apDir, setApDir] = useState<'buy' | 'sell'>('buy');
-  const [apPrice, setApPrice] = useState('');
-  const [apAmount, setApAmount] = useState('');
-  const [apTime, setApTime] = useState(() => {
-    const now = new Date();
-    now.setSeconds(0, 0);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  });
-  const [apNote, setApNote] = useState('');
-  const [apError, setApError] = useState('');
-
-  const apValidation = (() => {
-    const p = parseFloat(apPrice);
-    const a = parseFloat(apAmount);
-    if (apDir === 'sell') {
-      // 两级阶梯式校验（做T池待处理 + 中长期底仓）
-      return validateSellWithStreamResult(result, basePosition, a || 0);
-    }
-    return validateStreamTrade(result, baseHolding, apDir, p || 0, a || 0);
-  })();
-
-  const fillAppendMaxSell = () => {
-    // 倒T模式下 netPendingAmount 为负值，需 clamp 到 0 再参与计算
-    const pending = Math.max(0, result.netPendingAmount);
-    const max = Math.max(0, pending + baseHolding);
-    if (max > 0) setApAmount(String(max));
-    setApDir('sell');
-  };
-
   // 根据首笔流水时间生成纯时间戳流水号（不为空时使用 closedAt，否则使用 openedAt）
   const roundCode = (() => {
     const ts = result.openedAt ?? result.entries[0]?.timestamp ?? new Date().toISOString();
@@ -591,44 +549,6 @@ function CurrentProjectCard({
     const m = String(d.getMinutes()).padStart(2, '0');
     return `#${y}${M}${D}-${h}${m}`;
   })();
-
-  const handleAppend = async () => {
-    setApError('');
-    const p = parseFloat(apPrice);
-    const a = parseFloat(apAmount);
-    if (!apValidation.valid) {
-      setApError(apValidation.error ?? '输入无效');
-      return;
-    }
-    const txnFee = calcTradeFees(p, a, apDir, useAppStore.getState().feeConfig, matchSecurityKind('', result.fullCode.replace(/^sh|sz|bj/, ''))).total;
-    const rec: TStreamRecord = {
-      id: generateId(),
-      timestamp: apTime,
-      fullCode: result.fullCode,
-      stockName: result.stockName,
-      direction: apDir,
-      price: p,
-      amount: a,
-      fee: roundTo(txnFee, 2),
-      note: apNote.trim() || undefined,
-    };
-    const res = await addStreamRecordFn(rec);
-    // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量）-> 阻止提交并弹出 Toast
-    if (res?.rejected) {
-      addToast(`🛑 ${res.rejectedReason ?? '校验未通过'}`);
-      setApError(res.rejectedReason ?? '校验未通过');
-      return;
-    }
-    if (res.cleared) {
-      addToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${(res.netProfit ?? 0).toFixed(2)}`);
-    } else {
-      addToast(`已追加 ${apDir === 'buy' ? '买入' : '卖出'} ${a} 股流水`);
-    }
-    setApPrice('');
-    setApAmount('');
-    setApNote('');
-    setShowAppend(false);
-  };
 
   return (
     <div className="card space-y-3 !mb-0">
@@ -661,31 +581,31 @@ function CurrentProjectCard({
         ) : null}
       </div>
 
-      {/* 当前项目指标 */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
-        <div className="bg-slate-900 rounded-lg p-2.5">
-          <div className="text-xs text-slate-500">加权均价 P_avg</div>
+      {/* 当前项目指标（移动端 2×2 紧凑布局） */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div className="bg-slate-900 rounded-lg p-2 min-w-0">
+          <div className="text-slate-500 whitespace-nowrap">加权均价 P_avg</div>
           <div className="font-mono font-semibold text-blue-400 tabular-nums">
             {result.avgPrice > 0 ? `¥${result.avgPrice.toFixed(3)}` : '--'}
           </div>
         </div>
-        <div className="bg-slate-900 rounded-lg p-2.5">
-          <div className="text-xs text-slate-500">已卖对冲数量</div>
-          <div className="font-mono font-semibold text-slate-200 tabular-nums">{result.realizedSellAmount} 股</div>
+        <div className="bg-slate-900 rounded-lg p-2 min-w-0">
+          <div className="text-slate-500 whitespace-nowrap">已卖对冲数量</div>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums whitespace-nowrap">{result.realizedSellAmount} 股</div>
         </div>
-        <div className="bg-slate-900 rounded-lg p-2.5">
-          <div className="text-xs text-slate-500">剩余待处理持仓</div>
-          <div className="font-mono font-semibold text-slate-200 tabular-nums">
+        <div className="bg-slate-900 rounded-lg p-2 min-w-0">
+          <div className="text-slate-500 whitespace-nowrap">剩余待处理持仓</div>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums whitespace-nowrap">
             {Math.max(0, result.netPendingAmount)} 股
           </div>
         </div>
-        <div className="bg-slate-900 rounded-lg p-2.5">
-          <div className="text-xs text-slate-500">已实现净收益</div>
-          <div className={`font-mono font-semibold tabular-nums ${pnlColor(result.realizedPnL)}`}>
+        <div className="bg-slate-900 rounded-lg p-2 min-w-0">
+          <div className="text-slate-500 whitespace-nowrap">已实现净收益</div>
+          <div className={`font-mono font-semibold tabular-nums whitespace-nowrap ${pnlColor(result.realizedPnL)}`}>
             {formatCurrency(result.realizedPnL)}
           </div>
           {floatPnl && (
-            <div className="mt-0.5 font-mono text-[10px] tabular-nums">
+            <div className="mt-0.5 font-mono text-[10px] tabular-nums whitespace-nowrap">
               <span className="text-slate-500">浮动 </span>
               <span className={pnlColor(floatPnl.amount)}>
                 {floatPnl.amount >= 0 ? '+' : ''}{formatCurrency(floatPnl.amount)}
@@ -738,7 +658,7 @@ function CurrentProjectCard({
         <div className="pt-1">
           <button
             onClick={() => setShowEntries((v) => !v)}
-            className="text-xs text-blue-400 hover:text-blue-300 underline"
+            className="tap-target text-xs text-blue-400 hover:text-blue-300 underline"
           >
             {showEntries
               ? '🔼 收起明细'
@@ -778,7 +698,7 @@ function CurrentProjectCard({
                       {idx === 0 ? (
                         <button
                           onClick={() => removeStreamRecord(entry.id)}
-                          className="text-slate-400 hover:text-red-400 transition-colors"
+                          className="tap-target text-slate-400 hover:text-red-400 transition-colors rounded-lg"
                           aria-label="撤销最新一笔流水"
                           title="撤销最新一笔流水"
                         >
@@ -786,7 +706,7 @@ function CurrentProjectCard({
                         </button>
                       ) : (
                         <span
-                          className="text-slate-600 cursor-not-allowed"
+                          className="tap-target text-slate-600 cursor-not-allowed"
                           title="为保证对冲逻辑正确，仅支持按顺序撤销最新的一条操作"
                         >
                           🔒
@@ -842,14 +762,14 @@ function CurrentProjectCard({
       <div className="pt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
         <button
           type="button"
-          onClick={() => setShowAppend(true)}
+          onClick={onAppend}
           className="col-span-2 md:col-span-2 btn btn-primary !py-3"
         >
           + 追加记录
         </button>
         <button
           type="button"
-          onClick={handleQuickHedge}
+          onClick={onQuickHedge}
           className={`col-span-1 md:col-span-1 btn !py-3 ${
             remainingQty > 0
               ? 'bg-amber-500 hover:bg-amber-400 text-slate-900'
@@ -870,139 +790,7 @@ function CurrentProjectCard({
         </button>
       </div>
 
-      {showAppend && (
-        <div className="fixed inset-0 z-[90] bg-black/60 p-4 flex items-center justify-center">
-          <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
-              <div>
-                <p className="text-sm font-semibold text-slate-100">追加流水记录</p>
-                <p className="text-xs text-slate-500">可录入买入/卖出流水，系统实时撮合当前做T Round。</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowAppend(false)}
-                className="rounded-lg p-2 text-slate-400 hover:text-white hover:bg-slate-800"
-              >
-                关闭
-              </button>
-            </div>
-            <div className="p-4 space-y-4">
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setApDir('buy')}
-                  className={`text-sm px-3 py-2 rounded-lg font-medium transition-colors ${
-                    apDir === 'buy'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                  }`}
-                >
-                  买入
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setApDir('sell')}
-                  className={`text-sm px-3 py-2 rounded-lg font-medium transition-colors ${
-                    apDir === 'sell'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                  }`}
-                >
-                  卖出
-                </button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="form-group">
-                  <label>价格（元）</label>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min="0"
-                    step="0.001"
-                    value={apPrice}
-                    onChange={(e) => setApPrice(e.target.value)}
-                    placeholder="0.000"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>数量（股）</label>
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min="1"
-                    step="100"
-                    value={apAmount}
-                    onChange={(e) => setApAmount(e.target.value)}
-                    placeholder="100"
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="form-group">
-                  <label>时间</label>
-                  <input
-                    type="datetime-local"
-                    value={apTime}
-                    onChange={(e) => setApTime(e.target.value)}
-                    step="60"
-                    className="[color-scheme:dark]"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>备注</label>
-                  <input
-                    type="text"
-                    value={apNote}
-                    onChange={(e) => setApNote(e.target.value)}
-                    placeholder="可选"
-                  />
-                </div>
-              </div>
-              {!apValidation.valid && (
-                <div className="flex items-center justify-between gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-red-300">
-                  <span>🛑 {apValidation.error}</span>
-                  {(apValidation.maxSellable ?? 0) > 0 && (
-                    <button
-                      type="button"
-                      onClick={fillAppendMaxSell}
-                      className="text-xs px-2 py-1 rounded-lg bg-red-600 text-white hover:bg-red-700"
-                    >
-                      全部卖出
-                    </button>
-                  )}
-                </div>
-              )}
-              {apError && (
-                <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-                  {apError}
-                </div>
-              )}
-              {apValidation.warning && (
-                <div className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-                  ⚠️ {apValidation.warning}
-                </div>
-              )}
-              <div className="flex flex-col sm:flex-row gap-3">
-                <button
-                  type="button"
-                  onClick={handleAppend}
-                  className="btn btn-primary flex-1"
-                >
-                  追加提交
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowAppend(false)}
-                  className="btn btn-outline flex-1"
-                >
-                  取消
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+      </div>
   );
 }
 
@@ -1151,7 +939,7 @@ function ArchiveRoundCard({
       <div>
         <button
           onClick={toggleTxns}
-          className="text-[11px] text-blue-400 hover:text-blue-300 underline"
+          className="tap-target text-[11px] text-blue-400 hover:text-blue-300 underline"
         >
           {showTxns
             ? '▾ 收起成交明细'
@@ -1222,7 +1010,7 @@ function ArchiveRoundCard({
       </div>
       <button
         onClick={() => setShowDeleteConfirm(true)}
-        className="text-[11px] text-slate-500 hover:text-red-400 underline"
+        className="tap-target text-[11px] text-slate-500 hover:text-red-400 underline"
       >
         删除战报
       </button>
@@ -1258,6 +1046,50 @@ function ArchiveRoundCard({
  * @returns {JSX.Element} 做T账本与计算器页面视图
  * @note 页面挂载即订阅 tRounds（OPENED 流水池 + 归档）/positions 实时响应 Store 变化（数据由 useLoadCoreData 按需加载）
  */
+/** 生成本地时间输入框值：YYYY-MM-DD HH:mm（秒清零），与主表单 timestamp 保持一致 */
+function formatLocalNowInput(date = new Date()) {
+  const d = new Date(date);
+  d.setSeconds(0, 0);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 底部面板错误文案：优先展示提交错误，其次展示实时校验错误 */
+function apDialogError(
+  apError: string,
+  validation: { valid: boolean; error?: string } | null | undefined
+): string {
+  if (apError) return apError;
+  if (validation && !validation.valid) return validation.error ?? '';
+  return '';
+}
+
+/**
+ * 移动端折叠卡片：仅在手机屏幕（<768px）下默认折叠标题，点击展开内容。
+ * 桌面端始终展开。
+ */
+function MobileCollapse({ title, defaultCollapsed, children }: { title: string; defaultCollapsed?: boolean; children: React.ReactNode }) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed ?? false);
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+  const effectiveCollapsed = isMobile ? collapsed : false;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setCollapsed(!collapsed)}
+        className="tap-target md:hidden flex items-center justify-between w-full text-left"
+      >
+        <h3 className="text-base font-semibold text-slate-200">{title}</h3>
+        <span className="text-slate-400 text-lg transition-transform duration-200" style={{ transform: effectiveCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }}>
+          ▾
+        </span>
+      </button>
+      <h3 className="hidden md:block text-base font-semibold text-slate-200">{title}</h3>
+      {!effectiveCollapsed && children}
+    </>
+  );
+}
+
 export default function TCalculator() {
   const feeConfig = useAppStore((s) => s.feeConfig);
   const positions = useAppStore((s) => s.positions);
@@ -1331,7 +1163,7 @@ export default function TCalculator() {
     };
   }, [showToast]);
 
-  // 持仓清零自动结清 Toast：由各录入入口（主表单 handleSubmit / 追加 handleAppend）
+  // 持仓清零自动结清 Toast：由各录入入口（主表单 handleSubmit / 底部面板 submitAp）
   // 基于 addStreamRecord 返回的 cleared 标志触发；v8 下 CLEARED 轮次会立即归档为
   // COMPLETED Round 并从撮合结果中消失，因此不再基于 results 轮询检测。
 
@@ -1445,8 +1277,165 @@ export default function TCalculator() {
   const totalPending = results.reduce((s, r) => s + Math.max(0, r.netPendingAmount), 0);
   const totalRealizedPnl = results.reduce((s, r) => s + r.realizedPnL, 0);
 
+  // ============================================================
+  // 追加流水 / 快捷对冲：底部固定动作条 + 底部滑出面板（Bottom Sheet）
+  // 与主表单共用 addStreamRecord 提交管道（记录创建 + 校验 + 撮合归档），
+  // 卡片内按钮与底部动作条共享同一套打开/提交逻辑，避免双写路径。
+  // ============================================================
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetFullCode, setSheetFullCode] = useState<string | null>(null);
+  const [apDir, setApDir] = useState<'buy' | 'sell'>('buy');
+  const [apPrice, setApPrice] = useState('');
+  const [apAmount, setApAmount] = useState('');
+  const [apTime, setApTime] = useState(() => formatLocalNowInput());
+  const [apNote, setApNote] = useState('');
+  const [apError, setApError] = useState('');
+
+  // 面板目标标的的派生数据（全在页面级派生，保证移动端/桌面端行为一致）
+  const apResult = useMemo(
+    () => (sheetFullCode ? activeResults.find((r) => r.fullCode === sheetFullCode) ?? null : null),
+    [activeResults, sheetFullCode]
+  );
+  const apQuote = sheetFullCode ? quotes[sheetFullCode] ?? null : null;
+  const apPosition = useMemo(
+    () => (sheetFullCode ? positions.find((p) => p.fullCode === sheetFullCode && !p.isClosed) : undefined),
+    [positions, sheetFullCode]
+  );
+  // 从该 Round 首笔流水还原 StockSearchItem 快照（用于费率匹配与 selectedStock 落库）
+  const apStock = useMemo(() => {
+    const ent = apResult?.entries[0] as unknown as TStreamRecord | undefined;
+    return (ent?.selectedStock as StockSearchItem | undefined) ?? null;
+  }, [apResult]);
+  const apBaseHolding = apPosition?.currentAmount ?? 0;
+  const apPendingQty = Math.max(0, apResult?.netPendingAmount ?? 0);
+
+  const apValidation = useMemo(() => {
+    const p = parseFloat(apPrice);
+    const a = parseFloat(apAmount);
+    // 倒T（先卖后买）：两级阶梯式校验；正T买入：数量校验
+    if (apDir === 'sell') return validateSellWithStreamResult(apResult, apPosition, a || 0);
+    return validateStreamTrade(apResult, apBaseHolding, 'buy', p || 0, a || 0);
+  }, [apResult, apPosition, apDir, apPrice, apAmount, apBaseHolding]);
+
+  const apFee = useMemo(() => {
+    const p = parseFloat(apPrice);
+    const a = parseFloat(apAmount);
+    if (!p || p <= 0 || !a || a <= 0) return null;
+    return calcTradeFees(
+      p,
+      a,
+      apDir,
+      feeConfig,
+      matchSecurityKind(apStock?.SecurityType ?? '', apStock?.Code ?? '')
+    );
+  }, [apPrice, apAmount, apDir, feeConfig, apStock]);
+
+  // 快捷数量胶囊：从「剩余待平仓」推导，全部 / 一半 / 整手
+  const qtyCapsules = useMemo(() => {
+    const all = apPendingQty;
+    return [
+      { label: '全部待平仓', qty: Math.max(0, all) },
+      { label: '1/2', qty: Math.max(0, Math.round(all / 2)) },
+      { label: '100股', qty: 100 },
+    ].filter((c) => c.qty > 0);
+  }, [apPendingQty]);
+
+  const openSheet = (fullCode: string, dir: 'buy' | 'sell', pricePrefill = '', amountPrefill = '') => {
+    setSheetFullCode(fullCode);
+    setApDir(dir);
+    setApPrice(pricePrefill);
+    setApAmount(amountPrefill);
+    setApTime(formatLocalNowInput());
+    setApNote('');
+    setApError('');
+    setSheetOpen(true);
+  };
+
+  /** 追加记录：默认买入方向，预填最新价 */
+  const openAppendFor = (fullCode: string) => {
+    const q = quotes[fullCode];
+    openSheet(
+      fullCode,
+      'buy',
+      q?.currentPrice ? String(roundTo(q.currentPrice, 3)) : '',
+      ''
+    );
+  };
+
+  /** 快捷对冲：正T（待平仓>0）→ 卖出、倒T → 买入，预填 |netPendingAmount| 与最新价 */
+  const openQuickHedgeFor = (fullCode: string) => {
+    const res = activeResults.find((r) => r.fullCode === fullCode);
+    const q = quotes[fullCode];
+    const qty = Math.max(0, res?.netPendingAmount ?? 0);
+    openSheet(
+      fullCode,
+      qty > 0 ? 'sell' : 'buy',
+      q?.currentPrice ? String(roundTo(q.currentPrice, 3)) : '',
+      qty > 0 ? String(qty) : ''
+    );
+  };
+
+  /** 价格 ±0.01 步进（无有效输入时以最新价为基准） */
+  const stepApPrice = (delta: number) => {
+    const cur = parseFloat(apPrice);
+    const base = Number.isNaN(cur) ? (apQuote?.currentPrice ?? 0) : cur;
+    setApPrice(roundTo(Math.max(0, base + delta), 3).toFixed(3));
+  };
+
+  const submitAp = async () => {
+    setApError('');
+    if (!sheetFullCode || !apResult) return;
+    const p = parseFloat(apPrice);
+    const a = parseFloat(apAmount);
+    if (!p || p <= 0) { setApError('请输入有效价格'); return; }
+    if (!a || a <= 0) { setApError('请输入有效数量'); return; }
+    if (apValidation && !apValidation.valid) {
+      const msg = apValidation.error ?? '输入无效';
+      setApError(msg);
+      showToast(`🛑 ${msg}`, 4000);
+      return;
+    }
+    const secType = apStock?.SecurityType ?? '';
+    const code = apStock?.Code ?? sheetFullCode.replace(/^(sh|sz)/i, '');
+    const txnFee = calcTradeFees(p, a, apDir, feeConfig, matchSecurityKind(secType, code)).total;
+    const record: TStreamRecord = {
+      id: generateId(),
+      timestamp: apTime,
+      fullCode: sheetFullCode,
+      stockName: apStock?.Name || apStock?.ShortName || apResult.stockName || sheetFullCode,
+      direction: apDir,
+      price: p,
+      amount: a,
+      fee: roundTo(txnFee, 2),
+      note: apNote.trim() || undefined,
+      quoteId: apStock?.QuoteID ?? '',
+      selectedStock: apStock ?? undefined,
+    };
+    const result = await addStreamRecord(record);
+    // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量、买入超过底仓）-> 阻止提交
+    if (result?.rejected) {
+      const msg = result.rejectedReason ?? '校验未通过';
+      setApError(msg);
+      showToast(`🛑 ${msg}`, 4000);
+      return;
+    }
+    // 自动结清：本轮做T全部配对完成，Round 已归档
+    if (result.cleared) {
+      showToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
+    }
+    setSheetOpen(false);
+    setSheetFullCode(null);
+    setApDir('buy');
+    setApPrice('');
+    setApAmount('');
+    setApNote('');
+    setApError('');
+  };
+
+  const firstActive = activeResults[0] ?? null;
+
   return (
-    <div className="page-container space-y-5">
+    <div className="page-container space-y-5 pb-[calc(env(safe-area-inset-bottom)+96px)] md:pb-12">
       {/* Header 标题 */}
       <div className="flex items-center justify-between gap-2 pt-1">
         <div>
@@ -1511,10 +1500,9 @@ export default function TCalculator() {
         </div>
       </div>
 
-      {/* 添加流水表单 */}
+      {/* 添加流水表单（移动端默认折叠，点击展开） */}
       <div className="card">
-        <h3>添加交易流水</h3>
-
+        <MobileCollapse title="添加交易流水" defaultCollapsed={true}>
         {/* 方向切换（仿涨跌幅模式切换样式） */}
         <div className="grid grid-cols-2 gap-2 mb-4">
           <button
@@ -1570,10 +1558,9 @@ export default function TCalculator() {
           <div className="form-group">
             <label>价格（元）</label>
             <input
-              type="number"
+              type="text"
               inputMode="decimal"
               min="0"
-              step="0.001"
               value={price}
               onChange={(e) => setPrice(e.target.value)}
               placeholder="0.000"
@@ -1582,10 +1569,9 @@ export default function TCalculator() {
           <div className="form-group">
             <label>数量（股）</label>
             <input
-              type="number"
+              type="text"
               inputMode="numeric"
               min="1"
-              step="100"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="100"
@@ -1628,7 +1614,7 @@ export default function TCalculator() {
             {(validation.maxSellable ?? 0) > 0 && (
               <button
                 onClick={fillMaxSell}
-                className="text-xs px-2.5 py-1.5 rounded-lg bg-red-600 text-white font-medium hover:bg-red-700 shrink-0"
+                className="tap-target text-xs px-2.5 py-1.5 rounded-lg bg-red-600 text-white font-medium hover:bg-red-700 shrink-0"
               >
                 全部卖出
               </button>
@@ -1651,16 +1637,18 @@ export default function TCalculator() {
 
         <button
           onClick={handleSubmit}
-          className="btn btn-primary btn-block mt-2"
+          className="btn btn-primary btn-block mt-2 tap-target"
         >
           提交流水
         </button>
+        </MobileCollapse>
       </div>
 
-      {/* 当前项目 */}
+      {/* 当前项目（移动端默认折叠） */}
       <div className="space-y-3">
+        <MobileCollapse title="当前做T项目" defaultCollapsed={true}>
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200">当前做T项目</h3>
+          <h3 className="text-base font-semibold text-slate-200 hidden md:block">当前做T项目</h3>
           {activeResults.length > 0 && (
             <button
               onClick={() => {
@@ -1686,10 +1674,13 @@ export default function TCalculator() {
                 basePosition={positions.find((p) => p.fullCode === r.fullCode && !p.isClosed)}
                 feeConfig={feeConfig}
                 quote={quotes[r.fullCode] ?? null}
+                onAppend={() => openAppendFor(r.fullCode)}
+                onQuickHedge={() => openQuickHedgeFor(r.fullCode)}
               />
             );
           })
         )}
+        </MobileCollapse>
       </div>
 
       {/* 归档历史库 */}
@@ -1732,6 +1723,212 @@ export default function TCalculator() {
           </div>
         )}
       </div>
+
+      {/* 追加 / 快捷对冲 底部滑出面板（Bottom Sheet），移动端 + 桌面端共用同一套逻辑 */}
+      {sheetOpen && sheetFullCode && apResult && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center">
+          {/* 遮罩：点击空白关闭 */}
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setSheetOpen(false)}
+          />
+          <div className="bottom-sheet relative w-full max-w-lg bg-slate-900 border border-slate-700 border-b-0 rounded-t-2xl shadow-2xl px-4 pt-2 pb-[calc(env(safe-area-inset-bottom)+16px)] max-h-[88dvh] overflow-y-auto">
+            {/* 拖拽手柄 */}
+            <div className="mx-auto h-1.5 w-12 rounded-full bg-slate-700 mb-3" />
+
+            {/* 标题 + 关闭 */}
+            <div className="flex items-start justify-between gap-2 mb-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-100 truncate">追加流水 · {apResult.stockName}</p>
+                <p className="text-[11px] text-slate-500">{sheetFullCode}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSheetOpen(false)}
+                className="tap-target rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 shrink-0"
+                aria-label="关闭"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 方向切换 */}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <button
+                type="button"
+                onClick={() => setApDir('buy')}
+                className={`tap-target text-sm rounded-lg font-medium transition-colors ${
+                  apDir === 'buy'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                买入
+              </button>
+              <button
+                type="button"
+                onClick={() => setApDir('sell')}
+                className={`tap-target text-sm rounded-lg font-medium transition-colors ${
+                  apDir === 'sell'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                卖出
+              </button>
+            </div>
+
+            {/* 价格（带 ±0.01 步进）+ 数量 */}
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div className="form-group">
+                <label>价格（元）</label>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => stepApPrice(-0.01)}
+                    className="tap-target rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 shrink-0"
+                    aria-label="价格减 0.01"
+                  >
+                    −0.01
+                  </button>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    min="0"
+                    value={apPrice}
+                    onChange={(e) => setApPrice(e.target.value)}
+                    placeholder="0.000"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => stepApPrice(0.01)}
+                    className="tap-target rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 shrink-0"
+                    aria-label="价格加 0.01"
+                  >
+                    +0.01
+                  </button>
+                </div>
+              </div>
+              <div className="form-group">
+                <label>数量（股）</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  min="1"
+                  value={apAmount}
+                  onChange={(e) => setApAmount(e.target.value)}
+                  placeholder="100"
+                />
+              </div>
+            </div>
+
+            {/* 快捷数量胶囊 + 最新价 */}
+            {qtyCapsules.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {qtyCapsules.map((c) => (
+                  <button
+                    key={c.label}
+                    type="button"
+                    onClick={() => setApAmount(String(c.qty))}
+                    className="tap-target text-xs px-3 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700"
+                  >
+                    {c.label}
+                  </button>
+                ))}
+                {apQuote && apQuote.currentPrice > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setApPrice(String(roundTo(apQuote.currentPrice, 3)))}
+                    className="tap-target text-xs px-3 rounded-full bg-slate-800 text-blue-300 hover:bg-slate-700"
+                  >
+                    用最新价
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 时间 + 备注 */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+              <div className="form-group">
+                <label>时间</label>
+                <input
+                  type="datetime-local"
+                  value={apTime}
+                  onChange={(e) => setApTime(e.target.value)}
+                  step="60"
+                  className="[color-scheme:dark]"
+                />
+              </div>
+              <div className="form-group">
+                <label>备注</label>
+                <input
+                  type="text"
+                  value={apNote}
+                  onChange={(e) => setApNote(e.target.value)}
+                  placeholder="可选"
+                />
+              </div>
+            </div>
+
+            {/* 校验错误 + 全部卖出快捷键 */}
+            {apDialogError(apError, apValidation) && (
+              <div className="flex items-center justify-between gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-red-300 mb-3">
+                <span className="min-w-0 break-words">🛑 {apDialogError(apError, apValidation)}</span>
+                {apValidation && !apValidation.valid && (apValidation as { maxSellable?: number }).maxSellable ? (
+                  <button
+                    type="button"
+                    onClick={() => setApAmount(String((apValidation as { maxSellable: number }).maxSellable))}
+                    className="tap-target text-xs px-2 rounded-lg bg-red-600 text-white hover:bg-red-700 shrink-0"
+                  >
+                    全部卖出
+                  </button>
+                ) : null}
+              </div>
+            )}
+            {apValidation?.warning && (
+              <div className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 mb-3">
+                ⚠️ {apValidation.warning}
+              </div>
+            )}
+            {apFee && (
+              <div className="text-xs text-slate-500 mb-3 flex items-center justify-between">
+                <span>预计手续费</span>
+                <span className="font-mono tabular-nums text-slate-400">¥{apFee.total.toFixed(2)}</span>
+              </div>
+            )}
+
+            <button type="button" onClick={submitAp} className="btn btn-primary w-full tap-target">
+              追加提交
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 底部固定动作条：移动端常驻，一键进入 追加 / 快捷对冲（桌面端保留卡片内按钮） */}
+      {activeResults.length > 0 && firstActive && (
+        <div className="fixed inset-x-0 bottom-0 z-40 md:hidden">
+          <div className="fixed-bar px-3 pt-2 pb-[calc(env(safe-area-inset-bottom)+8px)]">
+            <div className="mx-auto w-full max-w-2xl grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => openAppendFor(firstActive.fullCode)}
+                className="btn btn-primary tap-target"
+              >
+                + 追加记录
+              </button>
+              <button
+                type="button"
+                onClick={() => openQuickHedgeFor(firstActive.fullCode)}
+                className={`btn tap-target ${
+                  apPendingQty > 0 ? 'bg-amber-500 hover:bg-amber-400 text-slate-900' : 'bg-slate-700 text-slate-300'
+                }`}
+              >
+                ⚡ 快捷对冲
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

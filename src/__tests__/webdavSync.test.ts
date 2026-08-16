@@ -31,6 +31,7 @@ import {
   setLastSyncTime,
   addSyncHistory,
   getSyncHistory,
+  ensureParentDir,
   DEFAULT_WEBDAV_CONFIG,
 } from '../services/webdavSync';
 import type { AppStoreExport, TRoundArchive, Position } from '../store/types';
@@ -280,7 +281,68 @@ describe('mergeData', () => {
 });
 
 // ============================================================
-// 3. formatRelativeTime
+// 3. ensureParentDir（自动父目录创建）
+// ============================================================
+
+describe('ensureParentDir', () => {
+  const mockConfig = {
+    webdavUrl: 'https://dav.example.com/dav/',
+    username: 'user',
+    password: 'pass',
+    remotePath: '/test/backup.json',
+    autoSync: false,
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('根目录无需创建应返回 true', async () => {
+    const result = await ensureParentDir(mockConfig, '/file.json');
+    expect(result).toBe(true);
+  });
+
+  it('MKCOL 返回 201 应视为成功', async () => {
+    const mockFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, { status: 201 }),
+    );
+    const result = await ensureParentDir(mockConfig, '/dir/backup.json');
+    expect(result).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const reqUrl = mockFetch.mock.calls[0][0] as string;
+    expect(reqUrl).toContain('/api/webdav?url=');
+    expect(reqUrl).toContain(encodeURIComponent('/dir'));
+  });
+
+  it('MKCOL 返回 405 应视为已存在（成功）', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, { status: 405 }),
+    );
+    const result = await ensureParentDir(mockConfig, '/exist/backup.json');
+    expect(result).toBe(true);
+  });
+
+  it('MKCOL 返回 409 应递归创建上级目录', async () => {
+    // 第一次调用（/a/b）返回 409 → 递归创建 /a → 成功（201）
+    // 第二次调用（/a/b）重试 → 成功（201）
+    const mockFetch = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 409 })) // /a/b → 409
+      .mockResolvedValueOnce(new Response(null, { status: 201 })) // /a → 201
+      .mockResolvedValueOnce(new Response(null, { status: 201 })); // /a/b 重试 → 201
+    const result = await ensureParentDir(mockConfig, '/a/b/backup.json');
+    expect(result).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('网络错误应静默返回 false', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
+    const result = await ensureParentDir(mockConfig, '/error/backup.json');
+    expect(result).toBe(false);
+  });
+});
+
+// ============================================================
+// 4. formatRelativeTime
 // ============================================================
 
 describe('formatRelativeTime', () => {
@@ -315,7 +377,7 @@ describe('formatRelativeTime', () => {
 });
 
 // ============================================================
-// 4. localStorage 配置管理
+// 5. localStorage 配置管理
 // ============================================================
 
 describe('localStorage 配置管理', () => {

@@ -121,30 +121,26 @@ export function addSyncHistory(entry: SyncHistoryEntry): void {
 
 /**
  * 构建 WebDAV 请求的目标 URL。
- * 所有请求统一通过同源 Edge 代理 /api-webdav 转发，
+ * 所有请求统一通过同源代理 /api/webdav 转发，
  * 避免浏览器端跨域 CORS 限制。
  *
- * 代理 URL 格式：/api-webdav/proxy?url=<encodeURIComponent(上游地址)>
- *
- * @note 必须包含 /proxy 路径段，因为 Vercel Edge Middleware 的 matcher 模式
- *       /api-webdav/:path* 要求至少有一个路径段，否则中间件不会触发。
+ * 代理 URL 格式：/api/webdav?url=<encodeURIComponent(目标地址)>
  */
 function buildProxyUrl(config: WebDAVConfig, path: string): string {
   const targetUrl = `${config.webdavUrl.replace(/\/+$/, '')}${path}`;
-  return `/api-webdav/proxy?url=${encodeURIComponent(targetUrl)}`;
+  return `/api/webdav?url=${encodeURIComponent(targetUrl)}`;
 }
 
 /**
  * 构建 WebDAV 请求的 headers（含 Basic Auth）。
  *
- * @note 使用 `X-WebDAV-Authorization` 自定义头代替标准 `Authorization` 头，
- *       因为 Vercel CDN 可能会在请求到达 Edge Middleware 之前剥离 `Authorization` 头。
- *       Edge Middleware 会读取此自定义头并转换为标准 `Authorization` 头转发给上游。
+ * 使用标准 `Authorization` 头，Vercel Edge Middleware 会严格清洗请求头，
+ * 保留 authorization 并转发到上游，不再需要自定义头变通方案。
  */
 function buildWebDAVHeaders(config: WebDAVConfig, extra: Record<string, string> = {}): Record<string, string> {
   const credentials = btoa(`${config.username}:${config.password}`);
   return {
-    'X-WebDAV-Authorization': `Basic ${credentials}`,
+    Authorization: `Basic ${credentials}`,
     'Content-Type': 'application/octet-stream',
     ...extra,
   };
@@ -152,7 +148,7 @@ function buildWebDAVHeaders(config: WebDAVConfig, extra: Record<string, string> 
 
 /**
  * 通用 WebDAV HTTP 请求。
- * 所有请求统一通过同源 Edge 代理 /api-webdav 转发，
+ * 所有请求统一通过同源代理 /api/webdav 转发，
  * 无需设置 mode: 'cors'（代理 URL 与页面同源）。
  */
 async function webdavRequest(
@@ -173,6 +169,56 @@ async function webdavRequest(
 
   const response = await fetch(url, fetchOptions);
   return response;
+}
+
+/**
+ * 自动创建父目录（MKCOL）。
+ * 当 PUT 上传遇到 403/404/409 时，自动尝试向目标文件的父级目录发送 MKCOL 创建文件夹。
+ *
+ * @param config - WebDAV 配置
+ * @param filePath - 目标文件路径（如 /stock-calculator/data-backup.json）
+ * @returns 是否创建成功（或已存在）
+ */
+export async function ensureParentDir(config: WebDAVConfig, filePath: string): Promise<boolean> {
+  // 提取父级路径
+  const normalizedPath = filePath.replace(/\/+$/, '');
+  const parentDir = normalizedPath.substring(0, normalizedPath.lastIndexOf('/')) || '/';
+  if (parentDir === '/' || parentDir === '') return true; // 根目录无需创建
+
+  try {
+    const response = await webdavRequest(
+      config,
+      'MKCOL',
+      parentDir,
+      null,
+      { 'Content-Type': 'application/xml; charset="utf-8"' },
+    );
+    // 201 Created = 新建成功；405 Method Not Allowed = 已存在（集合已存在时返回 405）
+    // 有时也返回 200 OK
+    if (response.status === 201 || response.status === 200 || response.status === 405) {
+      return true;
+    }
+    // 部分服务器返回 409 Conflict 表示中间目录不存在，尝试递归创建
+    if (response.status === 409 || response.status === 404) {
+      // 递归创建上级目录
+      const grandParentOk = await ensureParentDir(config, parentDir);
+      if (grandParentOk) {
+        // 再次尝试创建当前目录
+        const retry = await webdavRequest(
+          config,
+          'MKCOL',
+          parentDir,
+          null,
+          { 'Content-Type': 'application/xml; charset="utf-8"' },
+        );
+        return retry.status === 201 || retry.status === 200 || retry.status === 405;
+      }
+    }
+    return false;
+  } catch {
+    // 网络错误等静默处理
+    return false;
+  }
 }
 
 // ============================================================
@@ -204,6 +250,16 @@ export async function testWebDAVConnection(config: WebDAVConfig): Promise<{ ok: 
 
     if (response.ok || response.status === 207) {
       return { ok: true, message: '连接成功' };
+    }
+
+    // 鉴权错误
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, message: '鉴权失败或无权限，请确认使用的是网盘专属【应用授权密码/App Password】而非网页登录密码' };
+    }
+
+    // 文件锁定错误
+    if (response.status === 423) {
+      return { ok: false, message: '目标文件已被远端服务器锁定（423 Locked），请稍后重试或确认无其他客户端正在占用该文件。' };
     }
 
     // PROPFIND 失败，回退到 HEAD
@@ -270,18 +326,56 @@ export function deserializeSnapshot(json: string): { data: AppStoreExport; times
 
 /**
  * 一键备份到云端：将完整数据快照 PUT 到远端。
+ * PUT 请求头携带 `Overwrite: T` 以覆盖同名文件；
+ * 若遇到 403/404/409 错误，自动尝试创建父目录（MKCOL）后重试。
  */
 export async function backupToCloud(
   config: WebDAVConfig,
   snapshotJson: string,
 ): Promise<{ ok: boolean; message: string }> {
   try {
-    const response = await webdavRequest(config, 'PUT', config.remotePath, snapshotJson);
+    const response = await webdavRequest(
+      config, 'PUT', config.remotePath, snapshotJson,
+      { 'Overwrite': 'T' },
+    );
 
     if (response.ok || response.status === 201 || response.status === 204) {
       setLastSyncTime();
       addSyncHistory({ timestamp: new Date().toISOString(), type: 'backup', success: true });
       return { ok: true, message: '备份成功' };
+    }
+
+    // 鉴权错误
+    if (response.status === 401 || response.status === 403) {
+      const msg = '鉴权失败或无权限，请确认使用的是网盘专属【应用授权密码/App Password】而非网页登录密码';
+      addSyncHistory({ timestamp: new Date().toISOString(), type: 'backup', success: false, message: msg });
+      return { ok: false, message: `备份失败：${msg}` };
+    }
+
+    // 文件锁定错误
+    if (response.status === 423) {
+      const msg = '目标文件已被远端服务器锁定（423 Locked）。请尝试修改备份文件名（如 backup-v2.json）或确认无其他客户端正在占用该文件。';
+      addSyncHistory({ timestamp: new Date().toISOString(), type: 'backup', success: false, message: msg });
+      return { ok: false, message: `备份失败：${msg}` };
+    }
+
+    // 目录不存在错误：自动尝试创建父目录后重试
+    if (response.status === 404 || response.status === 409) {
+      const dirCreated = await ensureParentDir(config, config.remotePath);
+      if (dirCreated) {
+        // 重试 PUT（同样携带 Overwrite 头）
+        const retry = await webdavRequest(
+          config, 'PUT', config.remotePath, snapshotJson,
+          { 'Overwrite': 'T' },
+        );
+        if (retry.ok || retry.status === 201 || retry.status === 204) {
+          setLastSyncTime();
+          addSyncHistory({ timestamp: new Date().toISOString(), type: 'backup', success: true });
+          return { ok: true, message: '备份成功（已自动创建目录）' };
+        }
+        return { ok: false, message: `备份失败：重试后服务器返回 ${retry.status} ${retry.statusText}` };
+      }
+      return { ok: false, message: `备份失败：目录创建失败，请检查远程路径是否正确` };
     }
 
     return { ok: false, message: `备份失败：服务器返回 ${response.status} ${response.statusText}` };
@@ -304,6 +398,12 @@ export async function restoreFromCloud(
     if (!response.ok) {
       if (response.status === 404) {
         return { ok: false, data: null, message: '云端未找到备份文件' };
+      }
+      if (response.status === 401 || response.status === 403) {
+        return { ok: false, data: null, message: '下载失败：鉴权失败或无权限，请确认使用的是网盘专属【应用授权密码/App Password】而非网页登录密码' };
+      }
+      if (response.status === 423) {
+        return { ok: false, data: null, message: '下载失败：目标文件已被远端服务器锁定（423 Locked），请稍后重试或确认无其他客户端正在占用该文件。' };
       }
       return { ok: false, data: null, message: `下载失败：服务器返回 ${response.status} ${response.statusText}` };
     }

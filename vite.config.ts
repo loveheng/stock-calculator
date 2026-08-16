@@ -1,11 +1,17 @@
 /**
  * @file vite.config.ts
  * @description Vite 构建配置：React 插件、PWA 支持（Workbox 运行时缓存）、
- *              开发服务器代理（腾讯 Smartbox 行情搜索 / 腾讯实时行情 / 东方财富搜索 API）、
- *              以及构建输出配置。
+ *              开发服务器代理（腾讯 Smartbox 行情搜索 / 腾讯实时行情 / 东方财富搜索 API /
+ *              WebDAV 代理），以及构建输出配置。
+ *
+ * 【WebDAV 代理说明】
+ *   开发环境下，Vite 代理 /api/webdav 请求到动态目标 URL，使用 bypass 函数
+ *   实现与线上 Vercel Edge Middleware 完全一致的请求头清洗逻辑
+ *   （剔除 host/referer/origin/cookie/x-vercel-* / x-forwarded-*，
+ *   保留 authorization/content-type/depth/overwrite/if-match），
+ *   确保本地开发与线上行为一致，不再出现本地 404 或 CORS 问题。
  * @layer Config
  * @storage_impact 无 IndexedDB 读写；仅影响构建产物与开发环境网络代理。
- * @author 开发团队
  */
 
 import { defineConfig } from 'vite';
@@ -92,6 +98,96 @@ export default defineConfig({
         headers: {
           Referer: 'https://quote.eastmoney.com',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      },
+      // WebDAV 代理：使用全局 fetch() 转发，避免动态 require
+      '/api/webdav': {
+        target: 'http://localhost:5173',
+        bypass: async (req, res) => {
+          if (req.method === 'OPTIONS') {
+            res.writeHead(200, {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods':
+                'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS',
+              'Access-Control-Allow-Headers': '*',
+              'Access-Control-Max-Age': '86400',
+            });
+            res.end();
+            return '/__bypass__';
+          }
+          const u = new URL(req.url || '', 'http://localhost:5173');
+          const targetUrl = u.searchParams.get('url');
+          if (!targetUrl) { res.statusCode = 400; res.end('Missing url parameter'); return '/__bypass__'; }
+
+          // 请求头清洗（与 middleware.js 一致）
+          const blocked = new Set(['host', 'referer', 'origin', 'cookie']);
+          const blockedPrefix = ['x-vercel-', 'x-forwarded-'];
+          const allowed = new Set(['authorization', 'content-type', 'depth', 'overwrite', 'if-match']);
+          const isBlocked = (k) => {
+            if (allowed.has(k)) return false;
+            if (blockedPrefix.some((p) => k.startsWith(p))) return true;
+            return blocked.has(k);
+          };
+          const fwdHeaders = {};
+          for (let i = 0; i < req.rawHeaders.length; i += 2) {
+            const k = req.rawHeaders[i], v = req.rawHeaders[i + 1];
+            if (!isBlocked(k.toLowerCase())) fwdHeaders[k] = v;
+          }
+          fwdHeaders['User-Agent'] = 'Mozilla/5.0 (compatible; WebDAVClient/1.0)';
+
+          // 收集请求体
+          const chunks = [];
+          for await (const chunk of req) {
+            chunks.push(chunk);
+          }
+          const body = chunks.length > 0 ? Buffer.concat(chunks) : null;
+
+          try {
+            // 使用全局 fetch() 转发请求
+            const upstreamRes = await fetch(targetUrl, {
+              method: req.method,
+              headers: fwdHeaders,
+              body: body,
+              // 非 GET/HEAD 不自动跟随重定向，透传原始状态码
+              redirect: 'manual',
+            });
+
+            // 构建响应头（透传上游 + CORS 头）
+            const rh = {};
+            upstreamRes.headers.forEach((value, key) => {
+              const lower = key.toLowerCase();
+              // 跳过 Node.js 自动生成的 hop-by-hop 头
+              if (lower === 'transfer-encoding' || lower === 'connection') return;
+              rh[key] = value;
+            });
+            rh['Access-Control-Allow-Origin'] = '*';
+            rh['Access-Control-Allow-Methods'] =
+              'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS';
+            rh['Access-Control-Allow-Headers'] =
+              'Content-Type, Authorization, Depth, Destination, Overwrite';
+            rh['Access-Control-Expose-Headers'] =
+              'Content-Type, Content-Length, ETag';
+
+            res.writeHead(upstreamRes.status, rh);
+            // 将上游响应体转为 Node.js Readable 并 pipe
+            const reader = upstreamRes.body?.getReader();
+            if (reader) {
+              const pump = async () => {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) { res.end(); break; }
+                  res.write(Buffer.from(value));
+                }
+              };
+              pump().catch((e) => { res.statusCode = 502; res.end(`Proxy error: ${e.message}`); });
+            } else {
+              res.end();
+            }
+          } catch (e) {
+            res.statusCode = 502;
+            res.end(`Proxy error: ${e instanceof Error ? e.message : 'Unknown'}`);
+          }
+          return '/__bypass__';
         },
       },
     },

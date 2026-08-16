@@ -11,7 +11,7 @@
  */
 
 import React, { useState } from 'react';
-import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'lucide-react';
+import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
 import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults } from '../store';
@@ -255,6 +255,27 @@ function PositionLedger() {
   const tRounds = useAppStore((s) => s.tRounds);
   const streamResults = useStreamResults();
 
+  // ---- 折叠状态 ----
+  // 顶部建仓表单折叠
+  const [isFormCollapsed, setIsFormCollapsed] = useState(false);
+  // 持仓卡片独立折叠（默认全部收起）
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const expandAll = () => {
+    setExpandedIds(new Set(activePositions.map((p) => p.id)));
+  };
+  const collapseAll = () => {
+    setExpandedIds(new Set());
+  };
+
   const [selectedStock, setSelectedStock] = useState<StockSearchItem | null>(null);
   const [stockName, setStockName] = useState('');
   const [openPrice, setOpenPrice] = useState('');
@@ -263,7 +284,6 @@ function PositionLedger() {
   const [noFrictionCost, setNoFrictionCost] = useState(false);
   // 重复建仓提示（同一股票代码已存在进行中持仓）
   const [dupAlert, setDupAlert] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null);
   // 结仓被阻止提示（仍有未卖出持仓 或 该标的存在进行中的做T轮次）
   const [closeBlockAlert, setCloseBlockAlert] = useState<string | null>(null);
@@ -482,92 +502,149 @@ function PositionLedger() {
         )}
       </div>
 
-      {/* 新建建仓 */}
-      <div className="p-4 bg-slate-900 rounded-lg">
-        <h4 className="text-xs font-medium text-slate-400 mb-3">新建建仓</h4>
-        <div className="form-row">
-          <div className="form-group">
-            <label>股票名称</label>
-            <StockAutocomplete
-              value={selectedStock}
-              onChange={(item) => {
-                setSelectedStock(item);
-                setStockName(item ? item.Name : '');
-              }}
-              placeholder="搜索股票代码/名称/拼音"
-            />
-          </div>
-          <div className="form-group">
-            <label>建仓单价（元）</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder="买入单价"
-              value={openPrice}
-              onChange={(e) => setOpenPrice(e.target.value)}
-            />
-          </div>
+      {/* 顶部建仓表单：折叠态仅显示紧凑操作条 */}
+      <div className="bg-slate-900 rounded-lg border border-slate-700">
+        <div className="flex items-center justify-between p-3">
+          {isFormCollapsed ? (
+            <>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsFormCollapsed(false)}
+                  className="tap-target flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 text-sm font-medium"
+                >
+                  <Plus className="w-4 h-4" />
+                  新建建仓
+                </button>
+                <span className="text-xs text-slate-500">|</span>
+                <span className="text-xs text-slate-500">目标推算在下方 Tab 中</span>
+              </div>
+              <button
+                onClick={() => setIsFormCollapsed(false)}
+                className="tap-target p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+                title="展开建仓表单"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+            </>
+          ) : (
+            <div className="flex items-center justify-between w-full">
+              <h4 className="text-xs font-medium text-slate-400">新建建仓</h4>
+              <button
+                onClick={() => setIsFormCollapsed(true)}
+                className="tap-target p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+                title="收起建仓表单"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
-        <div className="form-row">
-          <div className="form-group">
-            <label>建仓数量（100整数倍）</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="至少100股"
-              value={openAmount}
-              onChange={(e) => setOpenAmount(e.target.value)}
-            />
+        {!isFormCollapsed && (
+          <div className="px-4 pb-4 space-y-3">
+            <div className="form-row">
+              <div className="form-group">
+                <label>股票名称</label>
+                <StockAutocomplete
+                  value={selectedStock}
+                  onChange={(item) => {
+                    setSelectedStock(item);
+                    setStockName(item ? item.Name : '');
+                  }}
+                  placeholder="搜索股票代码/名称/拼音"
+                />
+              </div>
+              <div className="form-group">
+                <label>建仓单价（元）</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="买入单价"
+                  value={openPrice}
+                  onChange={(e) => setOpenPrice(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>建仓数量（100整数倍）</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="至少100股"
+                  value={openAmount}
+                  onChange={(e) => setOpenAmount(e.target.value)}
+                />
+              </div>
+              <div className="form-group">
+                <label>交易备注（选填）</label>
+                <input
+                  type="text"
+                  placeholder="如：左侧分批抄底"
+                  value={openNote}
+                  onChange={(e) => setOpenNote(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={noFrictionCost}
+                  onClick={() => setNoFrictionCost((v) => !v)}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+                    noFrictionCost ? 'bg-blue-600' : 'bg-slate-700 hover:bg-slate-600'
+                  }`}
+                  title={noFrictionCost ? '已开启：本次建仓不计摩擦成本' : '录入已有仓位时可开启，本次建仓不计摩擦成本'}
+                >
+                  <span
+                    className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${
+                      noFrictionCost ? 'translate-x-5' : ''
+                    }`}
+                  />
+                </button>
+                <span className="text-xs text-slate-300">
+                  不计摩擦成本
+                  <span className="ml-1.5 text-[11px] text-slate-500">录入已有仓位</span>
+                </span>
+              </label>
+              <button onClick={handleOpenPosition} className="btn btn-primary basis-full sm:basis-auto sm:ml-auto sm:px-8">
+                <Plus className="w-4 h-4" />
+                建仓
+              </button>
+            </div>
           </div>
-          <div className="form-group">
-            <label>交易备注（选填）</label>
-            <input
-              type="text"
-              placeholder="如：左侧分批抄底"
-              value={openNote}
-              onChange={(e) => setOpenNote(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={noFrictionCost}
-              onClick={() => setNoFrictionCost((v) => !v)}
-              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
-                noFrictionCost ? 'bg-blue-600' : 'bg-slate-700 hover:bg-slate-600'
-              }`}
-              title={noFrictionCost ? '已开启：本次建仓不计摩擦成本' : '录入已有仓位时可开启，本次建仓不计摩擦成本'}
-            >
-              <span
-                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${
-                  noFrictionCost ? 'translate-x-5' : ''
-                }`}
-              />
-            </button>
-            <span className="text-xs text-slate-300">
-              不计摩擦成本
-              <span className="ml-1.5 text-[11px] text-slate-500">录入已有仓位</span>
-            </span>
-          </label>
-          <button onClick={handleOpenPosition} className="btn btn-primary basis-full sm:basis-auto sm:ml-auto sm:px-8">
-            <Plus className="w-4 h-4" />
-            建仓
-          </button>
-        </div>
+        )}
       </div>
 
-      {/* 进行中持仓 */}
+      {/* 进行中持仓列表 */}
       {activePositions.length === 0 ? (
         <div className="text-center py-8">
           <p className="text-slate-500 text-sm mb-3">当前无进行中持仓</p>
-          
         </div>
-      ) : null}
+      ) : (
+        <>
+          {/* 全局折叠控制 */}
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs text-slate-500">进行中持仓（{activePositions.length}）</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={expandAll}
+                className="tap-target text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded hover:bg-slate-800"
+              >
+                展开全部
+              </button>
+              <span className="text-slate-700">|</span>
+              <button
+                onClick={collapseAll}
+                className="tap-target text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded hover:bg-slate-800"
+              >
+                收起全部
+              </button>
+            </div>
+          </div>
 
-      {activePositions.map((pos) => {
+          {activePositions.map((pos) => {
         // 用 recalculatePosition 从批次履历重建权威快照：
         // 动态保本价 / 做T落袋利润 / 实际净投入现金 / 初始建仓均价
         const snap = recalculatePosition(pos.batches.map((b) => toEntityBatch(b, pos.id)));
@@ -590,127 +667,175 @@ function PositionLedger() {
           .filter((b) => b.kind === 'borrow')
           .reduce((sum, b) => sum + Math.abs(b.amount), 0);
 
+        const isExpanded = expandedIds.has(pos.id);
+
         return (
-          <div key={pos.id} className="p-4 bg-slate-900 rounded-lg border border-slate-700">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="font-semibold text-slate-200">{pos.stockName}</h4>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">进行中</span>
-                {pos.currentAmount === 0 && (
-                  <span className="text-xs text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded-full">
-                    底仓出空
+          <div key={pos.id} className="bg-slate-900 rounded-lg border border-slate-700 overflow-hidden">
+            {/* === 紧凑看板（折叠态/展开态均显示头部摘要） === */}
+            <div
+              className="tap-target flex items-center justify-between p-3 cursor-pointer select-none"
+              onClick={() => toggleExpand(pos.id)}
+            >
+              <div className="flex-1 min-w-0 grid grid-cols-2 md:grid-cols-5 gap-x-3 gap-y-0.5 text-xs">
+                {/* 左1：股票名称/代码 + 状态徽章 */}
+                <div className="col-span-2 md:col-span-1 flex items-center gap-1.5 min-w-0">
+                  <span className="font-semibold text-slate-200 truncate">{pos.stockName}</span>
+                  <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                    {pos.fullCode}
                   </span>
+                  {totalBorrow > 0 && (
+                    <span className="text-[10px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded shrink-0">
+                      出借{totalBorrow}
+                    </span>
+                  )}
+                </div>
+                {/* 左2：现价 + 涨跌幅 */}
+                <div className="flex items-center gap-1">
+                  {live ? (
+                    <>
+                      <span className={`font-medium tabular-nums ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                        ¥{live.currentPrice.toFixed(2)}
+                      </span>
+                      <span className={`tabular-nums ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                        {live.changePercent >= 0 ? '+' : ''}{live.changePercent.toFixed(1)}%
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-slate-600">—</span>
+                  )}
+                </div>
+                {/* 左3：持仓股数（桌面端显示） */}
+                <div className="hidden md:flex items-center">
+                  <span className="text-slate-400">{netAmount.toLocaleString()}股</span>
+                </div>
+                {/* 左4：保本价（桌面端显示） */}
+                <div className="hidden md:flex items-center">
+                  <span className="text-slate-400">¥{snap.currentCost.toFixed(3)}</span>
+                </div>
+                {/* 左5：浮动盈亏 */}
+                <div className="flex items-center justify-end md:justify-start gap-1">
+                  {hasPrice ? (
+                    <>
+                      <span className={`tabular-nums font-medium ${floatPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                        {floatPnL >= 0 ? '+' : ''}¥{floatPnL.toFixed(0)}
+                      </span>
+                      <span className={`tabular-nums ${floatPnLPercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                        {floatPnLPercent >= 0 ? '+' : ''}{floatPnLPercent.toFixed(1)}%
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-slate-600">—</span>
+                  )}
+                </div>
+              </div>
+              {/* 折叠箭头（≥44x44 热区） */}
+              <div className="tap-target flex items-center justify-center w-11 h-11 shrink-0 ml-2">
+                <ChevronRight
+                  className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
+                    isExpanded ? 'rotate-90' : ''
+                  }`}
+                />
+              </div>
+            </div>
+
+            {/* === 展开态：详细面板 === */}
+            {isExpanded && (
+              <div className="p-3 pt-0 space-y-3">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="text-xs text-slate-500">当前现价</span>
+                {live ? (
+                  <>
+                    <span className={`text-sm font-bold ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      ¥{live.currentPrice.toFixed(3)}
+                    </span>
+                    <span className={`text-xs ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      {live.changePercent >= 0 ? '+' : ''}{live.changePercent.toFixed(2)}%
+                    </span>
+                    <span className="text-[10px] text-slate-600">
+                      行情 {formatQuoteTime(live.updateTime)}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-sm text-slate-600">— 暂无行情数据</span>
                 )}
-                {totalBorrow > 0 && (
-                  <span className="lending-badge">
-                    出借中 {totalBorrow} 股
-                  </span>
+                {hasPrice && (
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className={floatPnL >= 0 ? 'text-red-400' : 'text-green-400'}>
+                      浮动盈亏 {floatPnL >= 0 ? '+' : ''}¥{floatPnL.toFixed(2)}
+                    </span>
+                    <span className={floatPnLPercent >= 0 ? 'text-red-400' : 'text-green-400'}>
+                      {floatPnLPercent >= 0 ? '+' : ''}{floatPnLPercent.toFixed(2)}%
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="text-slate-500">回本所需涨幅</span>
+                      <span className={`font-medium ${requiredRisePercent > 0 ? 'text-amber-300' : 'text-red-400'}`}>
+                        {requiredRisePercent > 0 ? `+${requiredRisePercent.toFixed(2)}%` : '已回本'}
+                      </span>
+                    </span>
+                  </div>
                 )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <span className="text-slate-500">保本单价（动态成本）</span>
+                  <p className="text-slate-200 font-medium">¥{snap.currentCost.toFixed(3)}</p>
+                  <p className="text-[10px] text-slate-600 leading-tight mt-0.5">初始均价：¥{snap.initialCost.toFixed(3)}</p>
+                </div>
+                <div>
+                  <span className="text-slate-500">持仓数量</span>
+                  <p className="text-slate-200 font-medium">{netAmount.toLocaleString()}股</p>
+                </div>
+                <div>
+                  <span className="text-slate-500">做T / 调仓落袋利润 🔥</span>
+                  <p className={`font-medium ${snap.accumulatedTPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    {snap.accumulatedTPnL >= 0 ? '+' : ''}¥{snap.accumulatedTPnL.toFixed(2)}
+                  </p>
+                  <p className="text-[10px] text-slate-600 leading-tight mt-0.5">已折抵本金</p>
+                </div>
+                <div>
+                  <span className="text-slate-500">实际净投入现金</span>
+                  <p className="text-slate-200 font-medium">¥{snap.totalInvested.toFixed(2)}</p>
+                </div>
+              </div>
+
+              {/* 操作按钮 */}
+              <div className="flex gap-2">
+                <button onClick={() => handleBatch(pos.id, 'add')} className="btn btn-primary btn-sm flex-1">
+                  <Plus className="w-3 h-3" />加仓
+                </button>
+                <button onClick={() => handleBatch(pos.id, 'reduce')} className="btn btn-outline btn-sm flex-1">
+                  <X className="w-3 h-3" />减仓
+                </button>
                 <button
-                  onClick={() => setDeleteTickerConfirm(pos.id)}
-                  className="tap-target p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400"
-                  title="删除标的"
+                  onClick={() => {
+                    const blockReason = getCloseBlockReason(pos, streamResults, tRounds);
+                    if (blockReason) {
+                      setCloseBlockAlert(blockReason);
+                      return;
+                    }
+                    setCloseConfirmId(pos.id);
+                  }}
+                  className="btn btn-outline btn-sm flex-1"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Archive className="w-3 h-3" />结仓
                 </button>
               </div>
-            </div>
 
-            {/* 实时行情（腾讯 qt.gtimg.cn，交易时段每 5 秒刷新） */}
-            <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span className="text-xs text-slate-500">当前现价</span>
-              {live ? (
-                <>
-                  <span className={`text-sm font-bold ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-                    ¥{live.currentPrice.toFixed(3)}
-                  </span>
-                  <span className={`text-xs ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-                    {live.changePercent >= 0 ? '+' : ''}{live.changePercent.toFixed(2)}%
-                  </span>
-                  <span className="text-[10px] text-slate-600">
-                    行情 {formatQuoteTime(live.updateTime)}
-                  </span>
-                </>
-              ) : (
-                <span className="text-sm text-slate-600">— 暂无行情数据</span>
-              )}
-              {hasPrice && (
-                <div className="flex items-center gap-3 text-xs">
-                  <span className={floatPnL >= 0 ? 'text-red-400' : 'text-green-400'}>
-                    浮动盈亏 {floatPnL >= 0 ? '+' : ''}¥{floatPnL.toFixed(2)}
-                  </span>
-                  <span className={floatPnLPercent >= 0 ? 'text-red-400' : 'text-green-400'}>
-                    {floatPnLPercent >= 0 ? '+' : ''}{floatPnLPercent.toFixed(2)}%
-                  </span>
-                  {/* 回本所需涨幅：相对动态保本价的缺口，做T/加仓后会实时更新 */}
-                  <span className="flex items-center gap-1">
-                    <span className="text-slate-500">回本所需涨幅</span>
-                    <span className={`font-medium ${requiredRisePercent > 0 ? 'text-amber-300' : 'text-red-400'}`}>
-                      {requiredRisePercent > 0 ? `+${requiredRisePercent.toFixed(2)}%` : '已回本'}
-                    </span>
-                  </span>
+              {/* 操作记录 */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-slate-500">操作记录（{pos.batches.length}条）</span>
+                  <button
+                    onClick={() => setDeleteTickerConfirm(pos.id)}
+                    className="tap-target text-xs text-slate-600 hover:text-red-400 px-1.5 py-0.5 rounded hover:bg-slate-800"
+                    title="删除整个标的"
+                  >
+                    <Trash2 className="w-3 h-3 inline-block mr-0.5" />删除标的
+                  </button>
                 </div>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-sm mb-3">
-              <div>
-                <span className="text-slate-500">保本单价（动态成本）</span>
-                <p className="text-slate-200 font-medium">¥{snap.currentCost.toFixed(3)}</p>
-                <p className="text-[10px] text-slate-600 leading-tight mt-0.5">初始均价：¥{snap.initialCost.toFixed(3)}</p>
-              </div>
-              <div>
-                <span className="text-slate-500">持仓数量</span>
-                <p className="text-slate-200 font-medium">{netAmount.toLocaleString()}股</p>
-              </div>
-              <div>
-                <span className="text-slate-500">做T / 调仓落袋利润 🔥</span>
-                <p className={`font-medium ${snap.accumulatedTPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-                  {snap.accumulatedTPnL >= 0 ? '+' : ''}¥{snap.accumulatedTPnL.toFixed(2)}
-                </p>
-                <p className="text-[10px] text-slate-600 leading-tight mt-0.5">已折抵本金</p>
-              </div>
-              <div>
-                <span className="text-slate-500">实际净投入现金</span>
-                <p className="text-slate-200 font-medium">¥{snap.totalInvested.toFixed(2)}</p>
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <button onClick={() => handleBatch(pos.id, 'add')} className="btn btn-primary btn-sm flex-1">
-                <Plus className="w-3 h-3" />加仓
-              </button>
-              <button onClick={() => handleBatch(pos.id, 'reduce')} className="btn btn-outline btn-sm flex-1">
-                <X className="w-3 h-3" />减仓
-              </button>
-              <button
-                onClick={() => {
-                  // 点击结仓先做资格校验：有未卖出持仓或进行中的做T轮次 → 弹框阻止，不进入确认弹窗
-                  const blockReason = getCloseBlockReason(pos, streamResults, tRounds);
-                  if (blockReason) {
-                    setCloseBlockAlert(blockReason);
-                    return;
-                  }
-                  setCloseConfirmId(pos.id);
-                }}
-                className="btn btn-outline btn-sm flex-1"
-              >
-                <Archive className="w-3 h-3" />结仓
-              </button>
-            </div>
-
-            {/* 批次明细 */}
-            <button
-              onClick={() => setExpandedId(expandedId === pos.id ? null : pos.id)}
-              className="tap-target mt-3 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300"
-            >
-              {expandedId === pos.id ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              操作记录（{pos.batches.length}条）
-            </button>
-
-            {expandedId === pos.id && (
-              <div className="mt-2 space-y-1">
-                {(() => {
+                <div className="space-y-1">
+                  {(() => {
                   const sortedBatches = [...pos.batches].sort(
                     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
                   );
@@ -778,14 +903,17 @@ function PositionLedger() {
                     </div>
                   ));
                 })()}
+                </div>
               </div>
-            )}
+            </div>
+          )}
           </div>
         );
       })}
+      </>
+    )}
 
-
-      {/* 重复建仓提示 */}
+    {/* 重复建仓提示 */}
       <ConfirmModal
         open={dupAlert !== null}
         title="已存在相同持仓"

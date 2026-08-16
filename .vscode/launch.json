@@ -2,9 +2,15 @@
     "configurations": [
         {
             "type": "msedge",
-            "name": "http://127.0.0.1:5173/",
+            "name": "http://127.0.0.1:5174/",
             "request": "launch",
-            "url": "http://127.0.0.1:5173/"
+            "url": "http://127.0.0.1:5174/"
+        },
+        {
+            "type": "msedge",
+            "name": "http://127.0.0.1:5174/t-calculator",
+            "request": "launch",
+            "url": "http://127.0.0.1:5174/t-calculator"
         }
     ]
 }

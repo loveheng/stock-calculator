@@ -701,12 +701,12 @@ export function formatCurrency(value: number): string {
 /**
  * 根据盈亏数值返回对应的 Tailwind CSS 颜色类名。
  *
- * @description 正数为绿色（盈利），负数为红色（亏损），零为灰色。
+ * @description 正数为红色（盈利/涨），负数为绿色（亏损/跌），零为灰色。
  * @param {number} value - 盈亏数值
  * @returns {string} Tailwind CSS 文本颜色类名
  */
 export function pnlColor(value: number): string {
-  if (value > 0) return 'text-emerald-400';
-  if (value < 0) return 'text-rose-400';
+  if (value > 0) return 'text-red-400';
+  if (value < 0) return 'text-green-400';
   return 'text-slate-400';
 }

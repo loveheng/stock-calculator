@@ -4,7 +4,7 @@
  *              支持按时间维度（近7天/30天/本月/全部）、正倒T状态、仓位状态多维筛选，
  *              并内嵌个股行情行情快照搜索与建仓履历（持仓批次明细）。
  * @layer UI
- * @storage_impact 只读消费：tStreams（流水池）、tRounds（做T战报）、positions/batches（建仓履历）；
+ * @storage_impact 只读消费：tRounds（做T轮次，OPENED 流水池 + COMPLETED 归档）、positions/batches（建仓履历）；
  *                 不直接写入 IndexedDB。
  * @author 开发团队
  */
@@ -50,7 +50,7 @@ interface TCardData {
   source: 'active' | 'archived';
   stockName: string;
   fullCode: string;
-  roundNo: number;
+  roundCode: string;
   mode: 'long' | 'short';
   status: 'open' | 'closed';
   settleType?: 'clear' | 'partial' | 'transfer';
@@ -165,8 +165,16 @@ export default function Statistics() {
     // 1) 进行中 Round（从撮合引擎结果中取非 CLEARED 状态）
     for (const stream of streamResults) {
       if (stream.status === 'CLEARED') continue;
-      const existingRounds = tRounds.filter((r) => r.fullCode === stream.fullCode);
-      const roundNo = existingRounds.length + 1;
+      const roundCode = (() => {
+        const ts = stream.openedAt ?? stream.entries[0]?.timestamp ?? new Date().toISOString();
+        const d = new Date(ts);
+        const y = d.getFullYear();
+        const M = String(d.getMonth() + 1).padStart(2, '0');
+        const D = String(d.getDate()).padStart(2, '0');
+        const h = String(d.getHours()).padStart(2, '0');
+        const m = String(d.getMinutes()).padStart(2, '0');
+        return `#${y}${M}${D}-${h}${m}`;
+      })();
 
       // 倒T卖出均价
       let avgSellPrice = 0;
@@ -184,7 +192,7 @@ export default function Statistics() {
         source: 'active',
         stockName: stream.stockName,
         fullCode: stream.fullCode,
-        roundNo,
+        roundCode,
         mode: stream.mode,
         status: 'open',
         netProfit: stream.transferProfit,
@@ -210,7 +218,7 @@ export default function Statistics() {
         source: 'archived',
         stockName: round.stockName,
         fullCode: round.fullCode,
-        roundNo: round.roundNo,
+        roundCode: round.roundCode,
         mode: round.mode,
         status: 'closed',
         settleType: round.settleType,
@@ -378,7 +386,7 @@ export default function Statistics() {
           </div>
           <div className="rounded-2xl bg-slate-950/80 p-3">
             <div className="text-[11px] text-slate-500">当前浮动盈亏</div>
-            <div className={`mt-1.5 text-base font-semibold ${card.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            <div className={`mt-1.5 text-base font-semibold ${card.netProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
               {fmtProfit(card.netProfit)}
             </div>
           </div>
@@ -392,7 +400,7 @@ export default function Statistics() {
         <>
           <div className="rounded-2xl bg-slate-950/80 p-3">
             <div className="text-[11px] text-slate-500">落袋纯收益</div>
-            <div className={`mt-1.5 text-base font-semibold ${card.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            <div className={`mt-1.5 text-base font-semibold ${card.netProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
               {fmtProfit(card.netProfit)}
             </div>
           </div>
@@ -450,7 +458,7 @@ export default function Statistics() {
       <>
         <div className="rounded-2xl bg-slate-950/80 p-3">
           <div className="text-[11px] text-slate-500">落袋纯收益</div>
-          <div className={`mt-1.5 text-base font-semibold ${card.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <div className={`mt-1.5 text-base font-semibold ${card.netProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
             {fmtProfit(card.netProfit)}
           </div>
         </div>
@@ -515,7 +523,7 @@ export default function Statistics() {
               {/* 做T净利润 */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">做T净利润</div>
-                <div className={`mt-1.5 text-lg font-bold ${tStats.totalNetProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                <div className={`mt-1.5 text-lg font-bold ${tStats.totalNetProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
                   {tStats.totalClosedCount > 0
                     ? `${tStats.totalNetProfit >= 0 ? '+' : ''}¥${tStats.totalNetProfit.toFixed(2)}`
                     : '--'}
@@ -538,7 +546,7 @@ export default function Statistics() {
               {/* 做T胜率 */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">做T胜率</div>
-                <div className={`mt-1.5 text-lg font-bold ${tStats.winRate >= 50 ? 'text-green-400' : 'text-amber-400'}`}>
+                <div className={`mt-1.5 text-lg font-bold ${tStats.winRate >= 50 ? 'text-red-400' : 'text-amber-400'}`}>
                   {tStats.totalClosedCount > 0
                     ? `${tStats.winRate.toFixed(1)}%`
                     : '0.0%'}
@@ -678,15 +686,15 @@ export default function Statistics() {
                               </span>
                             )}
                             <span className="flex-shrink-0 rounded-full bg-slate-950 px-2 py-0.5 text-xs text-slate-400">
-                              Round {card.roundNo}
+                              {card.roundCode}
                             </span>
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <span
                               className={`inline-flex rounded-full px-3 py-0.5 text-xs font-medium ${
                                 card.mode === 'long'
-                                  ? 'bg-red-500/10 text-red-300'
-                                  : 'bg-green-500/10 text-green-300'
+                                  ? 'bg-blue-500/10 text-blue-300'
+                                  : 'bg-purple-500/10 text-purple-300'
                               }`}
                             >
                               {card.mode === 'long' ? '正T' : '倒T'}
@@ -738,7 +746,7 @@ export default function Statistics() {
                             {detailEntries.map((entry, idx) => {
                               const dir = entry.direction;
                               const dirLabel = dir === 'buy' ? '买入' : dir === 'sell' ? '卖出' : '划转';
-                              const dirColor = dir === 'buy' ? 'text-red-300' : dir === 'sell' ? 'text-green-300' : 'text-slate-300';
+                              const dirColor = dir === 'buy' ? 'text-blue-300' : dir === 'sell' ? 'text-purple-300' : 'text-slate-300';
                               return (
                                 <div
                                   key={entry.id ?? idx}
@@ -773,7 +781,7 @@ export default function Statistics() {
                                     </div>
                                     <div className="text-slate-400">
                                       对冲盈亏
-                                      <span className={`ml-1 ${(entry.realizedProfit ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                      <span className={`ml-1 ${(entry.realizedProfit ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'}`}>
                                         {(entry.realizedProfit ?? 0) >= 0 ? '+' : ''}¥{(entry.realizedProfit ?? 0).toFixed(2)}
                                       </span>
                                     </div>
@@ -820,8 +828,8 @@ export default function Statistics() {
           {/* ===== 模块 2：仓位维度统计 (Position Overall) ===== */}
           <div className="rounded-[28px] border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-5 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600/20">
-                <Wallet className="h-4 w-4 text-emerald-400" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-600/20">
+                <Wallet className="h-4 w-4 text-slate-400" />
               </div>
               <span className="text-sm font-semibold text-slate-200">仓位维度统计</span>
             </div>
@@ -849,7 +857,7 @@ export default function Statistics() {
               {/* 仓位累计利润 */}
               <div className="rounded-2xl bg-slate-950/80 p-3">
                 <div className="text-[11px] text-slate-500">仓位累计利润</div>
-                <div className={`mt-1.5 text-lg font-bold ${positionStats.totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                <div className={`mt-1.5 text-lg font-bold ${positionStats.totalProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
                   {positionStats.totalProfit >= 0 ? '+' : ''}¥{positionStats.totalProfit.toFixed(2)}
                 </div>
               </div>
@@ -953,9 +961,9 @@ export default function Statistics() {
                             <span
                               className={`${
                                 position.currentCost < originalCost
-                                  ? 'text-green-400'
+                                  ? 'text-red-400'
                                   : position.currentCost > originalCost
-                                    ? 'text-red-400'
+                                    ? 'text-green-400'
                                     : 'text-slate-100'
                               }`}
                             >
@@ -969,8 +977,8 @@ export default function Statistics() {
                             className={`mt-1 text-sm font-semibold ${
                               totalProfit != null
                                 ? totalProfit >= 0
-                                  ? 'text-green-400'
-                                  : 'text-red-400'
+                                  ? 'text-red-400'
+                                  : 'text-green-400'
                                 : 'text-slate-100'
                             }`}
                           >
@@ -1040,15 +1048,20 @@ export default function Statistics() {
                                       className="flex items-center justify-between text-xs text-slate-400"
                                     >
                                       <span>
-                                        {batch.type === 'open'
-                                          ? '建仓'
-                                          : batch.type === 'add'
-                                            ? '加仓'
-                                            : batch.type === 'reduce'
-                                              ? '减仓'
-                                              : '结清'}
+                                        {batch.kind === 'borrow'
+                                          ? '出借'
+                                          : batch.type === 'open'
+                                            ? '建仓'
+                                            : batch.type === 'add'
+                                              ? '加仓'
+                                              : batch.type === 'reduce'
+                                                ? '减仓'
+                                                : '结清'}
                                         {' · '}
                                         ¥{batch.price.toFixed(2)} × {batch.amount} 股
+                                        {batch.kind === 'borrow' && batch.costPrice !== undefined && (
+                                          <span className="text-slate-500 ml-1">成本¥{batch.costPrice.toFixed(2)}</span>
+                                        )}
                                       </span>
                                       <span className="text-slate-500">
                                         {fmtDate(batch.timestamp)}

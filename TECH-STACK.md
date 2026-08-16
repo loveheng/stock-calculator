@@ -257,7 +257,7 @@ addPosition: (pos) => {
   safePersist(() => putPositionWithBatches(pos, pos.batches));
 },
 
-// utils.ts —— 纯函数（generateId / useStreamResults / archiveRoundIfCleared）
+// utils.ts —— 纯函数（generateId / useStreamResults / finalizeRoundIfCleared）
 ```
 
 ### 在组件中使用
@@ -315,9 +315,8 @@ Dexie 是对 IndexedDB 原生 API 的封装库（≈ 简洁的 ORM）：
 | `stocks` | fullCode | 股票字典表（含 kind 费率分类） |
 | `positions` | id | 持仓主表 |
 | `positionBatches` | id | 持仓批次明细表（1:N） |
-| `tRounds` | id | 做T战报表 |
-| `tTransactions` | id | 战报成交明细表（1:N） |
-| `tStreams` | id | 做T流水池（进行中） |
+| `tRounds` | id | 做T轮次表（OPENED 进行中 / COMPLETED 已归档） |
+| `tTransactions` | id | 做T流水唯一持久化表（Round 内流水池 + 成交明细，1:N） |
 | `accountCash` | id=1 | 现金账户（单行） |
 | `cashFlows` | id | 现金流水（预留） |
 | `tradeNotes` | id | 交易笔记（预留） |
@@ -328,13 +327,13 @@ Dexie 是对 IndexedDB 原生 API 的封装库（≈ 简洁的 ORM）：
 // 表定义（声明主键与索引）
 class TradingLedgerDB extends Dexie {
   positions!: Table<PositionEntity, string>;   // 主键类型为 string
-  tStreams!: Table<TStreamEntity, string>;
+  tRounds!: Table<TRoundEntity, string>;
 
   constructor() {
     super('TradingLedgerDB_v3');
     this.version(2).stores({
       positions: 'id, fullCode, isClosed, [isClosed+isDeleted], ...',
-      tStreams: 'id, fullCode, direction, timestamp, ...',
+      tTransactions: 'id, roundId, fullCode, direction, timestamp, ...',
       // 逗号分隔的字段都会建立索引；[a+b] 表示复合索引
     });
   }
@@ -350,8 +349,8 @@ await db.positions.put({ id: 'abc', fullCode: 'sh600000', ... });
 // 按主键删除
 await db.positions.delete('abc');
 
-// 按索引查询
-const records = await db.tStreams.where({ fullCode: 'sh600000' }).toArray();
+// 按索引查询（v8：做T流水归属 Round）
+const records = await db.tTransactions.where({ roundId: 'xxx' }).toArray();
 
 // 复合索引查询
 await db.positions.where('[isClosed+isDeleted]').equals([0, 0]).toArray();
@@ -516,7 +515,7 @@ npm run test:watch  # 监听模式，文件变化自动重跑
 
 ```javascript
 // 解构赋值（≈ record 模式匹配）
-const { tStreams, feeConfig } = get();
+const { tRounds, feeConfig } = get();
 
 // 展开运算符（浅拷贝）
 const newArray = [...oldArray, newItem];

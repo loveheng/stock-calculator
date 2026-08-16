@@ -17,3 +17,8 @@ User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 GET https://smartbox.gtimg.cn/s3/?q=闻&t=all
 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 
+### 腾讯实时行情（多代码批量合并，单次请求返回多行）
+### 响应逐行形如：v_sh600745="1~*ST闻泰~600745~17.15~...";v_sz002594="0~比亚迪~002594~100.00~...";
+GET https://qt.gtimg.cn/q=sh600745,sz002594
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)
+

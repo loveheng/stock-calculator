@@ -36,8 +36,6 @@ export interface TStreamRecord {
   amount: number;
   /** 该笔交易的摩擦成本（由系统费率动态计算） */
   fee: number;
-  /** @deprecated 倒T卖出时从底仓扣减的数量（旧引擎兼容字段） */
-  baseDeductedAmount?: number;
   note?: string;
   quoteId?: string;
   selectedStock?: any;
@@ -197,6 +195,19 @@ export interface TStateMachineState {
   currentCost: number;
   /** 当前持有数量（做 T 过程中动态持有量） */
   currentQuantity: number;
+
+  /**
+   * 正T未平仓买入 FIFO 队列：每笔记录「剩余未对冲数量 / 对应纯成交额 / 对应摩擦」，
+   * 卖出平仓时严格按先进先出逐笔消耗（真 FIFO，非加权平均比例法）。
+   */
+  pendingBuys?: Array<{ quantity: number; turnover: number; friction: number }>;
+  /**
+   * 倒T未回补卖出 FIFO 队列：每笔记录「剩余未回补数量 / 对应卖出回收 / 对应摩擦」，
+   * 回补买入时严格按先进先出逐笔消耗。
+   */
+  pendingSells?: Array<{ quantity: number; turnover: number; friction: number }>;
+  /** 倒T累计借出（卖出）总量，用于推导 shortPendingAmount（剩余未回补量） */
+  initialShortSellQty?: number;
 
   /** 所有步骤节点 */
   steps: TStepNode[];

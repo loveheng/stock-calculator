@@ -5,24 +5,23 @@
  *              一键划转底仓（绝对现金流法）、倒T结算归档，并内嵌归档历史库
  *              （Round 卡片 + 胜率 + 累计净收益）。
  * @layer UI
- * @storage_impact 写表：tStreams（流水池，applyStreamRecord）、tRounds（结算归档）、
+ * @storage_impact 写表：tTransactions（做T流水，随录入逐笔落库）、tRounds（Round 概览与结清）、
  *                 positions/batches/cashTransactions（划转/现金流）；
  *                 读表：settings（费率）。
  * @author 开发团队
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useAppStore,
   useStreamResults,
   generateId,
   type Position,
-  type LongTermRecord,
   type RoundTxn,
 } from '../store';
 import { ledgerService } from '../services/ledgerService';
-import type { LongTermRecordRow } from '../db/index';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
+import { useLiveQuotes } from '../hooks/useLiveQuotes';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
 import {
   validateStreamTrade,
@@ -36,12 +35,14 @@ import {
   resolveOverBuyAutoHedge,
   resolveOverBuyHedgeThenReverse,
   cancelDefenseDialog,
+  calcHedgeBreakeven,
   type TStreamRecord,
   type StockStreamResult,
 } from '../utils/tStreamEngine';
+import { validateSellWithStreamResult } from '../utils/validation';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import ConfirmModal from '../components/ui/ConfirmModal';
-import type { StockSearchItem } from '../types/stock';
+import type { StockQuoteSummary, StockSearchItem } from '../types/stock';
 import type {
   BasePosition,
   TStepNode,
@@ -82,7 +83,7 @@ function pnlColor(value: number): string {
 function StreamStatusBadge({ result }: { result: StockStreamResult }) {
   if (result.status === 'CLEARED') {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-500/15 text-emerald-400">
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-blue-500/15 text-blue-400">
         ✓ 已完全结清
       </span>
     );
@@ -110,14 +111,14 @@ function StreamStatusBadge({ result }: { result: StockStreamResult }) {
 
 /** 步骤节点颜色映射 */
 const STEP_COLORS: Record<string, string> = {
-  buy: 'bg-red-500/10 border-red-500/30',
-  sell: 'bg-emerald-500/10 border-emerald-500/30',
+  buy: 'bg-blue-500/10 border-blue-500/30',
+  sell: 'bg-purple-500/10 border-purple-500/30',
 };
 
 /** 结算标签颜色映射 */
 const SETTLE_LABEL_COLORS: Record<string, string> = {
-  green: 'bg-emerald-500/15 text-emerald-400',
-  red: 'bg-red-500/15 text-red-400',
+  green: 'bg-blue-500/15 text-blue-400',
+  red: 'bg-purple-500/15 text-purple-400',
   blue: 'bg-blue-500/15 text-blue-400',
   purple: 'bg-purple-500/15 text-purple-400',
   orange: 'bg-orange-500/15 text-orange-400',
@@ -129,7 +130,17 @@ const SETTLE_LABEL_COLORS: Record<string, string> = {
  * @description 渲染做 T 状态机中的单步快照：动作、本步支出/回收、摩擦成本、
  *              累计利润、当前持仓成本与数量。
  */
-function StepNodeCard({ node }: { node: TStepNode }) {
+function StepNodeCard({
+  node,
+  baseCost,
+  baseQty,
+  netPendingQty,
+}: {
+  node: TStepNode;
+  baseCost: number;
+  baseQty: number;
+  netPendingQty: number;
+}) {
   const isBuy = node.direction === 'buy';
   return (
     <div className={`rounded-lg border p-2.5 text-xs space-y-1 ${STEP_COLORS[node.direction]}`}>
@@ -137,7 +148,7 @@ function StepNodeCard({ node }: { node: TStepNode }) {
         <div className="flex items-center gap-2">
           <span className="text-slate-500 font-mono tabular-nums">#{node.index}</span>
           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-            isBuy ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'
+            isBuy ? 'bg-blue-500/15 text-blue-400' : 'bg-purple-500/15 text-purple-400'
           }`}>
             {isBuy ? '买入' : '卖出'}
           </span>
@@ -171,11 +182,13 @@ function StepNodeCard({ node }: { node: TStepNode }) {
           </div>
         </div>
         <div>
-          <span className="text-slate-500">当前持仓</span>
+          <span className="text-slate-500">底仓基准</span>
           <div className="font-mono font-semibold text-blue-400 tabular-nums">
-            ¥{node.currentCost.toFixed(3)}
+            {baseQty} 股 @ ¥{baseCost.toFixed(3)}
           </div>
-          <span className="text-[10px] text-slate-500 tabular-nums">{node.currentQuantity} 股</span>
+          <span className="text-[10px] text-amber-400 tabular-nums">
+            在途敞口 +{netPendingQty} 股
+          </span>
         </div>
       </div>
       {node.note && <div className="text-[10px] text-slate-500 italic">{node.note}</div>}
@@ -210,7 +223,7 @@ function SettlementCardView({ card }: { card: TSettlementCard }) {
         </div>
         <div>
           <span className="text-slate-500">总摩擦成本</span>
-          <div className="font-mono font-semibold text-red-400 tabular-nums">{formatCurrency(card.totalFrictionCost)}</div>
+          <div className="font-mono font-semibold text-slate-400 tabular-nums">{formatCurrency(card.totalFrictionCost)}</div>
         </div>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -312,8 +325,8 @@ function TStateMachinePanel({
   const [defenseSMCopy, setDefenseSMCopy] = useState<TStateMachineState | null>(null);
 
   // 逐条推进状态机
-  const { smState, triggeredDefense } = useMemo(() => {
-    if (!basePosition || entries.length === 0) return { smState: null, triggeredDefense: false };
+  const { smState, triggeredDefense, pendingPerStep } = useMemo(() => {
+    if (!basePosition || entries.length === 0) return { smState: null, triggeredDefense: false, pendingPerStep: [] as number[] };
     // 按时间升序排列流水
     const sorted = [...entries].sort((a, b) => {
       const ta = new Date(a.timestamp).getTime();
@@ -323,6 +336,7 @@ function TStateMachinePanel({
 
     let state = createInitialState(basePosition);
     let defense = false;
+    const pendingPerStep: number[] = [];
     for (const entry of sorted) {
       if (!feeConfig) break;
       const output = stepTEngine({
@@ -332,6 +346,12 @@ function TStateMachinePanel({
         basePosition,
       });
       state = output.newState;
+      // 在途敞口：正T = 未平买入剩余量；倒T = 未回补卖出剩余量
+      const pendingQty =
+        state.mode === 'long'
+          ? (state.pendingBuys ?? []).reduce((s, b) => s + b.quantity, 0)
+          : (state.pendingSells ?? []).reduce((s, b) => s + b.quantity, 0);
+      pendingPerStep.push(pendingQty);
       if (output.triggeredDefense) {
         defense = true;
         setDefenseSMCopy(state);
@@ -339,7 +359,7 @@ function TStateMachinePanel({
       }
       if (state.isClosed) break;
     }
-    return { smState: state, triggeredDefense: defense };
+    return { smState: state, triggeredDefense: defense, pendingPerStep };
   }, [entries, basePosition, feeConfig]);
 
   const handleDefenseSelect = (key: string) => {
@@ -393,8 +413,14 @@ function TStateMachinePanel({
       {expanded && (
         <div className="mt-2 space-y-2">
           {/* 步骤节点卡片 */}
-          {smState.steps.map((step) => (
-            <StepNodeCard key={step.recordId} node={step} />
+          {smState.steps.map((step, i) => (
+            <StepNodeCard
+              key={step.recordId}
+              node={step}
+              baseCost={basePosition.cost}
+              baseQty={basePosition.quantity}
+              netPendingQty={pendingPerStep[i] ?? 0}
+            />
           ))}
 
           {/* 结算卡片 */}
@@ -429,17 +455,17 @@ function TStateMachinePanel({
  * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
  *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
  *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
- * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number }} props
+ * @param {{ result: StockStreamResult; basePosition: Position | undefined }} props
 /**
  * 单个进行中做T项目卡片（核心业务卡片）。
  *
  * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
  *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
  *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
- * @param {{ result: StockStreamResult; basePosition: Position | undefined; roundNo: number }} props
+ * @param {{ result: StockStreamResult; basePosition: Position | undefined; quote: StockQuoteSummary | null }} props
  *  - result: 该标的的流水池撮合结果
  *  - basePosition: 对应底仓持仓（用于超卖校验与划转）
- *  - roundNo: 该标的当前做T轮次序号
+ *  - quote: 该标的最新实时行情（批量请求返回，无行情时为 null）
  * @returns {JSX.Element} 做T项目卡片视图
  * @note 写操作均委托 Store Action 落库并触发级联重算；超卖/数量校验由
  *       validateStreamTrade 在录入前拦截
@@ -447,20 +473,21 @@ function TStateMachinePanel({
 function CurrentProjectCard({
   result,
   basePosition,
-  roundNo,
   feeConfig,
+  quote,
 }: {
   result: StockStreamResult;
   basePosition: Position | undefined;
-  roundNo: number;
   feeConfig: FeeConfig | undefined;
+  quote: StockQuoteSummary | null;
 }) {
   const [showAppend, setShowAppend] = useState(false);
   const [showEntries, setShowEntries] = useState(false);
   const removeStreamRecord = useAppStore((s) => s.removeStreamRecord);
   /** entries 按时间倒序（最新在最上方），仅最新一条可撤销删除 */
   const sortedEntries = [...result.entries].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    //(a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    (a, b) => b.id.localeCompare(a.id)
   );
   const transferToPosition = useAppStore((s) => s.transferToPosition);
   const settleShortRound = useAppStore((s) => s.settleShortRound);
@@ -469,7 +496,30 @@ function CurrentProjectCard({
 
   const baseHolding = basePosition?.currentAmount ?? 0;
 
+  // ── 决策辅助派生量（仅 UI 展示，不参与底层撮合/状态机） ──
+  const remainingQty = Math.max(0, result.netPendingAmount);
+  const hasLivePrice = !!quote && quote.currentPrice > 0;
+  // 浮动盈亏（口径见下）：正T = (现价 - 加权买入均价) × 剩余；倒T = (平均卖出价 - 现价) × 剩余
+  const floatPnl = (() => {
+    if (!hasLivePrice || remainingQty <= 0) return null;
+    const cp = (quote as StockQuoteSummary).currentPrice;
+    if (result.mode === 'long') {
+      const basis = result.weightedBuyCost;
+      if (basis <= 0) return null;
+      return { amount: (cp - basis) * remainingQty, pct: ((cp - basis) / basis) * 100 };
+    }
+    const sellAmount = result.sellAmount > 0 ? result.sellAmount : 1;
+    const avgSell = result.sellValue / sellAmount;
+    if (avgSell <= 0) return null;
+    return { amount: (avgSell - cp) * remainingQty, pct: ((avgSell - cp) / avgSell) * 100 };
+  })();
+  // 保本对冲价（≥ ：正T 应卖出到位；≤ ：倒T 应回补至此价内）
+  const breakeven = calcHedgeBreakeven(result, feeConfig);
+
   const handleSettleShort = async () => {
+    // 倒T结算：直接走 settleShortRound（移除出借 + 未回补转真实卖出）
+    // 不能用 transferToPosition，因为倒T下 netPendingAmount 代表「未回补卖出量」
+    // 而非可划转的买入持仓，传给 transferToPosition 会导致错误加仓（如卖出300买回200 → 加仓100而非减仓100）
     const res = await settleShortRound(result.fullCode);
     if (res.ok) {
       addToast(res.message ?? '操作完成');
@@ -485,6 +535,18 @@ function CurrentProjectCard({
     } else {
       addToast(`🛑 ${res.message}`);
     }
+  };
+
+  // ---- [⚡ 快捷对冲]：自动带入剩余股数与最新价，打开追加弹窗（方向=卖出） ----
+  const handleQuickHedge = () => {
+    const remaining = Math.max(0, result.netPendingAmount);
+    if (remaining <= 0) return;
+    setApDir('sell');
+    setApAmount(String(remaining));
+    if (quote?.currentPrice && quote.currentPrice > 0) {
+      setApPrice(String(quote.currentPrice));
+    }
+    setShowAppend(true);
   };
 
   // ---- [+ 追加记录] 快速录入（同标的便捷追加，走同一撮合引擎） ----
@@ -503,14 +565,32 @@ function CurrentProjectCard({
   const apValidation = (() => {
     const p = parseFloat(apPrice);
     const a = parseFloat(apAmount);
+    if (apDir === 'sell') {
+      // 两级阶梯式校验（做T池待处理 + 中长期底仓）
+      return validateSellWithStreamResult(result, basePosition, a || 0);
+    }
     return validateStreamTrade(result, baseHolding, apDir, p || 0, a || 0);
   })();
 
   const fillAppendMaxSell = () => {
-    const max = Math.max(0, result.netPendingAmount + baseHolding);
+    // 倒T模式下 netPendingAmount 为负值，需 clamp 到 0 再参与计算
+    const pending = Math.max(0, result.netPendingAmount);
+    const max = Math.max(0, pending + baseHolding);
     if (max > 0) setApAmount(String(max));
     setApDir('sell');
   };
+
+  // 根据首笔流水时间生成纯时间戳流水号（不为空时使用 closedAt，否则使用 openedAt）
+  const roundCode = (() => {
+    const ts = result.openedAt ?? result.entries[0]?.timestamp ?? new Date().toISOString();
+    const d = new Date(ts);
+    const y = d.getFullYear();
+    const M = String(d.getMonth() + 1).padStart(2, '0');
+    const D = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return `#${y}${M}${D}-${h}${m}`;
+  })();
 
   const handleAppend = async () => {
     setApError('');
@@ -557,12 +637,18 @@ function CurrentProjectCard({
           <span className="font-semibold text-slate-200 truncate">{result.stockName}</span>
           <span className="text-xs text-slate-500 shrink-0">{result.fullCode}</span>
           <span className="text-xs bg-slate-700/80 text-slate-200 px-1.5 py-0.5 rounded-full font-bold shrink-0">
-            Round {roundNo}
+            {roundCode}
           </span>
-          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${result.mode === 'short' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${result.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
             {result.mode === 'short' ? '倒T' : '正T'}
           </span>
           <StreamStatusBadge result={result} />
+          {quote && quote.currentPrice > 0 && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-bold shrink-0 ${quote.changePercent >= 0 ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+              现价 ¥{quote.currentPrice.toFixed(3)}（{quote.changePercent >= 0 ? '+' : ''}
+              {quote.changePercent.toFixed(2)}%）
+            </span>
+          )}
         </div>
         {basePosition && basePosition.currentAmount === 0 ? (
           <span className="text-xs text-amber-300 shrink-0 bg-amber-500/10 px-2 py-0.5 rounded-full">
@@ -598,6 +684,19 @@ function CurrentProjectCard({
           <div className={`font-mono font-semibold tabular-nums ${pnlColor(result.realizedPnL)}`}>
             {formatCurrency(result.realizedPnL)}
           </div>
+          {floatPnl && (
+            <div className="mt-0.5 font-mono text-[10px] tabular-nums">
+              <span className="text-slate-500">浮动 </span>
+              <span className={pnlColor(floatPnl.amount)}>
+                {floatPnl.amount >= 0 ? '+' : ''}{formatCurrency(floatPnl.amount)}
+              </span>
+              <span className="text-slate-500">（</span>
+              <span className={pnlColor(floatPnl.pct)}>
+                {floatPnl.pct >= 0 ? '+' : ''}{floatPnl.pct.toFixed(1)}%
+              </span>
+              <span className="text-slate-500">）</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -615,6 +714,15 @@ function CurrentProjectCard({
         <div>
           已卖 {result.realizedSellAmount} 股 / 总买 {result.buyAmount} 股 / {result.tradeCount} 笔 / 持股 {result.holdingDays} 天
         </div>
+        {/* 决策辅助：保本对冲价（正T ≥ 卖出到位；倒T ≤ 回补到位） */}
+        {breakeven && remainingQty > 0 && (
+          <div>
+            保本对冲价：
+            <span className="font-mono font-semibold text-amber-400 tabular-nums">
+              {breakeven.symbol === 'gte' ? '≥' : '≤'} ¥{breakeven.price.toFixed(3)}
+            </span>
+          </div>
+        )}
         {/* 倒T成本继承：底仓 (P_base × N_sell) 并入 P_avg 加权池，全部卖出统一按融合 P_avg 结算 */}
         {result.firstSellCostBasis && result.firstSellCostBasis > 0 && result.inheritedBaseAmount && (
           <div className="text-xs">
@@ -648,8 +756,8 @@ function CurrentProjectCard({
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                           entry.direction === 'buy'
-                            ? 'bg-red-500/15 text-red-400'
-                            : 'bg-emerald-500/15 text-emerald-400'
+                            ? 'bg-blue-500/15 text-blue-400'
+                            : 'bg-purple-500/15 text-purple-400'
                         }`}
                       >
                         {entry.direction === 'buy' ? '买入' : '卖出'}
@@ -686,17 +794,33 @@ function CurrentProjectCard({
                       )}
                     </div>
                     <div className="flex flex-wrap gap-2 items-center">
-                      <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
-                      <span
-                        className={
-                          entry.realizedProfit >= 0
-                            ? 'text-red-400'
-                            : 'text-green-400'
-                        }
-                      >
-                        {entry.realizedProfit >= 0 ? '+' : ''}
-                        {formatCurrency(entry.realizedProfit)}
-                      </span>
+                      {entry.direction === 'buy' ? (
+                        /* BUY（开仓腿）：无撮合收益，仅展示对冲进度，隐藏误导性的 +¥0.00 */
+                        <span
+                          className={`font-mono tabular-nums ${
+                            entry.matchedAmount > 0 ? 'text-sky-400' : 'text-amber-400'
+                          }`}
+                        >
+                          {entry.matchedAmount <= 0
+                            ? `待对冲 (${entry.amount}股未平)`
+                            : `已对冲 ${entry.matchedAmount}股 / 余 ${entry.amount - entry.matchedAmount}股`}
+                        </span>
+                      ) : (
+                        /* SELL（平仓腿）：保持原有撮合量与收益展示 */
+                        <>
+                          <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
+                          <span
+                            className={
+                              entry.realizedProfit >= 0
+                                ? 'text-red-400'
+                                : 'text-green-400'
+                            }
+                          >
+                            {entry.realizedProfit >= 0 ? '+' : ''}
+                            {formatCurrency(entry.realizedProfit)}
+                          </span>
+                        </>
+                      )}
                     </div>
                     {entry.note && (
                       <div className="text-slate-500">{entry.note}</div>
@@ -715,18 +839,31 @@ function CurrentProjectCard({
         feeConfig={feeConfig}
       />
 
-      <div className="pt-3 grid grid-cols-4 gap-2">
+      <div className="pt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
         <button
           type="button"
           onClick={() => setShowAppend(true)}
-          className="col-span-4 md:col-span-3 btn btn-primary !py-3"
+          className="col-span-2 md:col-span-2 btn btn-primary !py-3"
         >
           + 追加记录
         </button>
         <button
           type="button"
+          onClick={handleQuickHedge}
+          className={`col-span-1 md:col-span-1 btn !py-3 ${
+            remainingQty > 0
+              ? 'bg-amber-500 hover:bg-amber-400 text-slate-900'
+              : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+          }`}
+          disabled={remainingQty <= 0}
+          title={remainingQty > 0 ? `以最新价 ¥${quote?.currentPrice?.toFixed?.(3) ?? '--'} 对冲剩余 ${remainingQty} 股` : '无剩余待对冲持仓'}
+        >
+          ⚡ 快捷对冲
+        </button>
+        <button
+          type="button"
           onClick={result.mode === 'short' ? handleSettleShort : handleTransfer}
-          className="col-span-4 md:col-span-1 btn btn-warning !py-3"
+          className="col-span-1 md:col-span-1 btn btn-warning !py-3"
           disabled={result.mode !== 'short' && result.netPendingAmount <= 0}
         >
           {result.mode === 'short' ? '结算 / 转底仓' : '一键划转底仓'}
@@ -840,6 +977,11 @@ function CurrentProjectCard({
                   {apError}
                 </div>
               )}
+              {apValidation.warning && (
+                <div className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+                  ⚠️ {apValidation.warning}
+                </div>
+              )}
               <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
@@ -868,10 +1010,12 @@ function CurrentProjectCard({
  * 归档历史库 Round 战报卡片。
  *
  * @description 展示已归档做T战报：Round 编号、正/倒T标签、结算类型（平仓/归并/划转）、
- *              净收益、卖出数量、融合均价、成交明细穿透；
+ *              顶部一行状态徽章（左侧）+ 右上角结算徽章；中部 2×2 核心指标：
+ *              落袋净收益（高亮）/ 已对冲数量 / 买·卖加权均价 / 归并底仓（或「全部结清」）；
+ *              成交明细穿透逐行标注「撮合量+已实现收益」「买入规费」「归并」对冲状态；
  *              提供「删除战报」操作，自动级联撤销归并底仓数据。
  * @param {{ round: TRound; onRemove: (id) => { ok: boolean; message?: string } }} props
- *  - round: 归档战报记录（列表加载为轮次摘要，不含明细；展开「查看成交明细」时按需查询）
+ *  - round: 归档战报记录（列表加载为轮次摘要，不含明细；卡片挂载时预取一次明细用于推导买/卖均价）
  *  - onRemove: 删除回调，返回删除结果
  * @returns {JSX.Element} 战报卡片视图
  * @note 删除属于写操作，通过 store.removeRound 落库，自动处理归并回滚
@@ -885,17 +1029,13 @@ function ArchiveRoundCard({
 }) {
   const [showTxns, setShowTxns] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  // 成交明细按需加载：列表加载器只返回轮次摘要（不含 transactions），
-  // 首次展开时才查询 IndexedDB（fetchTransactionsByRoundId）
+  // 成交明细按需加载：列表加载器只返回轮次摘要（不含 transactions）。
+  // 为在卡片主体直接呈现「买/卖均价」，需在挂载时预取一次明细；
+  // 展开/收起仅切换可视性（toggleTxns），不再重复查询。
   const [txns, setTxns] = useState<RoundTxn[]>([]);
   const [txnsLoading, setTxnsLoading] = useState(false);
   const txnsLoadedRef = useRef(false);
-  const toggleTxns = () => {
-    if (showTxns) {
-      setShowTxns(false);
-      return;
-    }
-    setShowTxns(true);
+  const loadTxns = useCallback(() => {
     if (txnsLoadedRef.current) return;
     txnsLoadedRef.current = true;
     setTxnsLoading(true);
@@ -904,10 +1044,28 @@ function ArchiveRoundCard({
       .then((list) => setTxns(list))
       .catch(() => setTxns([]))
       .finally(() => setTxnsLoading(false));
-  };
+  }, [round.id]);
+  useEffect(() => {
+    loadTxns();
+  }, [loadTxns]);
+  // 明细已在挂载时预取（见 loadTxns/useEffect），此处仅切换展开/收起。
+  const toggleTxns = () => setShowTxns((v) => !v);
 
   const hasMerge = round.transferAmount && round.transferAmount > 0;
   const mergeLabel = round.mode === 'long' ? '正T归并' : '倒T归并';
+
+  // ── 由成交明细派生的核心指标（买/卖加权均价、已对冲数量）──
+  // 买均价优先用明细加权实算；缺明细时回退到 round.avgPrice（= 买入加权均价 buyTotal/buyAmount）。
+  const buyAmt = txns.filter((t) => t.direction === 'buy').reduce((s, t) => s + t.amount, 0);
+  const buyVal = txns.filter((t) => t.direction === 'buy').reduce((s, t) => s + t.price * t.amount, 0);
+  const sellAmt = txns.filter((t) => t.direction === 'sell').reduce((s, t) => s + t.amount, 0);
+  const sellVal = txns.filter((t) => t.direction === 'sell').reduce((s, t) => s + t.price * t.amount, 0);
+  const buyAvg = buyAmt > 0 ? buyVal / buyAmt : (round.avgPrice ?? NaN);
+  const sellAvg = sellAmt > 0 ? sellVal / sellAmt : NaN;
+  const hasSellAvg = Number.isFinite(sellAvg) && sellAvg > 0;
+  const fmtAvg = (v: number) => (Number.isFinite(v) && v > 0 ? v.toFixed(3) : '--');
+  // 已对冲数量 = 已撮合卖出量（round.sellAmount 即 realizedSellAmount）
+  const hedgedQty = Math.max(0, round.sellAmount ?? 0);
 
   const deleteConfirmMessage = hasMerge
     ? `删除此战报将同步撤销归并的 ${round.transferAmount} 股持仓及对应金额（约 ¥${((round.avgPrice ?? 0) * (round.transferAmount ?? 0)).toFixed(2)}），底仓成本将重新计算，并同步删除中长期记录中对应的【归并】历史，是否确认删除？`
@@ -919,9 +1077,9 @@ function ArchiveRoundCard({
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="font-semibold text-slate-200 truncate">{round.stockName}</span>
           <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full font-bold shrink-0">
-            Round {round.roundNo}
+            {round.roundCode}
           </span>
-          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.mode === 'short' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
             {round.mode === 'short' ? '倒T' : '正T'}
           </span>
         </div>
@@ -950,38 +1108,46 @@ function ArchiveRoundCard({
           )}
         </div>
       </div>
-      {round.netProfit !== 0 && (
-        <div>
-          <span className={`px-2 py-0.5 rounded-full text-xs font-bold shrink-0 ${round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
-            {round.win ? '✓ 盈利' : '✗ 亏损'}
-          </span>
-        </div>
-      )}
       <div className="text-xs text-slate-500">
         {new Date(round.openedAt ?? '').toLocaleDateString()} ~ {new Date(round.closedAt ?? '').toLocaleDateString()} · 持股 {round.holdingDays ?? 0} 天 · {round.tradeCount ?? 0} 笔
+        {round.totalFees ? ` · 规费合计 ¥${round.totalFees.toFixed(2)}` : ''}
       </div>
-      <div className="grid grid-cols-3 gap-2 text-xs">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg bg-slate-900/70 border border-slate-700/60 p-3">
+        {/* 落袋净收益（Round 绝对现金流净收益） */}
         <div>
-          <span className="text-slate-500">净收益</span>
-          <div className={`font-mono font-semibold tabular-nums ${pnlColor(round.netProfit)}`}>
-            {formatCurrency(round.netProfit)}
+          <div className="text-[11px] text-slate-500">落袋净收益</div>
+          <div className={`font-mono text-xl font-bold tabular-nums mt-0.5 leading-tight ${pnlColor(round.netProfit)}`}>
+            {round.netProfit >= 0 ? '+' : ''}{formatCurrency(round.netProfit)}
           </div>
         </div>
+        {/* 已对冲数量（已撮合卖出量） */}
         <div>
-          <span className="text-slate-500">卖出</span>
-          <div className="font-mono font-semibold text-slate-200 tabular-nums">{round.sellAmount} 股</div>
+          <div className="text-[11px] text-slate-500">已对冲数量</div>
+          <div className="font-mono font-semibold text-slate-200 tabular-nums mt-0.5">{hedgedQty} 股</div>
         </div>
+        {/* 买 / 卖均价（加权实算，缺明细时回退） */}
         <div>
-          <span className="text-slate-500">均价</span>
-          <div className="font-mono font-semibold text-blue-400 tabular-nums">¥{(round.avgPrice ?? 0).toFixed(3)}</div>
+          <div className="text-[11px] text-slate-500">买 / 卖均价</div>
+          {/* 紧凑双行排列，避免均值被 truncate 截断成 "¥17..." */}
+          <div className="font-mono font-semibold tabular-nums mt-0.5 leading-snug">
+            <div className="whitespace-nowrap text-blue-400">买 ¥{fmtAvg(buyAvg)}</div>
+            <div className={hasSellAvg ? 'whitespace-nowrap text-purple-400' : 'whitespace-nowrap text-slate-500'}>
+              卖 ¥{fmtAvg(sellAvg)}
+            </div>
+          </div>
+        </div>
+        {/* 归并底仓：有归并则高亮数量与价位；无归并显示全部结清 */}
+        <div>
+          <div className="text-[11px] text-slate-500">归并底仓</div>
+          <div className="font-mono font-semibold tabular-nums mt-0.5 leading-tight">
+            {hasMerge ? (
+              <span className="text-amber-400">+{round.transferAmount} 股 @ ¥{(round.avgPrice ?? 0).toFixed(3)}</span>
+            ) : (
+              <span className="text-emerald-400">全部结清</span>
+            )}
+          </div>
         </div>
       </div>
-      {/* 成交明细穿透（含撮合配对与划转记录） */}
-      {round.transferAmount && (
-        <div className="text-xs text-slate-400 pb-2">
-          划转底仓：{round.transferAmount} 股 @ ¥{(round.avgPrice ?? 0).toFixed(3)}
-        </div>
-      )}
       <div>
         <button
           onClick={toggleTxns}
@@ -996,37 +1162,58 @@ function ArchiveRoundCard({
             {txnsLoading ? (
               <div className="text-[11px] text-slate-500 py-1">成交明细加载中…</div>
             ) : txns.length > 0 ? (
-              txns.map((t) => (
+              txns.map((t) => {
+              const isSell = t.direction === 'sell';
+              const isMerge = t.direction === 'merge';
+              // 卖出行=平仓腿：以成交量为撮合量；仅当明细持久化了有效 matchedAmount(>0) 时
+              // 才用它覆盖（归档写路径缺 matchedAmount，读回恒为 0，需回退到成交量）。
+              const matched = isSell ? ((t.matchedAmount ?? 0) > 0 ? t.matchedAmount : t.amount) : 0;
+              const hasProfit = isSell && (t.realizedProfit ?? 0) !== 0;
+              return (
                 <div
                   key={t.id}
                   className="flex items-center justify-between gap-2 text-[11px] text-slate-400"
                 >
-                  <span className="shrink-0">{new Date(t.timestamp).toLocaleString()}</span>
-                  <span
-                    className={`px-1 rounded text-[10px] font-bold shrink-0 ${
-                      t.direction === 'buy'
-                        ? 'bg-red-500/15 text-red-400'
-                        : t.direction === 'sell'
-                        ? 'bg-emerald-500/15 text-emerald-400'
-                        : 'bg-purple-500/15 text-purple-400'
-                    }`}
-                  >
-                    {t.direction === 'buy' ? '买' : t.direction === 'sell' ? '卖' : '转'}
-                  </span>
-                  <span className="font-mono shrink-0">
-                    {t.amount} 股 @ ¥{t.price.toFixed(2)}
-                  </span>
-                  <span className="font-mono tabular-nums shrink-0">
-                    {(t.matchedAmount ?? 0) > 0 ? `⚡${t.matchedAmount}股 ` : ''}
-                    {t.realizedProfit !== 0 &&
-                      (t.direction === 'sell' ? (
-                        <span className={pnlColor(t.realizedProfit ?? 0)}>{formatCurrency(t.realizedProfit ?? 0)}</span>
-                      ) : (
-                        <span className="text-slate-500">--</span>
-                      ))}
-                  </span>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="shrink-0">{new Date(t.timestamp).toLocaleString()}</span>
+                    <span
+                      className={`px-1 rounded text-[10px] font-bold shrink-0 ${
+                        t.direction === 'buy'
+                          ? 'bg-blue-500/15 text-blue-400'
+                          : isMerge
+                          ? 'bg-amber-500/15 text-amber-400'
+                          : 'bg-purple-500/15 text-purple-400'
+                      }`}
+                    >
+                      {t.direction === 'buy' ? '买' : isMerge ? '归' : '卖'}
+                    </span>
+                    <span className="font-mono shrink-0">
+                      {t.amount} 股 ¥{t.price.toFixed(2)}
+                    </span>
+                  </div>
+                  {/* 右侧：对冲/归并状态 */}
+                  {isMerge ? (
+                    <span className="font-mono tabular-nums text-amber-400 shrink-0">
+                      归并 {t.amount} 股
+                    </span>
+                  ) : isSell ? (
+                    <span className="font-mono tabular-nums shrink-0">
+                      <span className="text-slate-200">撮合 {matched} 股</span>
+                      {hasProfit && (
+                        <span className={pnlColor(t.realizedProfit ?? 0)}>
+                          {(t.realizedProfit ?? 0) >= 0 ? ' +' : ' '}
+                          {formatCurrency(t.realizedProfit ?? 0)}
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="font-mono tabular-nums text-slate-500 shrink-0">
+                      规费 ¥{t.fee.toFixed(2)}
+                    </span>
+                  )}
                 </div>
-              ))
+              );
+            })
             ) : (
               <div className="text-[11px] text-slate-500 py-1">暂无成交明细</div>
             )}
@@ -1069,40 +1256,40 @@ function ArchiveRoundCard({
  *  - 历史战报归档库（胜率 + 累计净收益 + 战报卡片）
  *  所有写操作均通过 Store Action 落库 IndexedDB 并级联重算流水池。
  * @returns {JSX.Element} 做T账本与计算器页面视图
- * @note 页面挂载即订阅 tStreams/positions/tRounds 实时响应 Store 变化（数据由 useLoadCoreData 按需加载）
+ * @note 页面挂载即订阅 tRounds（OPENED 流水池 + 归档）/positions 实时响应 Store 变化（数据由 useLoadCoreData 按需加载）
  */
 export default function TCalculator() {
-  const tStreams = useAppStore((s) => s.tStreams);
   const feeConfig = useAppStore((s) => s.feeConfig);
   const positions = useAppStore((s) => s.positions);
   const tRounds = useAppStore((s) => s.tRounds);
   // 已归档 Round（按需懒加载，进入页面时异步加载）
   const { archivedRounds, archivedLoading } = useArchivedRounds();
-  // 中长期操作记录（按需懒加载，启动时不加载）
-  const [archivedLongTermRecords, setArchivedLongTermRecords] = useState<LongTermRecordRow[]>([]);
-  const [ltrLoading, setLtrLoading] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    setLtrLoading(true);
-    ledgerService.fetchAllLongTermRecords().then((records) => {
-      if (!cancelled) {
-        setArchivedLongTermRecords(records);
-        setLtrLoading(false);
-      }
-    });
-    return () => { cancelled = true; };
-  }, []);
   const addStreamRecord = useAppStore((s) => s.addStreamRecord);
-  const validateSellWithPosition = useAppStore((s) => s.validateSellWithPosition);
-  const importLegacyTRecords = useAppStore((s) => s.importLegacyTRecords);
   const removeRound = useAppStore((s) => s.removeRound);
   const clearStreams = useAppStore((s) => s.clearStreams);
-  // 不再从 store 读取 longTermRecords（启动时返回 []），改用按需加载的 archivedLongTermRecords
-
   const results = useStreamResults();
+
+  // 仅展示进行中的做T项目（CLEARED = 池内流水已全部配对并自动归档为战报，不再属于当前项目）
+  const activeResults = useMemo(() => results.filter((r) => r.status !== 'CLEARED'), [results]);
 
   // 表单状态
   const [stock, setStock] = useState<StockSearchItem | null>(null);
+
+  // 实时行情：订阅「当前页面显示的标的」= 选中股票 + 所有进行中做T项目的 fullCode，
+  // 批量合并为单次请求（q=sh600745,sz002594），返回后各卡片一起更新现价
+  const quoteCodes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [...(stock?.fullCode ? [stock.fullCode] : []), ...activeResults.map((r) => r.fullCode)]
+            .map((c) => c.trim())
+            .filter(Boolean)
+        )
+      ),
+    [stock, activeResults]
+  );
+  const { quotes, isTrading, lastUpdated } = useLiveQuotes(quoteCodes);
+
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [price, setPrice] = useState('');
   const [amount, setAmount] = useState('');
@@ -1115,44 +1302,44 @@ export default function TCalculator() {
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<number | null>(null);
+
+  /** 统一显示 Toast 并自动消失 */
+  const showToast = useCallback((msg: string, duration = 4000) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast(msg);
+    // 下一帧触发淡入
+    requestAnimationFrame(() => requestAnimationFrame(() => setToastVisible(true)));
+    toastTimer.current = window.setTimeout(() => {
+      setToastVisible(false);
+      // 淡出动画结束后清理 DOM
+      toastTimer.current = window.setTimeout(() => setToast(null), 300);
+    }, duration);
+  }, []);
 
   // 监听全局 toast 事件
   useEffect(() => {
     const handler = (e: Event) => {
       const msg = (e as CustomEvent<string>).detail;
-      if (toastTimer.current) window.clearTimeout(toastTimer.current);
-      setToast(msg);
-      toastTimer.current = window.setTimeout(() => setToast(null), 4000);
+      showToast(msg, 4000);
     };
     window.addEventListener('app-toast', handler);
     return () => {
       window.removeEventListener('app-toast', handler);
       if (toastTimer.current) window.clearTimeout(toastTimer.current);
     };
-  }, []);
+  }, [showToast]);
 
-  // 持仓清零自动结清 Toast：监听撮合结果变化
-  const prevClearedRef = useRef<Map<string, boolean>>(new Map());
-  useEffect(() => {
-    const prev = prevClearedRef.current;
-    for (const r of results) {
-      const wasCleared = prev.get(r.fullCode) ?? false;
-      if (!wasCleared && r.status === 'CLEARED' && r.entries.some((e) => e.direction === 'sell')) {
-        if (toastTimer.current) window.clearTimeout(toastTimer.current);
-        setToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${r.realizedPnL.toFixed(2)}`);
-        toastTimer.current = window.setTimeout(() => setToast(null), 5000);
-      }
-      prev.set(r.fullCode, r.status === 'CLEARED');
-    }
-    prevClearedRef.current = prev;
-  }, [results]);
+  // 持仓清零自动结清 Toast：由各录入入口（主表单 handleSubmit / 追加 handleAppend）
+  // 基于 addStreamRecord 返回的 cleared 标志触发；v8 下 CLEARED 轮次会立即归档为
+  // COMPLETED Round 并从撮合结果中消失，因此不再基于 results 轮询检测。
 
   // ---- 派生：选中股票撮合结果 + 底仓 ----
   const selectedResult = useMemo(() => {
     if (!stock?.fullCode) return null;
-    return results.find((r) => r.fullCode === stock.fullCode) ?? null;
-  }, [results, stock?.fullCode]);
+    return activeResults.find((r) => r.fullCode === stock.fullCode) ?? null;
+  }, [activeResults, stock?.fullCode]);
 
   const basePosition = useMemo(() => {
     if (!stock?.fullCode) return undefined;
@@ -1162,12 +1349,12 @@ export default function TCalculator() {
   const validation = useMemo(() => {
     const p = parseFloat(price);
     const a = parseFloat(amount);
-    // 倒T（先卖后买）：调用 Store 共享的严格底仓校验（标的存在性 + 可卖数量 N_base）
+    // 倒T（先卖后买）：两级阶梯式校验
     if (direction === 'sell') {
-      return validateSellWithPosition(stock?.fullCode ?? '', direction, p || 0, a || 0);
+      return validateSellWithStreamResult(selectedResult, basePosition, a || 0);
     }
     return validateStreamTrade(selectedResult, basePosition?.currentAmount ?? 0, 'buy', p || 0, a || 0);
-  }, [validateSellWithPosition, stock?.fullCode, selectedResult, basePosition?.currentAmount, direction, price, amount]);
+  }, [selectedResult, basePosition, direction, price, amount]);
 
   // ---- 费用预览 ----
   const feePreview = useMemo(() => {
@@ -1195,10 +1382,8 @@ export default function TCalculator() {
     const a = parseFloat(amount);
     if (validation && !validation.valid) {
       // 倒T首笔卖出底仓校验失败（缺少持仓/超可卖数量）-> 阻止提交并弹出 Toast
-      if (toastTimer.current) window.clearTimeout(toastTimer.current);
-      setToast(`🛑 ${validation.error ?? '输入无效'}`);
+      showToast(`🛑 ${validation.error ?? '输入无效'}`, 4000);
       setError(validation.error ?? '输入无效');
-      toastTimer.current = window.setTimeout(() => setToast(null), 4000);
       return;
     }
 
@@ -1220,11 +1405,13 @@ export default function TCalculator() {
     const result = await addStreamRecord(record);
     // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量）-> 阻止提交并弹出 Toast
     if (result?.rejected) {
-      if (toastTimer.current) window.clearTimeout(toastTimer.current);
-      setToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`);
+      showToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`, 4000);
       setError(result.rejectedReason ?? '校验未通过');
-      toastTimer.current = window.setTimeout(() => setToast(null), 4000);
       return;
+    }
+    // 自动结清：本轮做T全部配对完成，Round 已归档
+    if (result.cleared) {
+      showToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
     }
     setPrice('');
     setAmount('');
@@ -1232,25 +1419,29 @@ export default function TCalculator() {
     setError('');
   };
 
-  const handleImportLegacy = () => {
-    const n = importLegacyTRecords();
-    if (toastTimer.current) window.clearTimeout(toastTimer.current);
-    setToast(n > 0 ? `已导入 ${n} 条历史流水` : '暂无历史做T记录可导入');
-    toastTimer.current = window.setTimeout(() => setToast(null), 3500);
-  };
+  // ---- 归档历史库胜率统计（仅统计「今日」完成的战报） ----
+  const todayArchivedRounds = useMemo(() => {
+    const now = new Date();
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+    return archivedRounds.filter((r) => {
+      const t = new Date(r.closedAt ?? r.openedAt).getTime();
+      return t >= dayStart && t < dayEnd;
+    });
+  }, [archivedRounds]);
 
-  // ---- 归档历史库胜率统计 ----
   const archiveStats = useMemo(() => {
-    const wins = archivedRounds.filter((r) => r.win).length;
-    const total = archivedRounds.length;
+    const wins = todayArchivedRounds.filter((r) => r.win).length;
+    const total = todayArchivedRounds.length;
     return {
       wins,
       total,
       rate: total > 0 ? (wins / total) * 100 : 0,
-      cumulative: archivedRounds.reduce((s, r) => s + r.netProfit, 0),
+      cumulative: todayArchivedRounds.reduce((s, r) => s + r.netProfit, 0),
     };
-  }, [archivedRounds]);
+  }, [todayArchivedRounds]);
 
+  // 汇总卡片口径：包含已结清（CLEARED）轮次在内，累计已实现净收益与「今日战报归档库」累计口径一致
   const totalPending = results.reduce((s, r) => s + Math.max(0, r.netPendingAmount), 0);
   const totalRealizedPnl = results.reduce((s, r) => s + r.realizedPnL, 0);
 
@@ -1262,20 +1453,37 @@ export default function TCalculator() {
           <h2 className="text-lg font-bold text-slate-200">做T账本 · Round 生命周期</h2>
           <p className="text-xs text-slate-500">流水池 FIFO 撮合 · 绝对现金流法 · 自动归档战报</p>
         </div>
-        <button
-          onClick={handleImportLegacy}
-          className="btn btn-outline btn-sm shrink-0"
-        >
-          导入历史记录
-        </button>
       </div>
 
-      {/* Toast */}
+      {/* Toast — 自动消失 + 淡入淡出 + 手动关闭 */}
       {toast && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-800 text-white text-sm shadow-lg border border-slate-600 animate-pulse">
-          {toast}
+        <div
+          className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-800 text-white text-sm shadow-lg border border-slate-600 transition-opacity duration-300 ${
+            toastVisible ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          <span className="mr-3">{toast}</span>
+          <button
+            onClick={() => { setToastVisible(false); setTimeout(() => setToast(null), 300); }}
+            className="text-slate-400 hover:text-white transition-colors text-base leading-none"
+            aria-label="关闭"
+          >
+            ✕
+          </button>
         </div>
       )}
+
+      {/* 实时行情状态：当前页全部标的批量合并为一次请求，交易时段每 5 秒刷新 */}
+      <div className="flex items-center justify-between px-1 text-xs">
+        <span className={isTrading ? 'text-blue-400 font-medium' : 'text-slate-500'}>
+          {isTrading ? '● 交易时段 · 行情每 5 秒自动刷新' : '○ 非交易时段 · 打开时刷新一次'}
+        </span>
+        {lastUpdated !== null && (
+          <span className="text-slate-600">
+            行情更新于 {new Date(lastUpdated).toLocaleTimeString('zh-CN', { hour12: false })}
+          </span>
+        )}
+      </div>
 
       {/* 汇总卡片 */}
       <div className="grid grid-cols-3 gap-3">
@@ -1292,9 +1500,9 @@ export default function TCalculator() {
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-3">
           <div className="text-xs text-slate-500">待对冲加权成本</div>
           <div className="font-mono font-bold text-lg text-blue-400 tabular-nums">
-            {results.length > 0
+            {activeResults.length > 0
               ? `¥${roundTo(
-                  results.reduce((s, r) => s + r.weightedBuyCost * Math.max(0, r.netPendingAmount), 0) /
+                  activeResults.reduce((s, r) => s + r.weightedBuyCost * Math.max(0, r.netPendingAmount), 0) /
                     Math.max(1, totalPending),
                   3
                 )}`
@@ -1317,7 +1525,7 @@ export default function TCalculator() {
                 : 'bg-slate-900 text-slate-400 hover:bg-slate-700'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
+            <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />
             正T · 买入
           </button>
           <button
@@ -1328,7 +1536,7 @@ export default function TCalculator() {
                 : 'bg-slate-900 text-slate-400 hover:bg-slate-700'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
+            <span className="w-2 h-2 rounded-full bg-purple-400 inline-block" />
             倒T · 卖出
           </button>
         </div>
@@ -1343,6 +1551,20 @@ export default function TCalculator() {
             placeholder="搜索股票代码/名称..."
           />
         </div>
+
+        {/* 选中股票的实时现价（来自批量行情请求） */}
+        {stock?.fullCode && quotes[stock.fullCode] && quotes[stock.fullCode]!.currentPrice > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className="text-slate-500">实时现价</span>
+            <span className={`font-mono font-bold text-sm tabular-nums ${quotes[stock.fullCode]!.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+              ¥{quotes[stock.fullCode]!.currentPrice.toFixed(3)}
+            </span>
+            <span className={`font-mono ${quotes[stock.fullCode]!.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+              {quotes[stock.fullCode]!.changePercent >= 0 ? '+' : ''}
+              {quotes[stock.fullCode]!.changePercent.toFixed(2)}%
+            </span>
+          </div>
+        )}
 
         <div className="form-row">
           <div className="form-group">
@@ -1420,6 +1642,13 @@ export default function TCalculator() {
           </div>
         )}
 
+        {/* 借仓对冲提示（仅卖出且需占用底仓时显示） */}
+        {validation?.warning && (
+          <div className="mt-3 flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+            <span className="text-xs text-amber-300">⚠️ {validation.warning}</span>
+          </div>
+        )}
+
         <button
           onClick={handleSubmit}
           className="btn btn-primary btn-block mt-2"
@@ -1432,7 +1661,7 @@ export default function TCalculator() {
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-semibold text-slate-200">当前做T项目</h3>
-          {results.length > 0 && (
+          {activeResults.length > 0 && (
             <button
               onClick={() => {
                 if (window.confirm('确认清空全部做T流水？')) clearStreams();
@@ -1444,20 +1673,19 @@ export default function TCalculator() {
           )}
         </div>
 
-        {results.length === 0 ? (
+        {activeResults.length === 0 ? (
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            暂无做T流水，从上方添加首笔买入/卖出自动开启 <b className="text-blue-400">Round 1</b>
+            暂无进行中的做T项目（已自动归档的战报请在下方「今日战报归档库」查看）
           </div>
         ) : (
-          results.map((r) => {
-            const roundNo = 1 + tRounds.filter((round) => round.fullCode === r.fullCode).length;
+          activeResults.map((r) => {
             return (
               <CurrentProjectCard
                 key={r.fullCode}
                 result={r}
                 basePosition={positions.find((p) => p.fullCode === r.fullCode && !p.isClosed)}
-                roundNo={roundNo}
                 feeConfig={feeConfig}
+                quote={quotes[r.fullCode] ?? null}
               />
             );
           })
@@ -1467,8 +1695,8 @@ export default function TCalculator() {
       {/* 归档历史库 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200">🏆 历史战报归档库</h3>
-          {tRounds.length > 0 && (
+          <h3 className="text-base font-semibold text-slate-200">🏆 今日战报归档</h3>
+          {todayArchivedRounds.length > 0 && (
             <div className="text-xs text-slate-400 flex items-center gap-3">
               <span>
                 胜率{' '}
@@ -1490,13 +1718,13 @@ export default function TCalculator() {
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
             加载历史战报数据...
           </div>
-        ) : archivedRounds.length === 0 ? (
+        ) : todayArchivedRounds.length === 0 ? (
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            做T持仓归零自动锁定战报 → 生成 Round 卡片
+            今日暂无已完成战报（做T持仓归零自动锁定战报 → 生成 Round 卡片）
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {[...archivedRounds]
+            {[...todayArchivedRounds]
               .sort((a, b) => new Date(b.closedAt ?? b.openedAt).getTime() - new Date(a.closedAt ?? a.openedAt).getTime())
               .map((round) => (
                 <ArchiveRoundCard key={round.id} round={round} onRemove={(id) => removeRound(id)} />
@@ -1505,56 +1733,6 @@ export default function TCalculator() {
         )}
       </div>
 
-      {/* 中长期操作历史 */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200">📋 中长期操作历史</h3>
-          {archivedLongTermRecords.length > 0 && (
-            <span className="text-xs text-slate-400">{archivedLongTermRecords.length} 条记录</span>
-          )}
-        </div>
-        {ltrLoading ? (
-          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            加载中长期操作记录...
-          </div>
-        ) : archivedLongTermRecords.length === 0 ? (
-          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            做T归并操作将自动生成中长期操作记录（标记为「归并」）
-          </div>
-        ) : (
-          <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-            <div className="max-h-64 overflow-y-auto divide-y divide-slate-700">
-              {[...archivedLongTermRecords]
-                .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-                .map((rec) => (
-                  <div key={rec.id} className="flex items-center justify-between px-4 py-2.5 text-xs">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-slate-300 font-medium truncate">{rec.stockName}</span>
-                      {rec.type === 'merge' ? (
-                        <span className="bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
-                          归并
-                        </span>
-                      ) : rec.type === 'buy' ? (
-                        <span className="bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
-                          加仓
-                        </span>
-                      ) : (
-                        <span className="bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
-                          减仓
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 font-mono tabular-nums text-slate-400 shrink-0">
-                      <span>{rec.amount} 股</span>
-                      <span>@ ¥{rec.price.toFixed(3)}</span>
-                      <span className="text-slate-500">{new Date(rec.timestamp).toLocaleDateString()}</span>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }

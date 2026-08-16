@@ -3,6 +3,7 @@
  * @description 成本分摊与持仓管理：Tab1 多批次建仓实盘账本 —— 建仓/加仓/减仓/结仓
  *              全生命周期、批次成本计算（含规费）、重复建仓拦截、清仓自动结仓归档；
  *              Tab2 目标成本推算 —— 输入现持仓成本/数量与目标均价，反推需补仓的数量与金额。
+ *              现价展示接入腾讯实时行情：交易时段每 5 秒刷新，非交易时段打开时刷新一次。
  * @layer UI
  * @storage_impact 读写 positions、batches 表（addPosition/addBatch/closePosition/
  *                 updatePosition/deletePositionBatch/removePosition）；读取 settings 费率。
@@ -14,10 +15,13 @@ import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2 } from 'l
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
 import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults } from '../store';
+import { recalculatePosition } from '../utils/calculator';
 import type { Position, PositionBatch } from '../store';
+import type { PositionBatchEntity } from '../db/schema';
 import type { StockSearchItem } from '../types/stock';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
+import { useLiveQuotes } from '../hooks/useLiveQuotes';
 
 /**
  * 加/减仓表单弹窗组件。
@@ -166,10 +170,10 @@ function ClearPositionModal({
           「{stockName}」标的持股已全部卖出！<br />
           本次建仓周期最终实现净盈亏为：
         </p>
-        <p className={`text-2xl font-bold mb-1 ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        <p className={`text-2xl font-bold mb-1 ${realizedPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
           {realizedPnL >= 0 ? '+' : ''}¥{realizedPnL.toFixed(2)}
         </p>
-        <p className={`text-sm mb-4 ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        <p className={`text-sm mb-4 ${realizedPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
           {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%
         </p>
         <p className="text-xs text-slate-500 mb-4">
@@ -186,6 +190,48 @@ function ClearPositionModal({
       </div>
     </div>
   );
+}
+
+/**
+ * 将 Store 层批次（PositionBatch，timestamp 为 ISO 字符串）转换为
+ * `recalculatePosition` 所需的实体批次（PositionBatchEntity，timestamp 为毫秒时间戳）。
+ *
+ * @description 仅做字段形状/单位对齐，不做任何计算口径转换；存量 `'close'` 类型
+ *              批次按建仓账本语义防御性归并为减仓（reduce），`fee` 缺省兜底为 0。
+ * @param batch Store 层批次履历
+ * @param positionId 所属持仓 id
+ * @returns 实体批次（recalculatePosition 只读取 type/price/amount/fee/timestamp）
+ */
+function toEntityBatch(batch: PositionBatch, positionId: string): PositionBatchEntity {
+  return {
+    id: batch.id,
+    positionId,
+    type: batch.type === 'close' ? 'reduce' : batch.type,
+    price: batch.price,
+    amount: batch.amount,
+    fee: batch.fee ?? 0,
+    costAfter: batch.costAfter,
+    amountAfter: batch.amountAfter,
+    timestamp: new Date(batch.timestamp).getTime(),
+    note: batch.note,
+    kind: batch.kind,
+    costPrice: batch.costPrice,
+    // recalculatePosition 不读取审计时间戳，此处仅作类型占位
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+/**
+ * 格式化腾讯行情接口的更新时间（yyyyMMddHHmmss → MM-DD HH:mm:ss）。
+ *
+ * @param {string} updateTime - 行情接口返回的更新时间，如 20260812161440
+ * @returns {string} 格式化后的时间文本；格式不符时原样返回
+ */
+function formatQuoteTime(updateTime: string): string {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(updateTime);
+  if (!m) return updateTime;
+  return `${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}`;
 }
 
 /**
@@ -214,6 +260,7 @@ function PositionLedger() {
   const [openPrice, setOpenPrice] = useState('');
   const [openAmount, setOpenAmount] = useState('');
   const [openNote, setOpenNote] = useState('');
+  const [noFrictionCost, setNoFrictionCost] = useState(false);
   // 重复建仓提示（同一股票代码已存在进行中持仓）
   const [dupAlert, setDupAlert] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -228,9 +275,6 @@ function PositionLedger() {
 
   // 清仓自动结仓弹窗
   const [clearPosition, setClearPosition] = useState<{ positionId: string; realizedPnL: number; totalInvested: number } | null>(null);
-
-  // 现价模拟（每个持仓ID -> 当前输入现价）
-  const [currentPrices, setCurrentPrices] = useState<Record<string, string>>({});
 
   // 新建建仓
   const handleOpenPosition = () => {
@@ -248,9 +292,8 @@ function PositionLedger() {
       return;
     }
 
-    // 计算买入规费
-    const buyFee = calcTradeFees(price, amount, 'buy', feeConfig, matchSecurityKind(selectedStock?.SecurityType ?? '', selectedStock?.Code ?? ''));
-    const totalFee = buyFee.total;
+    // 计算买入规费（勾选「不计摩擦成本」时免去手续费，适用于录入已有仓位）
+    const totalFee = noFrictionCost ? 0 : calcTradeFees(price, amount, 'buy', feeConfig, matchSecurityKind(selectedStock?.SecurityType ?? '', selectedStock?.Code ?? '')).total;
     const totalInvested = price * amount + totalFee;
 
     const now = new Date().toISOString();
@@ -285,6 +328,7 @@ function PositionLedger() {
     setOpenPrice('');
     setOpenAmount('');
     setOpenNote('');
+    setNoFrictionCost(false);
   };
 
   // 加仓/减仓（通过弹窗）
@@ -421,8 +465,23 @@ function PositionLedger() {
   const activePositions = positions.filter((p) => !p.isClosed);
   const closedPositions = positions.filter((p) => p.isClosed);
 
+  // 实时行情：交易时段每 5 秒刷新、非交易时段打开时刷新一次、跨时段切换自动切换策略
+  const { quotes, isTrading, lastUpdated } = useLiveQuotes(activePositions.map((p) => p.fullCode).filter(Boolean));
+
   return (
     <div className="space-y-4">
+      {/* 实时行情状态 */}
+      <div className="flex items-center justify-between px-1 text-xs">
+        <span className={isTrading ? 'text-blue-400 font-medium' : 'text-slate-500'}>
+          {isTrading ? '● 交易时段 · 行情每 5 秒自动刷新' : '○ 非交易时段 · 打开时刷新一次'}
+        </span>
+        {lastUpdated !== null && (
+          <span className="text-slate-600">
+            行情更新于 {new Date(lastUpdated).toLocaleTimeString('zh-CN', { hour12: false })}
+          </span>
+        )}
+      </div>
+
       {/* 新建建仓 */}
       <div className="p-4 bg-slate-900 rounded-lg">
         <h4 className="text-xs font-medium text-slate-400 mb-3">新建建仓</h4>
@@ -470,13 +529,33 @@ function PositionLedger() {
             />
           </div>
         </div>
-        <div className="form-row">
-          <div className="form-group flex items-end">
-            <button onClick={handleOpenPosition} className="btn btn-primary btn-block">
-              <Plus className="w-4 h-4" />
-              建仓
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={noFrictionCost}
+              onClick={() => setNoFrictionCost((v) => !v)}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+                noFrictionCost ? 'bg-blue-600' : 'bg-slate-700 hover:bg-slate-600'
+              }`}
+              title={noFrictionCost ? '已开启：本次建仓不计摩擦成本' : '录入已有仓位时可开启，本次建仓不计摩擦成本'}
+            >
+              <span
+                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${
+                  noFrictionCost ? 'translate-x-5' : ''
+                }`}
+              />
             </button>
-          </div>
+            <span className="text-xs text-slate-300">
+              不计摩擦成本
+              <span className="ml-1.5 text-[11px] text-slate-500">录入已有仓位</span>
+            </span>
+          </label>
+          <button onClick={handleOpenPosition} className="btn btn-primary basis-full sm:basis-auto sm:ml-auto sm:px-8">
+            <Plus className="w-4 h-4" />
+            建仓
+          </button>
         </div>
       </div>
 
@@ -489,15 +568,23 @@ function PositionLedger() {
       ) : null}
 
       {activePositions.map((pos) => {
-        const snap = recomputePositionSnapshot(pos.batches);
+        // 用 recalculatePosition 从批次履历重建权威快照：
+        // 动态保本价 / 做T落袋利润 / 实际净投入现金 / 初始建仓均价
+        const snap = recalculatePosition(pos.batches.map((b) => toEntityBatch(b, pos.id)));
 
-        // 现价模拟
-        const cpStr = currentPrices[pos.id] || '';
-        const cp = Number(cpStr);
-        const hasPrice = cp > 0 && pos.currentAmount > 0;
-        const floatPnL = hasPrice ? (cp - pos.currentCost) * pos.currentAmount : 0;
-        const floatPnLPercent = hasPrice && pos.currentCost > 0 ? ((cp - pos.currentCost) / pos.currentCost) * 100 : 0;
-        const breakevenPercent = hasPrice && pos.currentCost > 0 ? ((pos.currentCost / cp - 1) * 100) : 0;
+        // 批次履历已包含出借/归并调整批次（kind='borrow'/'merge'），
+        // recalculatePosition 已能正确处理：出借只减数量不记盈亏，归并正常加回。
+        // 因此 snap.currentAmount 与 DB currentAmount 一致，可直接用于展示。
+        const netAmount = snap.currentAmount;
+
+        // 实时现价（来自腾讯行情接口，交易时段每 5 秒刷新）
+        const live = quotes[pos.fullCode] ?? null;
+        const cp = live?.currentPrice ?? 0;
+        const hasPrice = cp > 0 && netAmount > 0;
+        const floatPnL = hasPrice ? (cp - snap.currentCost) * netAmount : 0;
+        const floatPnLPercent = hasPrice && snap.currentCost > 0 ? ((cp - snap.currentCost) / snap.currentCost) * 100 : 0;
+        // 回本所需涨幅 = (动态保本价 - 现价) / 现价 × 100%；现价高于保本价时为负（已回本）
+        const requiredRisePercent = hasPrice && snap.currentCost > 0 ? ((snap.currentCost - cp) / cp) * 100 : 0;
 
         return (
           <div key={pos.id} className="p-4 bg-slate-900 rounded-lg border border-slate-700">
@@ -520,17 +607,24 @@ function PositionLedger() {
               </div>
             </div>
 
-            {/* 现价模拟输入 */}
-            <div className="mb-3 flex items-center gap-2">
+            {/* 实时行情（腾讯 qt.gtimg.cn，交易时段每 5 秒刷新） */}
+            <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
               <span className="text-xs text-slate-500">当前现价</span>
-              <input
-                type="number"
-                step="0.001"
-                placeholder="输入模拟现价..."
-                value={currentPrices[pos.id] || ''}
-                onChange={(e) => setCurrentPrices({ ...currentPrices, [pos.id]: e.target.value })}
-                className="w-28 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500"
-              />
+              {live ? (
+                <>
+                  <span className={`text-sm font-bold ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    ¥{live.currentPrice.toFixed(3)}
+                  </span>
+                  <span className={`text-xs ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    {live.changePercent >= 0 ? '+' : ''}{live.changePercent.toFixed(2)}%
+                  </span>
+                  <span className="text-[10px] text-slate-600">
+                    行情 {formatQuoteTime(live.updateTime)}
+                  </span>
+                </>
+              ) : (
+                <span className="text-sm text-slate-600">— 暂无行情数据</span>
+              )}
               {hasPrice && (
                 <div className="flex items-center gap-3 text-xs">
                   <span className={floatPnL >= 0 ? 'text-red-400' : 'text-green-400'}>
@@ -539,8 +633,12 @@ function PositionLedger() {
                   <span className={floatPnLPercent >= 0 ? 'text-red-400' : 'text-green-400'}>
                     {floatPnLPercent >= 0 ? '+' : ''}{floatPnLPercent.toFixed(2)}%
                   </span>
-                  <span className="text-slate-500">
-                    解套需涨 {breakevenPercent >= 0 ? '+' : ''}{breakevenPercent.toFixed(2)}%
+                  {/* 回本所需涨幅：相对动态保本价的缺口，做T/加仓后会实时更新 */}
+                  <span className="flex items-center gap-1">
+                    <span className="text-slate-500">回本所需涨幅</span>
+                    <span className={`font-medium ${requiredRisePercent > 0 ? 'text-amber-300' : 'text-red-400'}`}>
+                      {requiredRisePercent > 0 ? `+${requiredRisePercent.toFixed(2)}%` : '已回本'}
+                    </span>
                   </span>
                 </div>
               )}
@@ -548,21 +646,23 @@ function PositionLedger() {
 
             <div className="grid grid-cols-2 gap-3 text-sm mb-3">
               <div>
-                <span className="text-slate-500">成本价（含规费）</span>
-                <p className="text-slate-200 font-medium">¥{pos.currentCost.toFixed(3)}</p>
+                <span className="text-slate-500">保本单价（动态成本）</span>
+                <p className="text-slate-200 font-medium">¥{snap.currentCost.toFixed(3)}</p>
+                <p className="text-[10px] text-slate-600 leading-tight mt-0.5">初始均价：¥{snap.initialCost.toFixed(3)}</p>
               </div>
               <div>
                 <span className="text-slate-500">持仓数量</span>
-                <p className="text-slate-200 font-medium">{pos.currentAmount.toLocaleString()}股</p>
+                <p className="text-slate-200 font-medium">{netAmount.toLocaleString()}股</p>
               </div>
               <div>
-                <span className="text-slate-500">已实现盈亏</span>
-                <p className={`font-medium ${snap.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {snap.realizedPnL >= 0 ? '+' : ''}¥{snap.realizedPnL.toFixed(2)}
+                <span className="text-slate-500">做T / 调仓落袋利润 🔥</span>
+                <p className={`font-medium ${snap.accumulatedTPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                  {snap.accumulatedTPnL >= 0 ? '+' : ''}¥{snap.accumulatedTPnL.toFixed(2)}
                 </p>
+                <p className="text-[10px] text-slate-600 leading-tight mt-0.5">已折抵本金</p>
               </div>
               <div>
-                <span className="text-slate-500">累计投入</span>
+                <span className="text-slate-500">实际净投入现金</span>
                 <p className="text-slate-200 font-medium">¥{snap.totalInvested.toFixed(2)}</p>
               </div>
             </div>
@@ -610,15 +710,19 @@ function PositionLedger() {
                     <div key={batch.id} className="flex items-center justify-between text-xs text-slate-400 py-1.5 border-b border-slate-800 last:border-0">
                       <div className="flex items-center gap-2">
                         <span className={`px-1.5 py-0.5 rounded text-xs ${
+                          batch.kind === 'borrow' ? 'bg-amber-500/20 text-amber-400' :
                           batch.type === 'open' ? 'bg-blue-500/20 text-blue-400' :
-                          batch.type === 'add' ? 'bg-green-500/20 text-green-400' :
-                          batch.type === 'reduce' ? 'bg-red-500/20 text-red-400' :
+                          batch.type === 'add' ? 'bg-blue-500/20 text-blue-400' :
+                          batch.type === 'reduce' ? 'bg-purple-500/20 text-purple-400' :
                           'bg-slate-500/20 text-slate-400'
                         }`}>
-                          {batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结仓'}
+                          {batch.kind === 'borrow' ? '出借' : batch.type === 'open' ? '建仓' : batch.type === 'add' ? '加仓' : batch.type === 'reduce' ? '减仓' : '结仓'}
                         </span>
                         <span>¥{batch.price.toFixed(3)}</span>
                         <span>× {Math.abs(batch.amount)}股</span>
+                        {batch.kind === 'borrow' && batch.costPrice !== undefined && (
+                          <span className="text-slate-600">成本¥{batch.costPrice.toFixed(3)}</span>
+                        )}
                         {batch.fee !== undefined && batch.fee > 0 && (
                           <span className="text-slate-600">费¥{batch.fee.toFixed(2)}</span>
                         )}
@@ -634,21 +738,30 @@ function PositionLedger() {
                           <button
                             onClick={() => {
                               if (isFirstBatch(batch.id)) return;
+                              if (batch.kind === 'borrow' || batch.kind === 'merge') return;
                               setDeleteBatchConfirm({ positionId: pos.id, batchId: batch.id });
                             }}
-                            disabled={isFirstBatch(batch.id)}
+                            disabled={isFirstBatch(batch.id) || batch.kind === 'borrow' || batch.kind === 'merge'}
                             className={`p-1 rounded ${
-                              isFirstBatch(batch.id)
+                              isFirstBatch(batch.id) || batch.kind === 'borrow' || batch.kind === 'merge'
                                 ? 'text-slate-700 cursor-not-allowed'
                                 : 'hover:bg-slate-800 text-slate-600 hover:text-red-400'
                             }`}
-                            title={isFirstBatch(batch.id) ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】' : '删除该笔操作记录'}
+                            title={
+                              batch.kind === 'borrow' || batch.kind === 'merge'
+                                ? '系统自动生成的调整记录，不可删除'
+                                : isFirstBatch(batch.id)
+                                  ? '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】'
+                                  : '删除该笔操作记录'
+                            }
                           >
                             <Trash2 className="w-3 h-3" />
                           </button>
-                          {isFirstBatch(batch.id) && (
+                          {(isFirstBatch(batch.id) || batch.kind === 'borrow' || batch.kind === 'merge') && (
                             <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-60 bg-slate-800 text-slate-200 text-xs rounded-lg p-2 shadow-lg z-10">
-                              已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】
+                              {batch.kind === 'borrow' || batch.kind === 'merge'
+                                ? '系统自动生成的调整记录，不可删除'
+                                : '已有后续加/减仓履历，无法单独删除初始建仓。如需重置，请点击右上角【删除整个标的】'}
                             </div>
                           )}
                         </div>
@@ -862,7 +975,7 @@ function TargetCostCalculator() {
               </div>
               <div className="mt-2 pt-2 border-t border-slate-800">
                 <span className="text-xs text-slate-500">推算后成本价</span>
-                <p className="text-green-400 font-bold">¥{result.actualCost.toFixed(3)}</p>
+                <p className="text-slate-400 font-bold">¥{result.actualCost.toFixed(3)}</p>
               </div>
             </div>
           )}
@@ -873,7 +986,7 @@ function TargetCostCalculator() {
                 <h4 className="text-xs font-medium text-slate-500 mb-2">向下整手</h4>
                 <p className="text-lg font-bold text-slate-200">{result.downLot.amount.toLocaleString()}股</p>
                 <p className="text-sm text-slate-400 mt-1">资金 ¥{result.downLot.capital.toFixed(2)}</p>
-                <p className="text-sm text-green-400">成本 ¥{result.downLot.actualCost.toFixed(3)}</p>
+                <p className="text-sm text-slate-400">成本 ¥{result.downLot.actualCost.toFixed(3)}</p>
                 <button onClick={handleFillDown} className="btn btn-outline btn-sm mt-2 w-full">
                   <CheckCircle className="w-3 h-3" /> 填充
                 </button>
@@ -884,7 +997,7 @@ function TargetCostCalculator() {
                 <h4 className="text-xs font-medium text-slate-500 mb-2">向上整手</h4>
                 <p className="text-lg font-bold text-slate-200">{result.upLot.amount.toLocaleString()}股</p>
                 <p className="text-sm text-slate-400 mt-1">资金 ¥{result.upLot.capital.toFixed(2)}</p>
-                <p className="text-sm text-green-400">成本 ¥{result.upLot.actualCost.toFixed(3)}</p>
+                <p className="text-sm text-slate-400">成本 ¥{result.upLot.actualCost.toFixed(3)}</p>
                 <button onClick={handleFillUp} className="btn btn-outline btn-sm mt-2 w-full">
                   <CheckCircle className="w-3 h-3" /> 填充
                 </button>

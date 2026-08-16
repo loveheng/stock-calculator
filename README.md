@@ -83,11 +83,9 @@ npx vitest run
 | `stocks` | 已操作股票元信息 |
 | `positions` | 持仓账本（底仓 + 加权成本） |
 | `positionBatches` | 持仓批次明细 |
-| `tStreams` | 做T流水池（原始买卖记录） |
-| `tRounds` | 战报归档（交易快照 + 净收益） |
-| `tTransactions` | 战报成交明细 |
+| `tRounds` | 做T轮次表（OPENED 进行中 / COMPLETED 已归档） |
+| `tTransactions` | 做T流水唯一持久化表（Round 内流水池 + 成交明细；v8 取代 tStreams） |
 | `longTermRecords` | 中长期操作记录 |
-| `tRecords` | 旧版做T记录（兼容） |
 | `settings` | 通用键值配置 |
 
 全部通过 IndexedDB 在线/离线可用；v5 重构后所有写入改为增量 `put` / `delete`，彻底消除数据丢失隐患。

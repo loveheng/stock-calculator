@@ -3,7 +3,7 @@
  * @description Store 初始化与持久化桥接层：应用启动时仅从 IndexedDB 加载费率配置到 Zustand Store。
  *              v7 重构：彻底采用按需加载模式，冷启动只加载 feeConfig，其他数据由各视图通过 useDataLoader 钩子按需加载。
  * @layer DAO
- * @storage_impact 启动时仅读取 feeConfigs 表（1 张），不再加载 positions / tStreams / stocks 等数据。
+ * @storage_impact 启动时仅读取 feeConfigs 表（1 张），不再加载 positions / tRounds / stocks 等数据。
  * @author 开发团队
  */
 
@@ -37,7 +37,7 @@ export function isInitialLoadDone(): boolean {
  * @description 执行顺序：① ensureDefaultData() 确保现金账户与费率配置单行存在；
  *              ② loadFeeConfigFromDB() 冷启动加载费率配置（仅 1 行）；
  *              ③ 若 feeConfig 存在，则 setState 更新 Store。
- *              ④ positions / tStreams / tRounds / stocks 等数据由各视图通过 useDataLoader 钩子按需加载。
+ *              ④ positions / tRounds / stocks 等数据由各视图通过 useDataLoader 钩子按需加载。
  * @returns {Promise<void>}
  * @note 仅在启动时调用一次；装载完成后将 initialLoadDone 置 true，后续 Store Action 才开始增量写库
  */

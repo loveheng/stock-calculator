@@ -1,7 +1,7 @@
 /**
  * @file vite.config.ts
  * @description Vite 构建配置：React 插件、PWA 支持（Workbox 运行时缓存）、
- *              开发服务器代理（腾讯 Smartbox 行情搜索 / 东方财富搜索 API）、
+ *              开发服务器代理（腾讯 Smartbox 行情搜索 / 腾讯实时行情 / 东方财富搜索 API）、
  *              以及构建输出配置。
  * @layer Config
  * @storage_impact 无 IndexedDB 读写；仅影响构建产物与开发环境网络代理。
@@ -75,6 +75,14 @@ export default defineConfig({
         target: 'https://smartbox.gtimg.cn',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-gtimg/, ''),
+        headers: {
+          Referer: 'https://finance.qq.com/',
+        },
+      },
+      '/api-qt': {
+        target: 'https://qt.gtimg.cn',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-qt/, ''),
         headers: {
           Referer: 'https://finance.qq.com/',
         },

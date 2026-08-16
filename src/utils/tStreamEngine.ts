@@ -8,7 +8,7 @@
  */
 
 import Decimal from 'decimal.js';
-import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from './mathUtils';
+import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig, type SecurityKind } from './mathUtils';
 import type {
   BasePosition,
   TMode,
@@ -52,6 +52,10 @@ export function createInitialState(basePosition: BasePosition): TStateMachineSta
 
     currentCost: basePosition.cost,
     currentQuantity: basePosition.quantity,
+
+    pendingBuys: [],
+    pendingSells: [],
+    initialShortSellQty: 0,
 
     steps: [],
     isClosed: false,
@@ -259,7 +263,7 @@ function buildShortTransferCard(
 // ──────────────────────────────────────────────
 
 /**
- * 正T 买入（建 T）：仅计算支出，更新累积持有。
+ * 正T 买入（建 T）：仅计算支出，将买入推入 FIFO 队列。
  */
 function executeLongBuy(state: TStateMachineState, record: TStreamRecord): TStateMachineState {
   const turnover = new Decimal(record.price).mul(record.amount).toNumber();
@@ -273,6 +277,12 @@ function executeLongBuy(state: TStateMachineState, record: TStreamRecord): TStat
     // 正T 买入不改变底仓成本，但持有数量增加
     // currentCost 在正T中保持底仓成本不变（买入不影响底仓成本）
     currentCost: state.currentCost,
+
+    // FIFO 队列：按时间顺序追加未平仓买入（保持原始数量/成交额/摩擦）
+    pendingBuys: [
+      ...(state.pendingBuys ?? []),
+      { quantity: record.amount, turnover, friction: record.fee },
+    ],
 
     steps: [
       ...state.steps,
@@ -288,12 +298,11 @@ function executeLongBuy(state: TStateMachineState, record: TStreamRecord): TStat
 }
 
 /**
- * 正T 卖出平仓：匹配累积买入数量，计算已实现利润。
- * 摩擦成本全部计入做T本身的成本，按比例分摊。
+ * 正T 卖出平仓（真 FIFO）：从最早的未平仓买入逐笔消耗，计算已实现利润。
  *
- * 利润公式：
- * 已实现套利利润 = 总回收 - 总支出 - 总摩擦成本
- * 其中支出与回收按匹配比例计算。
+ * 与旧「加权平均比例法」不同，FIFO 严格按买入时间顺序配对：
+ *   已实现套利利润 = 卖出净回款 - Σ(FIFO 匹配买入支出 + 匹配买入摩擦)
+ * 部分卖出跨越多笔不同价买入时，先配对最早期买入，成本口径精确到逐笔。
  */
 function executeLongSell(
   state: TStateMachineState,
@@ -303,20 +312,38 @@ function executeLongSell(
   const sellTurnover = new Decimal(record.price).mul(record.amount).toNumber();
   const sellFee = record.fee;
 
-  // 按比例计算匹配部分的买出支出与买入摩擦
-  const matchRatio = new Decimal(sellQty).div(state.totalBuyQuantity);
-  const matchedBuyTurnover = matchRatio.mul(state.totalBuyTurnover).toNumber();
-  const matchedBuyFriction = matchRatio.mul(state.totalBuyFriction).toNumber();
+  // 深拷贝 FIFO 队列并按先进先出逐笔消耗
+  const buys = (state.pendingBuys ?? []).map((b) => ({ ...b }));
+  let toConsume = sellQty;
+  let matchedBuyTurnover = 0;
+  let matchedBuyFriction = 0;
 
-  // 已实现利润 = (卖出回收 - 卖出摩擦) - (匹配买入支出 + 匹配买入摩擦)
+  for (const b of buys) {
+    if (toConsume <= 0) break;
+    const consume = Math.min(toConsume, b.quantity);
+    // 该笔买入被消耗的比例（用于拆分其成交额/摩擦；剩余部分同步按比例缩减，
+    // 确保 remaining 口径的 turnover/friction 精确反映未平仓部分）
+    const ratio = consume / b.quantity;
+    matchedBuyTurnover += b.turnover * ratio;
+    matchedBuyFriction += b.friction * ratio;
+    b.quantity -= consume;
+    b.turnover -= b.turnover * ratio;
+    b.friction -= b.friction * ratio;
+    toConsume -= consume;
+  }
+
+  // 剩余未平仓买入（FIFO 队列中未被消耗的部分）
+  const remainingBuys = buys.filter((b) => b.quantity > 0);
+
+  // 已实现利润 = (卖出回收 - 卖出摩擦) - (FIFO 匹配买入支出 + 匹配买入摩擦)
   const saleProceeds = new Decimal(sellTurnover).minus(sellFee).toNumber();
   const costBasis = new Decimal(matchedBuyTurnover).plus(matchedBuyFriction).toNumber();
   const stepProfit = new Decimal(saleProceeds).minus(costBasis).toNumber();
 
-  const isFullyClosed = state.totalBuyQuantity === sellQty;
-  const remainingBuyQuantity = state.totalBuyQuantity - sellQty;
-  const remainingBuyTurnover = new Decimal(state.totalBuyTurnover).minus(matchedBuyTurnover).toNumber();
-  const remainingBuyFriction = new Decimal(state.totalBuyFriction).minus(matchedBuyFriction).toNumber();
+  const remainingBuyQuantity = remainingBuys.reduce((s, b) => s + b.quantity, 0);
+  const remainingBuyTurnover = remainingBuys.reduce((s, b) => s + b.turnover, 0);
+  const remainingBuyFriction = remainingBuys.reduce((s, b) => s + b.friction, 0);
+  const isFullyClosed = remainingBuyQuantity === 0;
 
   const steps = [
     ...state.steps,
@@ -340,6 +367,7 @@ function executeLongSell(
     totalSellFriction: state.totalSellFriction + sellFee,
     realizedProfit: state.realizedProfit + stepProfit,
     currentQuantity: state.currentQuantity - sellQty,
+    pendingBuys: remainingBuys,
     steps,
   };
 
@@ -361,7 +389,7 @@ function executeLongSell(
 // ──────────────────────────────────────────────
 
 /**
- * 倒T 借仓卖出：卖出底仓产生回收现金。
+ * 倒T 借仓卖出：卖出底仓产生回收现金，卖出腿推入 FIFO 待回补队列。
  * 按移动平均法，卖出时不改变账面持仓单价成本。
  */
 function executeShortSell(
@@ -389,6 +417,13 @@ function executeShortSell(
       quantity: newBaseQuantity,
     },
 
+    // FIFO 队列：按时间顺序追加未回补卖出；累计借出总量（用于推导 shortPendingAmount）
+    pendingSells: [
+      ...(state.pendingSells ?? []),
+      { quantity: sellQty, turnover: sellTurnover, friction: sellFee },
+    ],
+    initialShortSellQty: (state.initialShortSellQty ?? 0) + sellQty,
+
     steps: [
       ...state.steps,
       buildStepNode(
@@ -403,10 +438,11 @@ function executeShortSell(
 }
 
 /**
- * 倒T 回补买入：移动加权更新整体持仓成本。
- * 新持有成本 = (剩余底仓总成本 + 本次买入纯支出) / (剩余底仓数量 + 本次买入数量)
+ * 倒T 回补买入（真 FIFO）：从最早的待回补卖出逐笔消耗，计算已实现利润；
+ * 移动加权更新整体持仓成本。超出待回补的部分自动归并到底仓。
  *
- * 纯支出 = turnover + fee（不含卖出摩擦，摩擦成本已计入做T本身）
+ * 新持有成本 = (剩余底仓总成本 + 本次买入纯支出) / (剩余底仓数量 + 本次买入数量)
+ * 已实现利润 = Σ(FIFO 匹配卖出净回款) - (匹配买入支出 + 匹配买入摩擦)
  */
 function executeShortBuyBack(
   state: TStateMachineState,
@@ -416,38 +452,61 @@ function executeShortBuyBack(
   const buyTurnover = new Decimal(record.price).mul(record.amount).toNumber();
   const buyFee = record.fee;
 
-  // 纯支出（不含摩擦那部分单独跟踪，摩擦成本只计入做T总摩擦）
-  const pureOutflow = buyTurnover;
+  // 深拷贝 FIFO 待回补卖出队列并逐笔消耗
+  const sells = (state.pendingSells ?? []).map((s) => ({ ...s }));
+  let toConsume = buyQty;
+  let matchedSellTurnover = 0;
+  let matchedSellFriction = 0;
 
-  // 剩余底仓总成本
+  for (const s of sells) {
+    if (toConsume <= 0) break;
+    const consume = Math.min(toConsume, s.quantity);
+    // 该笔卖出被回补的比例（用于拆分其回收/摩擦；剩余部分同步按比例缩减，
+    // 确保 remaining 口径的 turnover/friction 精确反映未回补部分）
+    const ratio = consume / s.quantity;
+    matchedSellTurnover += s.turnover * ratio;
+    matchedSellFriction += s.friction * ratio;
+    s.quantity -= consume;
+    s.turnover -= s.turnover * ratio;
+    s.friction -= s.friction * ratio;
+    toConsume -= consume;
+  }
+
+  // 剩余待回补卖出（FIFO 队列中未被回补的部分）
+  const remainingSells = sells.filter((s) => s.quantity > 0);
+
+  // 实际对冲量 = 本次买入中用于回补的部分
+  const effectiveQty = buyQty - toConsume;
+  // 买入端对冲比例 = 实际对冲量 / 本次买入总量（用于拆分买入支出中对冲部分）
+  const buyHedgeRatio = buyQty > 0 ? effectiveQty / buyQty : 0;
+  const effectiveTurnover = new Decimal(buyTurnover).mul(buyHedgeRatio).toNumber();
+  const effectiveFee = new Decimal(buyFee).mul(buyHedgeRatio).toNumber();
+
+  // 纯支出（对冲部分的成交额）
+  const pureOutflow = effectiveTurnover;
+
+  // 剩余底仓总成本（P1-1 修复：state.currentQuantity 来自真实底仓数量）
   const remainingBaseTotalCost = new Decimal(state.basePosition.cost).mul(
     state.currentQuantity,
   );
 
-  // 新持有成本 = (剩余底仓总成本 + 纯支出) / (剩余底仓数量 + 买入数量)
+  // 新持有成本 = (剩余底仓总成本 + 对冲部分支出 + 超出部分支出) / (剩余底仓数量 + 买入总数量)
   const newQuantity = state.currentQuantity + buyQty;
-  const newTotalCost = remainingBaseTotalCost.plus(pureOutflow);
+  const newTotalCost = remainingBaseTotalCost.plus(buyTurnover);
   const newCost = newQuantity > 0 ? newTotalCost.div(newQuantity).toNumber() : 0;
 
-  // 已实现利润：回补买入时，按比例确认利润
-  // 卖出回收(按比例) - 卖出摩擦(按比例) - 买入支出(按比例) - 买入摩擦(按比例)
-  const matchRatio = new Decimal(buyQty).div(state.totalSellQuantity);
-  const matchedSellTurnover = matchRatio.mul(state.totalSellTurnover).toNumber();
-  const matchedSellFriction = matchRatio.mul(state.totalSellFriction).toNumber();
+  // 已实现利润：回补买入时，按 FIFO 匹配确认利润
+  // Σ(匹配卖出净回款) - 买入支出(对冲部分) - 买入摩擦(对冲部分)
   const stepProfit = new Decimal(matchedSellTurnover)
     .minus(matchedSellFriction)
     .minus(pureOutflow)
-    .minus(buyFee)
+    .minus(effectiveFee)
     .toNumber();
 
-  const isFullyClosed = buyQty === state.totalSellQuantity;
-  const remainingSellQuantity = state.totalSellQuantity - buyQty;
-  const remainingSellTurnover = new Decimal(state.totalSellTurnover)
-    .minus(matchedSellTurnover)
-    .toNumber();
-  const remainingSellFriction = new Decimal(state.totalSellFriction)
-    .minus(matchedSellFriction)
-    .toNumber();
+  const remainingSellQuantity = remainingSells.reduce((s, x) => s + x.quantity, 0);
+  const remainingSellTurnover = remainingSells.reduce((s, x) => s + x.turnover, 0);
+  const remainingSellFriction = remainingSells.reduce((s, x) => s + x.friction, 0);
+  const isFullyClosed = remainingSellQuantity === 0;
 
   const steps = [
     ...state.steps,
@@ -481,6 +540,9 @@ function executeShortBuyBack(
       cost: roundTo(newCost, 3),
       quantity: newQuantity,
     },
+
+    pendingSells: remainingSells,
+    initialShortSellQty: state.initialShortSellQty,
 
     steps,
   };
@@ -644,18 +706,7 @@ export function stepTEngine(input: TEngineStepInput): TEngineStepOutput {
         mergeInfo: null,
       };
     } else {
-      // 倒T 买入回补
-      if (isShortOverBuy(syncedState, record.amount)) {
-        // 触发超买防御弹窗
-        const newState = buildOverBuyDefense(syncedState, record);
-        return {
-          newState,
-          triggeredDefense: true,
-          needsMergeToBase: false,
-          mergeInfo: null,
-        };
-      }
-      // 正常买入回补
+      // 倒T 买入回补（含超买自动处理：超出部分归并到底仓）
       const newState = executeShortBuyBack(syncedState, record);
       return {
         newState,
@@ -713,6 +764,7 @@ export function mergeLongToBase(
     currentQuantity: newBaseQuantity,
     currentCost: roundTo(newBaseCost, 3),
     basePosition: { ...newBasePosition },
+    pendingBuys: [],
     isClosed: true,
     closeReason: 'long_merge',
     settlementCard: buildLongMergeCard(
@@ -749,6 +801,7 @@ export function finalizeShortPartialReduce(
     totalSellQuantity: 0,
     totalSellTurnover: 0,
     totalSellFriction: 0,
+    pendingSells: [],
     isClosed: true,
     closeReason: 'short_partial_reduce',
     settlementCard: buildShortPartialReduceCard(
@@ -773,6 +826,10 @@ export function finalizeShortTransfer(
 ): TStateMachineState {
   const newState: TStateMachineState = {
     ...state,
+    totalSellQuantity: 0,
+    totalSellTurnover: 0,
+    totalSellFriction: 0,
+    pendingSells: [],
     isClosed: true,
     closeReason: 'short_transfer',
     settlementCard: buildShortTransferCard(state, transferQuantity, transferAmount),
@@ -1012,6 +1069,8 @@ export interface SellValidation {
   error?: string;
   missingPosition?: boolean;
   isFirstSell?: boolean;
+  /** 借仓对冲提示（仅在需要占用底仓时设置） */
+  warning?: string;
 }
 
 /**
@@ -1026,6 +1085,78 @@ export function compareByTimestamp(a: string, b: string): number {
 }
 
 // ──────────────────────────────────────────────
+// 注意：汇总行中「在途敞口 / 底仓基准」的决策辅助由 UI 直接消费 result 字段；
+//       「保本对冲价」为纯计算决策阈值，不参与任何状态机/撮合状态改写。
+// ──────────────────────────────────────────────
+
+/**
+ * 求成交单价 P，使得该笔对冲交易的「每股净手续费后回款/成本」恰等于目标值。
+ * 通过定长迭代逼近费率中的最低佣金硬地板等非线性项。
+ *
+ * - direction 'sell'：净回款 = P - feeSell(P)/qty，求 P = target + feeSell(P)/qty；
+ * - direction 'buy' ：净支出 = P + feeBuy(P)/qty， 求 P = target - feeBuy(P)/qty。
+ */
+function solveHedgePrice(
+  targetPerShare: number,
+  qty: number,
+  direction: 'buy' | 'sell',
+  feeConfig: FeeConfig,
+  kind: SecurityKind,
+): number {
+  let guess = targetPerShare;
+  for (let i = 0; i < 50; i++) {
+    const feePerShare = calcTradeFees(guess, qty, direction, feeConfig, kind).total / qty;
+    const next = direction === 'sell' ? targetPerShare + feePerShare : targetPerShare - feePerShare;
+    if (Math.abs(next - guess) < 1e-6) {
+      guess = next;
+      break;
+    }
+    guess = next;
+  }
+  return guess;
+}
+
+/**
+ * 计算本 Round 的「保本对冲价」决策阈值。
+ *
+ * @description 对尚未对冲（正T 未平买入 / 倒T 未回补卖出）的剩余数量，反推「对冲时恰不亏本」的成交价门槛：
+ *              - 正T（long）  ：剩余为待平买入，须以 ≥ 该价卖出才不亏 → symbol 'gte'；
+ *              - 倒T（short） ：剩余为待回补卖出，须以 ≤ 该价买回才不亏 → symbol 'lte'。
+ *              数量为 0、缺少费率或基准价非法时返回 null（UI 不展示）。
+ * @param result - 撮合结果
+ * @param feeConfig - 系统费率配置（可缺省，缺省时不计算）
+ * @returns { price, symbol } 或 null
+ */
+export function calcHedgeBreakeven(
+  result: StockStreamResult,
+  feeConfig?: FeeConfig,
+): { price: number; symbol: 'gte' | 'lte' } | null {
+  if (!feeConfig) return null;
+  const qty = Math.max(0, result.netPendingAmount);
+  if (qty <= 0) return null;
+  const kind = matchSecurityKind('', result.fullCode.replace(/^(sh|sz|bj)/, ''));
+
+  if (result.mode === 'long') {
+    // 正T：剩余为待平买入，基准 = 加权买入均价 + 该段买入规费，卖出净回款须覆盖之。
+    const basisPerShare = result.weightedBuyCost;
+    if (basisPerShare <= 0) return null;
+    const buyFeePerShare = calcTradeFees(basisPerShare, qty, 'buy', feeConfig, kind).total / qty;
+    const targetPerShare = basisPerShare + buyFeePerShare;
+    const price = solveHedgePrice(targetPerShare, qty, 'sell', feeConfig, kind);
+    return { symbol: 'gte', price: roundTo(price, 3) };
+  }
+
+  // 倒T：剩余为待回补卖出，其已保留的净回款 ≈ 平均卖出价扣卖出规费。
+  const sellAmount = result.sellAmount > 0 ? result.sellAmount : 1;
+  const avgSell = result.sellValue / sellAmount;
+  if (avgSell <= 0) return null;
+  const sellFeePerShare = calcTradeFees(avgSell, qty, 'sell', feeConfig, kind).total / qty;
+  const retainedPerShare = avgSell - sellFeePerShare;
+  const price = solveHedgePrice(retainedPerShare, qty, 'buy', feeConfig, kind);
+  return { symbol: 'lte', price: roundTo(price, 3) };
+}
+
+// ──────────────────────────────────────────────
 // Backward-compatible stubs for old engine API
 // These keep existing store/UI code compiling while
 // the refactored engine is integrated.
@@ -1037,11 +1168,16 @@ export function compareByTimestamp(a: string, b: string): number {
 /**
  * Process all streams grouped by stock code using FIFO matching.
  * Core engine function used by the Store for settlement/recalculation.
+ *
+ * @param rawStreams 该标的的全部做T流水（按 fullCode 分组）
+ * @param feeConfig 系统费率配置
+ * @param basePositionsMap fullCode -> 真实底仓（成本 + 数量）。数量用于倒T移动加权成本
+ *                         与 shortPendingAmount 精确推导；缺失时数量按 0 处理（兼容旧调用）。
  */
 export function processAllStreams(
   rawStreams: TStreamRecord[],
   feeConfig: FeeConfig,
-  baseCostsMap?: Map<string, number>,
+  basePositionsMap?: Map<string, BasePosition>,
 ): StockStreamResult[] {
   // Group by fullCode
   const grouped = new Map<string, TStreamRecord[]>();
@@ -1056,15 +1192,72 @@ export function processAllStreams(
   for (const [fullCode, streams] of grouped) {
     // Sort by timestamp
     const sorted = [...streams].sort((a, b) => compareByTimestamp(a.timestamp, b.timestamp));
-    const baseCostVal = baseCostsMap?.get(fullCode);
+    const base = basePositionsMap?.get(fullCode);
     const run = processStockStream(
       sorted,
       feeConfig,
-      baseCostVal ?? 0,
+      base ?? { cost: 0, quantity: 0 },
     );
     results.push(run);
   }
   return results;
+}
+
+/**
+ * 明细撮合回填：仅影响 entries 的展示字段映射（matchedAmount / remaining），
+ * 不改动状态机收益口径（transferProfit / realizedFee / sellCostTotal 等仍由状态机累计）。
+ *
+ * 与状态机撮合口径完全一致：真 FIFO —— 每一笔「收益实现腿」（正T卖出 / 倒T回补买入）
+ * 从最早的未平仓「开仓腿」逐笔消耗（先开仓的先配对，精确到逐笔而非比例摊配）。
+ *
+ * 收益标签只挂在收益实现腿上（主循环已按该笔步进利润回填 realizedProfit）：
+ *   - 正T：卖出腿 = 收益实现腿；买入腿仅回填被对冲消耗的 matchedAmount。
+ *   - 倒T：回补买入腿 = 收益实现腿；卖出腿仅回填被回补消耗的 matchedAmount。
+ */
+function assignEntryMatchMapping(mode: 'long' | 'short', entries: StreamEntry[]): void {
+  const isOpening = (e: StreamEntry): boolean =>
+    mode === 'long' ? e.direction === 'buy' : e.direction === 'sell';
+  const isClosing = (e: StreamEntry): boolean =>
+    mode === 'long' ? e.direction === 'sell' : e.direction === 'buy';
+
+  // 未平仓开仓腿池（按时间顺序，FIFO）
+  const pool: { amount: number; consumed: number }[] = [];
+  const poolEntryIds: string[] = [];
+
+  for (const e of entries) {
+    if (isOpening(e)) {
+      poolEntryIds.push(e.id);
+      pool.push({ amount: e.amount, consumed: 0 });
+    } else if (isClosing(e) && e.matchedAmount > 0) {
+      // 已撮合的对冲腿：从池头逐笔消耗（与 executeLongSell/executeShortBuyBack 的 FIFO 一致）
+      let toConsume = e.matchedAmount;
+      for (const p of pool) {
+        if (toConsume <= 0) break;
+        const available = p.amount - p.consumed;
+        if (available <= 0) continue;
+        const consume = Math.min(toConsume, available);
+        p.consumed += consume;
+        toConsume -= consume;
+      }
+      // 回填该收益实现腿的撮合量 = 实际消耗量（不超过池内剩余），
+      // 超出部分（超额买入/卖出）归并到底仓，不计入做T池撮合量
+      const effectiveMatch = e.matchedAmount - toConsume;
+      e.matchedAmount = effectiveMatch;
+      e.remaining = e.amount - effectiveMatch;
+    }
+  }
+
+  const consumedById = new Map<string, number>();
+  pool.forEach((p, i) => consumedById.set(poolEntryIds[i], p.consumed));
+
+  // 回填开仓腿：matchedAmount = 被对冲消耗数量，remaining = 未消耗数量
+  for (const e of entries) {
+    if (isOpening(e)) {
+      const consumed = roundTo(consumedById.get(e.id) ?? 0, 2);
+      e.matchedAmount = consumed;
+      e.remaining = roundTo(Math.max(0, e.amount - consumed), 2);
+    }
+  }
 }
 
 /**
@@ -1074,17 +1267,21 @@ export function processAllStreams(
 export function processStockStream(
   sorted: TStreamRecord[],
   feeConfig: FeeConfig,
-  baseCost?: number,
+  basePosition?: BasePosition | number,
   _skipFifo?: boolean,
   _baseCostOverride?: number,
 ): StockStreamResult {
   const fullCode = sorted.length > 0 ? sorted[0].fullCode : '';
   const stockName = sorted.length > 0 ? sorted[0].stockName : '';
 
-  const baseCostVal = baseCost ?? 0;
+  // 兼容旧调用：传 number 时视为仅有底仓成本（数量按 0 处理）
+  const base: BasePosition = typeof basePosition === 'number'
+    ? { cost: basePosition, quantity: 0 }
+    : basePosition ?? { cost: 0, quantity: 0 };
+  const baseCostVal = base.cost;
 
   // Use new engine to compute results
-  const stateFrom = createInitialState({ cost: baseCostVal, quantity: 0 });
+  const stateFrom = createInitialState({ cost: base.cost, quantity: base.quantity });
 
   let state = stateFrom;
   let mode: 'long' | 'short' = 'long';
@@ -1100,6 +1297,24 @@ export function processStockStream(
       openedAt = record.timestamp;
       roundStarted = true;
       mode = record.direction === 'buy' ? 'long' : 'short';
+    }
+
+    // ── 轮次边界隔离 ──
+    // 状态机上一轮已完全结算关闭（isClosed=true，即 CLEARED）时，
+    // 此流水属于新的一轮：重置状态机与累计口径，防止跨轮流水混入
+    // 同一战报。正 T 自动归档后 Round 标记 COMPLETED（流水退出活跃池），重算时
+    // 若不做隔离，新一轮首笔流水会在已关闭的 state 上继续推进
+    // （executeLongBuy 不重置 isClosed），导致新流水并入上一轮且
+    // 状态被误判为再次 CLEARED → 新轮次自动结束并生成错误战报。
+    if (state.isClosed) {
+      state = createInitialState({ cost: base.cost, quantity: base.quantity });
+      state.mode = record.direction === 'buy' ? 'long' : 'short';
+      mode = record.direction === 'buy' ? 'long' : 'short';
+      roundStarted = true;
+      openedAt = record.timestamp;
+      // 清空累计口径，使 entries / totalFee / openedAt 等仅反映当前（最后）一轮
+      entries.length = 0;
+      totalFee = 0;
     }
 
     totalFee += record.fee;
@@ -1124,9 +1339,10 @@ export function processStockStream(
       state,
       record,
       feeConfig,
-      basePosition: { cost: baseCostVal, quantity: 0 },
+      basePosition: { cost: base.cost, quantity: base.quantity },
     };
 
+    const profitBefore = state.realizedProfit;
     const output = stepTEngine(input);
     state = output.newState;
 
@@ -1138,14 +1354,23 @@ export function processStockStream(
       continue;
     }
 
-    // Map new state to old entry
+    // Map new state to old entry：
+    //   - matchedAmount 先按整笔记录回填（收益实现腿 = 该笔全额撮合）；
+    //   - realizedProfit = 该笔流水自身实现的步进收益（开仓腿恒为 0，
+    //     收益实现腿 = 卖出净回款 − 匹配买入成本），严禁使用状态机累计值
+    //     导致未平仓腿错误显示上一笔收益；
+    //   - 开仓腿（正T买入 / 倒T借出）的撮合量将在循环后由
+    //     assignEntryMatchMapping 按状态机同一比例消耗口径回填。
     entry.matchedAmount = record.amount;
-    entry.realizedProfit = state.realizedProfit;
+    entry.realizedProfit = state.realizedProfit - profitBefore;
     entry.remaining = 0;
     entry.closed = state.isClosed;
 
     entries.push(entry);
   }
+
+  // 明细撮合回填：开仓腿按状态机同一比例消耗口径回填 matchedAmount / remaining
+  assignEntryMatchMapping(mode, entries);
 
   // Compute old-style result from new state
   const buyEntries = entries.filter(e => e.direction === 'buy');
@@ -1161,19 +1386,63 @@ export function processStockStream(
 
   const avgPrice = buyAmount > 0 ? buyTotal / buyAmount : baseCostVal;
   const realizedPnL = state.realizedProfit;
-  const realizedFee = totalFee;
-  const netPendingAmount = state.totalBuyQuantity - state.totalSellQuantity;
-  const weightedBuyCost = state.currentCost;
-  const pendingTotalCost = state.totalBuyTurnover;
-  const shortPendingAmount = state.totalSellQuantity - state.totalBuyQuantity;
+
+  // ── 已实现规费（realizedFee）：严格仅计入已平仓（已对冲）Pair 对应的买卖规费，
+  //    绝不把尚未平仓买入/卖出的规费提前计入 ──
+  //  - 正T（long）：卖出全部用于平仓 → 卖出规费全部已实现（state.totalSellFriction）；
+  //                买入规费已实现部分 = 本轮累积买入规费 - 剩余未平仓买入规费。
+  //  - 倒T（short）：买入全部用于回补 → 买入规费全部已实现（state.totalBuyFriction）；
+  //                 卖出规费已实现部分 = 本轮累积卖出规费 - 剩余未回补卖出规费。
+  const buyFeesTotal = buyEntries.reduce((s, e) => s + e.fee, 0);
+  const sellFeesTotal = sellEntries.reduce((s, e) => s + e.fee, 0);
+  const realizedFee =
+    mode === 'long'
+      ? buyFeesTotal - state.totalBuyFriction + state.totalSellFriction
+      : state.totalBuyFriction + (sellFeesTotal - state.totalSellFriction);
+
+  // ── 剩余待处理数量语义（统一为「本模式待办」）：
+  //   - 正T（long）：netPendingAmount = 本轮总买入 - 已对冲卖出（未平仓买入量），恒非负；
+  //   - 倒T（short）：netPendingAmount = 未回补卖出量（= shortPendingAmount），恒非负。
+  //     修复 P0-1/P1-2：旧实现用 totalSellQuantity - totalBuyQuantity 推导 shortPendingAmount，
+  //     但 totalSellQuantity 在回补时被消耗，量纲不一致导致恒为 0；改用原始流水量差推导，
+  //     UI 无需再 Math.max(0, ...) 打补丁。
+  const rawSellTotal = sellEntries.reduce((s, e) => s + e.amount, 0);
+  const rawBuyTotal = buyEntries.reduce((s, e) => s + e.amount, 0);
+  const shortPendingAmount = mode === 'short'
+    ? Math.max(0, rawSellTotal - rawBuyTotal)
+    : 0;
+  const netPendingAmount = mode === 'long'
+    ? (state.isClosed ? 0 : Math.max(0, rawBuyTotal - rawSellTotal))
+    : shortPendingAmount;
+
+  // 待处理持仓加权成本：
+  //   - 正T：剩余未平仓买入的加权均价（totalBuyTurnover / totalBuyQuantity，池内未消耗部分）；
+  //   - 倒T：移动加权后的整体持仓成本（currentCost，P1-1 修复后来自真实底仓数量）。
+  const weightedBuyCost = mode === 'long'
+    ? (state.totalBuyQuantity > 0 ? state.totalBuyTurnover / state.totalBuyQuantity : baseCostVal)
+    : state.currentCost;
+  const pendingTotalCost = mode === 'long' ? state.totalBuyTurnover : state.totalSellTurnover;
 
   const lastSellEntry = sellEntries.length > 0 ? sellEntries[sellEntries.length - 1] : null;
   const lastSellCleared = lastSellEntry ? lastSellEntry.closed : false;
 
-  // Transfer profit for short-mode archiving
-  const sellCostTotal = sellAmount * weightedBuyCost;
-  const realizedSellCost = 0;
-  const transferProfit = sellValue - sellAmount * weightedBuyCost - totalFee;
+  // 正 T 战报净收益：采用状态机 FIFO 配对累计净收益（卖出净回款 - 匹配买入总支出），
+  // 严格仅与本次 Round 内先买入流水配对，严禁引入中长期底仓成本 P_base。
+  // 倒 T 波段收益同样由状态机累计（首笔借出以实际卖出净回款为基准，P_base 仅用于结算定值）。
+  const transferProfit = state.realizedProfit;
+  // 卖出对冲成本 = 卖出净回款(含匹配买入总支出) - 波段净收益，供 UI 分解展示
+  const sellCostTotal = sellValue - state.totalSellFriction - transferProfit;
+  const realizedSellCost = sellCostTotal;
+
+  // ── 状态精确判定（P2-2）──
+  //  CLEARED        = 本轮已完全结清；
+  //  正T：PARTIAL   = 已发生卖出但仍有未平仓买入；PENDING = 仅买入未卖出；
+  //  倒T：PARTIAL   = 已发生回补买入但仍有未回补卖出；SHORT_PENDING = 仅卖出未买入回补。
+  const deriveStatus = (): StreamStatus => {
+    if (state.isClosed) return 'CLEARED';
+    if (mode === 'long') return rawSellTotal > 0 ? 'PARTIAL' : 'PENDING';
+    return rawBuyTotal > 0 ? 'PARTIAL' : 'SHORT_PENDING';
+  };
 
   return {
     fullCode,
@@ -1184,8 +1453,9 @@ export function processStockStream(
     weightedBuyCost,
     pendingTotalCost,
     shortPendingAmount,
+    initialShortSellQty: state.initialShortSellQty,
     mode,
-    status: state.isClosed ? 'CLEARED' : (state.totalBuyQuantity > state.totalSellQuantity ? 'PARTIAL' : 'PENDING'),
+    status: deriveStatus(),
     entries,
     lastSellRemaining: lastSellEntry ? lastSellEntry.remaining : 0,
     lastSellCleared,
@@ -1209,13 +1479,15 @@ export function processStockStream(
 }
 
 /**
- * Sell validation: checks if a sell order is valid given the base position.
+ * Trade validation: checks if a trade order is valid given the base position.
+ * - BUY: no position cap check (允许无底仓直接买入)
+ * - SELL: validates sellAmount <= positionAmount (仅卖出时校验持仓上限)
  * Used by both Store and UI for pre-trade validation.
  */
 export function validateStreamTrade(
   _stream: StockStreamResult | null,
   baseAmount: number,
-  _direction: string,
+  direction: string,
   _price: number,
   amount: number,
   _isFirstSell?: boolean,
@@ -1224,10 +1496,19 @@ export function validateStreamTrade(
     return {
       valid: false,
       maxSellable: 0,
-      error: '请输入有效的卖出数量',
+      error: '请输入有效的数量',
       isFirstSell: _isFirstSell ?? false,
     };
   }
+  // 买入跳过持仓数量上限校验，允许无底仓直接提交
+  if (direction === 'buy') {
+    return {
+      valid: true,
+      maxSellable: 999999999,
+      isFirstSell: false,
+    };
+  }
+  // 卖出校验：数量不可超出持仓
   if (amount > baseAmount) {
     return {
       valid: false,

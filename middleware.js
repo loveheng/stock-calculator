@@ -66,6 +66,20 @@ export default async function middleware(request) {
   const url = new URL(request.url);
   const pathname = url.pathname;
 
+  // 处理浏览器 CORS 预检请求（OPTIONS）
+  // 必须在匹配上游之前响应，避免预检请求被转发到上游
+  if (request.method === 'OPTIONS' && pathname.startsWith('/api-webdav')) {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Max-Age': '86400',
+      },
+    });
+  }
+
   // 查找匹配的上游配置
   const matchedPrefix = SORTED_PREFIXES.find((prefix) => pathname.startsWith(prefix));
   if (!matchedPrefix) {

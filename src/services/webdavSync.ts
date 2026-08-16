@@ -120,36 +120,15 @@ export function addSyncHistory(entry: SyncHistoryEntry): void {
 // ============================================================
 
 /**
- * 判断是否应使用 Edge 代理（当 Vercel 部署时或有跨域需求时）。
- * 如果 webdavUrl 以已知跨域 URL 开头，则启用代理。
- */
-function shouldUseProxy(config: WebDAVConfig): boolean {
-  const knownCrossOriginHosts = [
-    'dav.jianguoyun.com',
-    'dav.dropdav.com',
-    'webdav.aliyundrive.com',
-    'webdav.189.cn',
-    'dav.box.com',
-  ];
-  try {
-    const host = new URL(config.webdavUrl).hostname;
-    return knownCrossOriginHosts.some(h => host.includes(h) || host.endsWith(h));
-  } catch {
-    return false;
-  }
-}
-
-/**
  * 构建 WebDAV 请求的目标 URL。
- * 若启用代理则走 /api-webdav/proxy，否则直连。
+ * 所有请求统一通过同源 Edge 代理 /api-webdav 转发，
+ * 避免浏览器端跨域 CORS 限制。
+ *
+ * 代理 URL 格式：/api-webdav?url=<encodeURIComponent(上游地址)>
  */
-function buildRequestUrl(config: WebDAVConfig, path: string): string {
-  if (shouldUseProxy(config)) {
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const params = new URLSearchParams({ url: `${config.webdavUrl.replace(/\/+$/, '')}${path}` });
-    return `${origin}/api-webdav/proxy?${params.toString()}`;
-  }
-  return `${config.webdavUrl.replace(/\/+$/, '')}${path}`;
+function buildProxyUrl(config: WebDAVConfig, path: string): string {
+  const targetUrl = `${config.webdavUrl.replace(/\/+$/, '')}${path}`;
+  return `/api-webdav?url=${encodeURIComponent(targetUrl)}`;
 }
 
 /**
@@ -166,6 +145,8 @@ function buildWebDAVHeaders(config: WebDAVConfig, extra: Record<string, string> 
 
 /**
  * 通用 WebDAV HTTP 请求。
+ * 所有请求统一通过同源 Edge 代理 /api-webdav 转发，
+ * 无需设置 mode: 'cors'（代理 URL 与页面同源）。
  */
 async function webdavRequest(
   config: WebDAVConfig,
@@ -174,7 +155,7 @@ async function webdavRequest(
   body?: BodyInit | null,
   extraHeaders?: Record<string, string>,
 ): Promise<Response> {
-  const url = buildRequestUrl(config, path);
+  const url = buildProxyUrl(config, path);
   const headers = buildWebDAVHeaders(config, extraHeaders);
 
   const fetchOptions: RequestInit = {
@@ -182,10 +163,6 @@ async function webdavRequest(
     headers,
     body: body ?? null,
   };
-
-  if (!shouldUseProxy(config) && typeof window !== 'undefined') {
-    (fetchOptions as any).mode = 'cors';
-  }
 
   const response = await fetch(url, fetchOptions);
   return response;

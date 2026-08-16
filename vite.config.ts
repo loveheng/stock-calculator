@@ -44,12 +44,19 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
+        navigateFallbackDenylist: [
+          /^\/api/,
+          /^\/api-webdav/,
+          /^\/api-gtimg/,
+          /^\/api-qt/,
+          /^\/api\/eastmoney/,
+        ],
         runtimeCaching: [
           {
-            urlPattern: /^https?:\/\/.*/i,
+            urlPattern: /^https?:\/\/.*\.(?:js|css|html|svg|png|ico|json|jpg|woff2?)$/i,
             handler: 'NetworkFirst',
             options: {
-              cacheName: 'stock-calculator-cache',
+              cacheName: 'stock-calculator-static',
               expiration: {
                 maxEntries: 200,
                 maxAgeSeconds: 30 * 24 * 60 * 60,

@@ -140,7 +140,7 @@ export default function WebDAVConfigPage() {
     try {
       const result = await restoreFromCloud(config);
       if (result.ok && result.data) {
-        importData(result.data);
+        importData(result.data, true); // silent: 来自远端拉取，不触发自动上传
         setSyncStatus('success');
         setStatusMessage('数据已从云端恢复');
       } else {
@@ -172,7 +172,7 @@ export default function WebDAVConfigPage() {
           positions: result.mergeResult.positions,
           stocks: result.mergeResult.stocks,
           longTermRecords: result.mergeResult.longTermRecords,
-        });
+        }, true); // silent: 来自远端拉取合并，不触发自动上传
       }
       if (result.ok) refresh();
     } catch (err) {

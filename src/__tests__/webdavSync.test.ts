@@ -33,6 +33,11 @@ import {
   getSyncHistory,
   ensureParentDir,
   DEFAULT_WEBDAV_CONFIG,
+  // 新增：锁机制相关
+  backupToCloud,
+  restoreFromCloud,
+  testWebDAVConnection,
+  mergeSync,
 } from '../services/webdavSync';
 import type { AppStoreExport, TRoundArchive, Position } from '../store/types';
 import type { FeeConfig } from '../utils/mathUtils';
@@ -464,5 +469,131 @@ describe('syncHistory', () => {
     const history = getSyncHistory();
     expect(history[0].type).toBe('merge');
     expect(history[1].type).toBe('backup');
+  });
+});
+
+// ============================================================
+// 6. 同步元数据独立存储（webdav_meta_v1）
+// ============================================================
+
+describe('同步元数据独立存储', () => {
+  beforeEach(() => { localStorage.clear(); });
+
+  it('应使用 webdav_meta_v1 键名存储', () => {
+    setLastSyncTime('2026-08-13T12:00:00.000Z');
+    addSyncHistory({ timestamp: '2026-08-13T12:00:00.000Z', type: 'backup', success: true });
+    const raw = localStorage.getItem('webdav_meta_v1');
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw!);
+    expect(parsed).toHaveProperty('lastSyncTime');
+    expect(parsed).toHaveProperty('syncHistory');
+    expect(parsed.lastSyncTime).toBe('2026-08-13T12:00:00.000Z');
+    expect(parsed.syncHistory).toHaveLength(1);
+  });
+
+  it('不应使用旧的独立键名存储', () => {
+    setLastSyncTime('2026-08-13T12:00:00.000Z');
+    addSyncHistory({ timestamp: '2026-08-13T12:00:00.000Z', type: 'backup', success: true });
+    expect(localStorage.getItem('webdav_last_sync')).toBeNull();
+    expect(localStorage.getItem('webdav_sync_history')).toBeNull();
+  });
+
+  it('clearWebDAVConfig 应清除 webdav_meta_v1', () => {
+    setLastSyncTime('2026-08-13T12:00:00.000Z');
+    addSyncHistory({ timestamp: '2026-08-13T12:00:00.000Z', type: 'backup', success: true });
+    clearWebDAVConfig();
+    expect(localStorage.getItem('webdav_meta_v1')).toBeNull();
+    expect(getLastSyncTime()).toBeNull();
+    expect(getSyncHistory()).toEqual([]);
+  });
+});
+
+// ============================================================
+// 7. 同步互斥锁（Sync Lock）防重入
+// ============================================================
+
+describe('同步互斥锁 syncLockCount', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    // 必须使用真实的 fetch，由测试控制
+  });
+
+  it('metadata 读写使用 webdav_meta_v1 不与旧键名冲突', () => {
+    // 模拟旧数据仍在 localStorage 中
+    localStorage.setItem('webdav_last_sync', '2026-01-01T00:00:00.000Z');
+    localStorage.setItem('webdav_sync_history', JSON.stringify([{ timestamp: '2026-01-01T00:00:00.000Z', type: 'backup', success: true }]));
+
+    // 新接口应读取 webdav_meta_v1（为空），而非旧键名
+    expect(getLastSyncTime()).toBeNull();
+    expect(getSyncHistory()).toEqual([]);
+
+    // 写入新数据后应使用新键名
+    setLastSyncTime('2026-08-13T12:00:00.000Z');
+    expect(localStorage.getItem('webdav_meta_v1')).not.toBeNull();
+    expect(getLastSyncTime()).toBe('2026-08-13T12:00:00.000Z');
+  });
+});
+// ============================================================
+// 8. 上传互斥锁（isUploading）防并发 PUT —— 阻断死循环上传的关键
+// ============================================================
+
+describe('上传互斥锁 isUploading', () => {
+  const buildConfig = () => ({
+    webdavUrl: 'https://dav.example.com/dav/',
+    username: 'test',
+    password: 'app_pass',
+    remotePath: '/stock-calculator/data-backup.json',
+    autoSync: false,
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it('并发调用 backupToCloud 时仅发出 1 次 PUT，第二个请求被立即拦截', async () => {
+    // 第一个 PUT 挂起（fetch 返回未 resolve 的 Promise），制造"上传在途"的并发窗口
+    let resolveFetch!: (r: Response) => void;
+    const pendingFetch = new Promise<Response>((res) => { resolveFetch = res; });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockReturnValueOnce(pendingFetch) // 第一个 backupToCloud 的 PUT 在途
+      .mockResolvedValue(new Response(null, { status: 201 })); // 兜底
+
+    const json = serializeSnapshot(createMockSnapshot());
+
+    const first = backupToCloud(buildConfig(), json);
+    const second = backupToCloud(buildConfig(), json);
+
+    // 第二个调用应被 isUploading 互斥锁立即拦截，网络层面不发任何请求
+    const r2 = await second;
+    expect(r2.ok).toBe(false);
+    expect(r2.message).toContain('上传正在进行中');
+
+    // 放行第一个 PUT
+    resolveFetch(new Response(null, { status: 201 }));
+    const r1 = await first;
+    expect(r1.ok).toBe(true);
+
+    // 全程只发出 1 个网络请求（第二个在锁内被拦截，未触达 fetch）
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('上传完成后互斥锁释放，可再次正常上传', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 201 }));
+
+    const json = serializeSnapshot(createMockSnapshot());
+
+    const r1 = await backupToCloud(buildConfig(), json, false, true);
+    expect(r1.ok).toBe(true);
+
+    // force=true：跳过冷却时间；若 isUploading 未释放则会被拦截，此处应成功
+    const r2 = await backupToCloud(buildConfig(), json, false, true);
+    expect(r2.ok).toBe(true);
+
+    // 两次上传均真正发起了网络请求（说明锁已被正确释放）
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });

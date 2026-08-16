@@ -111,7 +111,7 @@ export default function SyncModal({ open, onClose }: SyncModalProps) {
     try {
       const result = await restoreFromCloud(config);
       if (result.ok && result.data) {
-        importData(result.data);
+        importData(result.data, true); // silent: 来自远端拉取，不触发自动上传
         setSyncStatus('success');
         setStatusMessage('恢复成功，本地数据已更新');
       } else {
@@ -141,7 +141,7 @@ export default function SyncModal({ open, onClose }: SyncModalProps) {
           stocks: result.mergeResult.stocks,
           longTermRecords: result.mergeResult.longTermRecords,
         };
-        importData(merged);
+        importData(merged, true); // silent: 来自远端拉取合并，不触发自动上传
         setSyncStatus('success');
       } else if (result.ok) {
         setSyncStatus('success');

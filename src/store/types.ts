@@ -207,7 +207,13 @@ export interface AppStoreActions {
 
   // -- 导入导出 --
   exportData: () => AppStoreExport;
-  importData: (data: AppStoreExport) => void;
+  /**
+   * 全量导入数据。
+   * @param data - 导入的数据
+   * @param silent - 若为 true，则表示此次导入来自远端同步（Pull & Merge），
+   *                 不触发后续自动上传/自动同步逻辑，避免无限循环。
+   */
+  importData: (data: AppStoreExport, silent?: boolean) => void;
   exportJSON: () => Promise<AppStoreExport>;
   importJSON: (data: AppStoreExport) => void;
   exportCSV: () => string;

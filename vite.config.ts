@@ -50,17 +50,26 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
+        // 导航回退拒绝列表：绝对不拦截 /api、/api-webdav、/webdav 等代理/路由，
+        // 确保 Service Worker 不把 WebDAV 流量当作 SPA 导航去回退缓存。
         navigateFallbackDenylist: [
-          /^\/api/,
+          /^\/api($|\/)/, // 覆盖 /api/webdav
           /^\/api-webdav/,
           /^\/api-gtimg/,
           /^\/api-qt/,
           /^\/api\/eastmoney/,
+          /^\/webdav/, // 客户端 /webdav 路由也不做导航缓存
         ],
         runtimeCaching: [
           {
-            urlPattern: /^https?:\/\/.*\.(?:js|css|html|svg|png|ico|json|jpg|woff2?)$/i,
+            // 仅为"带扩展名的跨域静态资源"做 NetworkFirst 缓存。
+            // 通过负向前瞻显式排除 /api、/api/webdav、/webdav，
+            // 并限定 method: 'GET'，保证 WebDAV 的 PUT/GET/PROPFIND/MKCOL 等
+            // 请求绝不进入任何 NetworkFirst / StaleWhileRevalidate /
+            // BackgroundSync 缓存与后台重试策略。
+            urlPattern: /^(?!.*\/api\/webdav)(?!.*\/api\/)(?!.*\/webdav)https?:\/\/.*\.(?:js|css|html|svg|png|ico|json|jpg|woff2?)(?:\?.*)?$/i,
             handler: 'NetworkFirst',
+            method: 'GET',
             options: {
               cacheName: 'stock-calculator-static',
               expiration: {

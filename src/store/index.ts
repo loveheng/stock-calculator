@@ -88,6 +88,16 @@ let persistError: string | null = null;
 let pendingQueue: Array<() => Promise<void>> = [];
 let isProcessingQueue = false;
 
+/**
+ * 远端同步标记：当从云端恢复/合并数据时（importData 的 silent 模式），
+ * 此标记设为 true，防止自动同步监听器将刚导入的数据又上传回云端。
+ * 自动同步触发器（如 store.subscribe / useEffect）必须检查此标记：
+ *   if (isSyncingFromRemote) { isSyncingFromRemote = false; return; }
+ * 使用完成后立即复位，避免影响后续用户手动操作。
+ */
+let isSyncingFromRemote = false;
+export function getIsSyncingFromRemote(): boolean { return isSyncingFromRemote; }
+
 export function getPersistError(): string | null { return persistError; }
 export function clearPersistError(): void { persistError = null; }
 
@@ -812,10 +822,19 @@ export const useAppStore = create<AppStore>()((set, get) => ({
 
   exportData: () => { const state = get(); return { version: EXPORT_VERSION, feeConfig: state.feeConfig, tRounds: state.tRounds, positions: state.positions, stocks: state.stocks, longTermRecords: state.longTermRecords }; },
 
-  importData: (data) => {
+  importData: (data, silent) => {
     const rounds = data.tRounds ?? [];
     set({ feeConfig: data.feeConfig, tRounds: rounds, positions: data.positions ?? [], stocks: data.stocks ?? [], longTermRecords: data.longTermRecords ?? [] });
     safePersist(() => safeImportAllData(data.feeConfig, data.positions ?? [], rounds, data.stocks ?? [], data.longTermRecords ?? []));
+    // silent 模式：来自远端拉取合并（Pull & Merge），跳过后续自动上传/同步逻辑
+    // 设置 isSyncingFromRemote 标记，自动同步监听器必须检查此标记后跳过触发
+    if (silent) {
+      isSyncingFromRemote = true;
+      // 下轮微任务中自动复位，确保不影响后续用户手动触发同步
+      // 使用 setTimeout(0) 而非 Promise.resolve().then()，因为 Zustand set 同步执行，
+      // 自动同步监听器若使用 store.subscribe 会同步/微任务内触发，需要在此之后才复位
+      setTimeout(() => { isSyncingFromRemote = false; }, 0);
+    }
   },
 
   exportJSON: async () => {

@@ -121,26 +121,12 @@ function parseSmartboxPayload(raw: string): StockSearchItem[] {
 export async function searchStocks(input: string): Promise<StockSearchItem[]> {
   if (!input || input.trim().length === 0) return [];
 
-<<<<<<< HEAD
-  // 通过 Vite 代理转发请求，避免跨域问题
-  const params = new URLSearchParams({
-    input: input.trim(),
-    type: '14',
-    count: '10',
-  });
-
-  const res = await fetch(`/api/suggest/get?${params.toString()}`, {
-    method: 'GET',
-    headers: {
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signe',
-=======
   const url = `/api-gtimg/s3/?q=${encodeURIComponent(input.trim())}&t=gp`;
 
   const res = await fetch(url, {
     method: 'GET',
     headers: {
       Referer: 'https://finance.qq.com/',
->>>>>>> dev
     },
   });
 

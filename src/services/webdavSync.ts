@@ -124,11 +124,14 @@ export function addSyncHistory(entry: SyncHistoryEntry): void {
  * 所有请求统一通过同源 Edge 代理 /api-webdav 转发，
  * 避免浏览器端跨域 CORS 限制。
  *
- * 代理 URL 格式：/api-webdav?url=<encodeURIComponent(上游地址)>
+ * 代理 URL 格式：/api-webdav/proxy?url=<encodeURIComponent(上游地址)>
+ *
+ * @note 必须包含 /proxy 路径段，因为 Vercel Edge Middleware 的 matcher 模式
+ *       /api-webdav/:path* 要求至少有一个路径段，否则中间件不会触发。
  */
 function buildProxyUrl(config: WebDAVConfig, path: string): string {
   const targetUrl = `${config.webdavUrl.replace(/\/+$/, '')}${path}`;
-  return `/api-webdav?url=${encodeURIComponent(targetUrl)}`;
+  return `/api-webdav/proxy?url=${encodeURIComponent(targetUrl)}`;
 }
 
 /**

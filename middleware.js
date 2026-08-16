@@ -35,7 +35,9 @@ const UPSTREAMS = {
   /**
    * WebDAV 代理：用于转发跨域 WebDAV 请求。
    * 客户端通过 /api-webdav/proxy?url=... 传递目标 URL，
-   * 服务端在拦截后注入 Basic Auth 头并转发，避免浏览器端 CORS 限制。
+   * 服务端在拦截后透传 Authorization 头并转发，避免浏览器端 CORS 限制。
+   * @note /proxy 路径段必须保留，因为 matcher 模式 /api-webdav/:path*
+   *       需要至少一个路径段才能触发中间件。
    */
   '/api-webdav': {
     base: '', // 动态 base：从查询参数 ?url= 中提取

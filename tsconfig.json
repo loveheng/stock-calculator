@@ -19,6 +19,6 @@
     "allowJs": true,
     "checkJs": false
   },
-  "include": ["src", "middleware.ts"],
+  "include": ["src"],
   "exclude": ["src/__tests__"]
 }

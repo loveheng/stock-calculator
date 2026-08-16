@@ -1,9 +1,8 @@
 /**
- * @file middleware.ts
+ * @file middleware.js
  * @description Vercel Edge Middleware：拦截 /api-gtimg、/api-qt、/api/eastmoney 请求，
  *              以服务端 fetch 方式转发到上游，并添加浏览器端无法设置的
  *              Referer、User-Agent 等请求头，解决生产环境外部 API 无法访问的问题。
- * @layer Config
  * @deployment 本文件部署至 Vercel Edge Runtime，运行于全球边缘节点，
  *             不占用 Node.js Serverless 冷启动时间。
  */
@@ -12,7 +11,7 @@
  * 上游代理配置映射表。
  * 键为本地路径前缀，值为上游基础 URL 和需要注入的请求头。
  */
-const UPSTREAMS: Record<string, { base: string; headers: Record<string, string> }> = {
+const UPSTREAMS = {
   '/api-gtimg': {
     base: 'https://smartbox.gtimg.cn',
     headers: {
@@ -50,10 +49,10 @@ export const config = {
 /**
  * 默认中间件处理函数。
  *
- * @param request - 原始请求对象（Web API Request）
- * @returns 转发后的响应对象（Web API Response）
+ * @param {Request} request - 原始请求对象（Web API Request）
+ * @returns {Promise<Response>} 转发后的响应对象
  */
-export default async function middleware(request: Request): Promise<Response> {
+export default async function middleware(request) {
   const url = new URL(request.url);
   const pathname = url.pathname;
 
@@ -73,16 +72,17 @@ export default async function middleware(request: Request): Promise<Response> {
   for (const [key, value] of Object.entries(upstream.headers)) {
     forwardHeaders.set(key, value);
   }
-  // 2. 透传原始请求头（排除 host，避免冲突）
-  const excludedHeaders = new Set(['host', 'x-forwarded-host', 'x-forwarded-proto', 'x-vercel-*']);
+  // 2. 透传原始请求头（排除 host 和 Vercel 内部头，避免冲突）
+  const excludedPrefixes = ['x-vercel-', 'x-forwarded-'];
   for (const [key, value] of request.headers.entries()) {
-    if (!excludedHeaders.has(key.toLowerCase()) && !key.toLowerCase().startsWith('x-vercel-')) {
-      forwardHeaders.set(key, value);
-    }
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === 'host') continue;
+    if (excludedPrefixes.some((prefix) => lowerKey.startsWith(prefix))) continue;
+    forwardHeaders.set(key, value);
   }
 
-  // 构造上游请求体（仅 GET/HEAD 请求不带 body）
-  const requestInit: RequestInit = {
+  // 构造上游请求
+  const requestInit = {
     method: request.method,
     headers: forwardHeaders,
   };

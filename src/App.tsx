@@ -19,6 +19,7 @@ import {
   TrendingUp,
   PieChart,
   Settings,
+  Cloud,
   Menu,
   X,
 } from 'lucide-react';
@@ -32,6 +33,7 @@ import TCalculator from './views/TCalculator';
 import CostAveraging from './views/CostAveraging';
 import Statistics from './views/Statistics';
 import FeeConfig from './views/FeeConfig';
+import WebDAVConfig from './views/WebDAVConfig';
 
 /**
  * 导航菜单配置项。
@@ -48,6 +50,7 @@ const NAV_ITEMS = [
   { path: '/cost-averaging', label: '中长期交易', icon: BarChart3 },
   { path: '/statistics', label: '数据统计', icon: PieChart },
   { path: '/fee-config', label: '费率配置', icon: Settings },
+  { path: '/webdav', label: '云端同步', icon: Cloud },
 ];
 
 /**
@@ -172,6 +175,7 @@ function AppLayout() {
             <Route path="/cost-averaging" element={<CostAveraging />} />
             <Route path="/statistics" element={<Statistics />} />
             <Route path="/fee-config" element={<FeeConfig />} />
+            <Route path="/webdav" element={<WebDAVConfig />} />
           </Routes>
         </div>
       </main>

@@ -32,6 +32,16 @@ const UPSTREAMS = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
   },
+  /**
+   * WebDAV 代理：用于转发跨域 WebDAV 请求。
+   * 客户端通过 /api-webdav/proxy?url=... 传递目标 URL，
+   * 服务端在拦截后注入 Basic Auth 头并转发，避免浏览器端 CORS 限制。
+   */
+  '/api-webdav': {
+    base: '', // 动态 base：从查询参数 ?url= 中提取
+    headers: {}, // 动态注入：从查询参数中提取 Authorization
+    dynamic: true, // 标记为动态路由，需要特殊处理
+  },
 };
 
 /**
@@ -43,7 +53,7 @@ const SORTED_PREFIXES = Object.keys(UPSTREAMS).sort((a, b) => b.length - a.lengt
  * Vercel Edge Middleware 配置：仅匹配需要代理的路径，减少边缘函数调用次数。
  */
 export const config = {
-  matcher: ['/api-gtimg/:path*', '/api-qt/:path*', '/api/eastmoney/:path*'],
+  matcher: ['/api-gtimg/:path*', '/api-qt/:path*', '/api/eastmoney/:path*', '/api-webdav/:path*'],
 };
 
 /**
@@ -63,22 +73,44 @@ export default async function middleware(request) {
   }
 
   const upstream = UPSTREAMS[matchedPrefix];
-  const upstreamPath = pathname.slice(matchedPrefix.length) || '/';
-  const upstreamUrl = `${upstream.base}${upstreamPath}${url.search}`;
 
   // 构建转发请求头：注入上游要求的头 + 透传原始请求头（除 host）
   const forwardHeaders = new Headers();
-  // 1. 注入上游要求的头（Referer, User-Agent 等）
-  for (const [key, value] of Object.entries(upstream.headers)) {
-    forwardHeaders.set(key, value);
-  }
-  // 2. 透传原始请求头（排除 host 和 Vercel 内部头，避免冲突）
   const excludedPrefixes = ['x-vercel-', 'x-forwarded-'];
-  for (const [key, value] of request.headers.entries()) {
-    const lowerKey = key.toLowerCase();
-    if (lowerKey === 'host') continue;
-    if (excludedPrefixes.some((prefix) => lowerKey.startsWith(prefix))) continue;
-    forwardHeaders.set(key, value);
+
+  let upstreamUrl;
+
+  if (upstream.dynamic) {
+    // 动态路由（/api-webdav）：从查询参数中提取 url 和 Authorization 头
+    const targetUrl = url.searchParams.get('url');
+    if (!targetUrl) {
+      return new Response('Missing url parameter', { status: 400 });
+    }
+    upstreamUrl = targetUrl;
+
+    // 透传原始请求头（Authorization 由客户端携带，透传即可）
+    for (const [key, value] of request.headers.entries()) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey === 'host') continue;
+      if (excludedPrefixes.some((prefix) => lowerKey.startsWith(prefix))) continue;
+      forwardHeaders.set(key, value);
+    }
+  } else {
+    // 静态路由：拼接 upstream base + path
+    const upstreamPath = pathname.slice(matchedPrefix.length) || '/';
+    upstreamUrl = `${upstream.base}${upstreamPath}${url.search}`;
+
+    // 1. 注入上游要求的头（Referer, User-Agent 等）
+    for (const [key, value] of Object.entries(upstream.headers)) {
+      forwardHeaders.set(key, value);
+    }
+    // 2. 透传原始请求头
+    for (const [key, value] of request.headers.entries()) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey === 'host') continue;
+      if (excludedPrefixes.some((prefix) => lowerKey.startsWith(prefix))) continue;
+      forwardHeaders.set(key, value);
+    }
   }
 
   // 构造上游请求
@@ -99,8 +131,9 @@ export default async function middleware(request) {
     // 构建响应头（透传上游响应头 + 添加 CORS 头）
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.set('Access-Control-Allow-Origin', '*');
-    responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Referer');
+    responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY');
+    responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Depth, Destination, Overwrite');
+    responseHeaders.set('Access-Control-Expose-Headers', 'Content-Type, Content-Length, ETag');
 
     return new Response(upstreamResponse.body, {
       status: upstreamResponse.status,

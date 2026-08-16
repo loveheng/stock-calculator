@@ -104,12 +104,21 @@ export default async function middleware(request) {
     }
     upstreamUrl = targetUrl;
 
-    // 透传原始请求头（Authorization 由客户端携带，透传即可）
+    // 透传原始请求头（排除 host 和 Vercel 内部头）
     for (const [key, value] of request.headers.entries()) {
       const lowerKey = key.toLowerCase();
       if (lowerKey === 'host') continue;
       if (excludedPrefixes.some((prefix) => lowerKey.startsWith(prefix))) continue;
+      // 跳过标准 Authorization 头（客户端使用 X-WebDAV-Authorization 传递）
+      if (lowerKey === 'authorization') continue;
       forwardHeaders.set(key, value);
+    }
+
+    // Vercel CDN 可能会剥离标准 Authorization 头，因此客户端使用自定义头
+    // X-WebDAV-Authorization 传递凭据，中间件在此将其转换为标准头转发给上游
+    const webdavAuth = request.headers.get('X-WebDAV-Authorization');
+    if (webdavAuth) {
+      forwardHeaders.set('Authorization', webdavAuth);
     }
   } else {
     // 静态路由：拼接 upstream base + path
@@ -148,7 +157,7 @@ export default async function middleware(request) {
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.set('Access-Control-Allow-Origin', '*');
     responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY');
-    responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Depth, Destination, Overwrite');
+    responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Depth, Destination, Overwrite, X-WebDAV-Authorization');
     responseHeaders.set('Access-Control-Expose-Headers', 'Content-Type, Content-Length, ETag');
 
     return new Response(upstreamResponse.body, {

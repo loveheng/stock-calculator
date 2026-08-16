@@ -136,11 +136,15 @@ function buildProxyUrl(config: WebDAVConfig, path: string): string {
 
 /**
  * 构建 WebDAV 请求的 headers（含 Basic Auth）。
+ *
+ * @note 使用 `X-WebDAV-Authorization` 自定义头代替标准 `Authorization` 头，
+ *       因为 Vercel CDN 可能会在请求到达 Edge Middleware 之前剥离 `Authorization` 头。
+ *       Edge Middleware 会读取此自定义头并转换为标准 `Authorization` 头转发给上游。
  */
 function buildWebDAVHeaders(config: WebDAVConfig, extra: Record<string, string> = {}): Record<string, string> {
   const credentials = btoa(`${config.username}:${config.password}`);
   return {
-    Authorization: `Basic ${credentials}`,
+    'X-WebDAV-Authorization': `Basic ${credentials}`,
     'Content-Type': 'application/octet-stream',
     ...extra,
   };

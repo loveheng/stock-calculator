@@ -61,7 +61,18 @@ const WEBDAV_ALLOWED_HEADERS = new Set([
 /** 静态代理需剔除的 Vercel 内部头前缀。 */
 const BLOCKED_PREFIXES = ['x-vercel-', 'x-forwarded-'];
 
-/** 统一 CORS 头：所有跨源响应（包括 400/404/500/502 等错误响应）都必须携带，
+// ============================================================
+// 2a. WebDAV / 标准 HTTP 方法白名单
+// ============================================================
+/** 允许并转发的全部方法：标准 HTTP（GET/HEAD/POST/PUT/DELETE/OPTIONS）
+ *  + WebDAV 扩展方法（PROPFIND/MKCOL/MOVE/COPY）。
+ *  HEAD 必须显式放行，否则浏览器/测试连接请求会被中间件或上游以 405 拦截。
+ */
+const ALLOWED_METHODS = [
+  'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PROPFIND', 'MKCOL', 'MOVE', 'COPY',
+];
+
+/** 统一 CORS 头：所有跨源响应（包括 400/404/405/500/502 等错误响应）都必须携带，
     否则浏览器会拦截错误信息，前端无法读取失败原因。 */
 const CORS_ALLOW_ORIGIN = { 'Access-Control-Allow-Origin': '*' };
 
@@ -108,10 +119,24 @@ export default async function middleware(request) {
       status: 200,
       headers: {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods':
-          'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS',
+        'Access-Control-Allow-Methods': ALLOWED_METHODS.join(', '),
         'Access-Control-Allow-Headers': '*',
         'Access-Control-Max-Age': '86400',
+      },
+    });
+  }
+
+  // ----------------------------------------------------------
+  // 3a-2. 方法白名单校验：完整支持标准 HTTP 与 WebDAV 方法（含 HEAD）。
+  // 仅对白名单之外的方法返回 405；GET/HEAD/POST/PUT/DELETE/PROPFIND/MKCOL/
+  // MOVE/COPY 一律放行并转发到上游，绝不在中间件层误拦截 HEAD。
+  // ----------------------------------------------------------
+  if (!ALLOWED_METHODS.includes(request.method)) {
+    return new Response('Method Not Allowed', {
+      status: 405,
+      headers: {
+        ...CORS_ALLOW_ORIGIN,
+        Allow: ALLOWED_METHODS.join(', '),
       },
     });
   }
@@ -168,9 +193,12 @@ export default async function middleware(request) {
     headers: forwardHeaders,
   };
 
-  // 非 GET/HEAD 请求透传 body。流式 PUT 请求体必须声明 duplex: 'half'，
-  // 否则 Edge Runtime 会拒绝流式 body，导致上游/代理返回 405 或 100。
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
+  // HEAD/GET/OPTIONS 请求不允许携带 body，显式置为 undefined，其余透传。
+  // 流式 PUT 请求体必须声明 duplex: 'half'，否则 Edge Runtime 会拒绝流式 body，
+  // 导致上游/代理返回 405 或 100。
+  if (request.method === 'GET' || request.method === 'HEAD') {
+    requestInit.body = undefined;
+  } else {
     requestInit.body = request.body;
     requestInit.duplex = 'half';
   }
@@ -184,10 +212,7 @@ export default async function middleware(request) {
     // 透传上游头 + 统一追加 CORS 头。
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.set('Access-Control-Allow-Origin', '*');
-    responseHeaders.set(
-      'Access-Control-Allow-Methods',
-      'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS',
-    );
+    responseHeaders.set('Access-Control-Allow-Methods', ALLOWED_METHODS.join(', '));
     responseHeaders.set('Access-Control-Allow-Headers', '*');
 
     return new Response(upstreamResponse.body, {

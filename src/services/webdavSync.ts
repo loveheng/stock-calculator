@@ -348,7 +348,11 @@ export async function ensureParentDir(config: WebDAVConfig, filePath: string): P
 
 /**
  * 测试 WebDAV 连接连通性。
- * 优先使用 PROPFIND，若服务器不支持则回退到 HEAD。
+ * 优先使用 PROPFIND（附带 Depth: 0 请求头，Chrome/Koofr 等标准 WebDAV 服务器
+ * 均支持），若服务器不支持则回退到 GET。
+ * 刻意【不使用 HEAD】作为连通性探测：部分网盘（含部分 WebDAV 服务器）会拒绝
+ * HEAD 并返回 405，导致误判连接失败；而 PROPFIND / GET 是 WebDAV 标准读操作，
+ * 兼容性更稳。
  */
 export async function testWebDAVConnection(config: WebDAVConfig): Promise<{ ok: boolean; message: string }> {
   const now = Date.now();
@@ -387,7 +391,11 @@ export async function testWebDAVConnection(config: WebDAVConfig): Promise<{ ok: 
       'PROPFIND',
       '/',
       propfindBody,
-      { 'Content-Type': 'application/xml; charset="utf-8"' },
+      {
+        'Content-Type': 'application/xml; charset="utf-8"',
+        // Depth: 0 —— 仅探测集合本身，不递归遍历子级，减小响应体积。
+        Depth: '0',
+      },
     );
 
     if (response.ok || response.status === 207) {
@@ -407,12 +415,12 @@ export async function testWebDAVConnection(config: WebDAVConfig): Promise<{ ok: 
       return { ok: false, message: '目标文件已被远端服务器锁定（423 Locked），请稍后重试或确认无其他客户端正在占用该文件。' };
     }
 
-    // PROPFIND 失败，回退到 HEAD
-    console.log(`${logPrefix} PROPFIND 失败，回退到 HEAD`);
-    const headResponse = await webdavRequest(config, 'HEAD', '/');
-    if (headResponse.ok) {
-      console.log(`${logPrefix} 连接成功（HEAD）`);
-      return { ok: true, message: '连接成功（HEAD）' };
+    // PROPFIND 失败，回退到 GET（不用 HEAD：部分网盘对 HEAD 返回 405）。
+    console.log(`${logPrefix} PROPFIND 失败，回退到 GET`);
+    const getResponse = await webdavRequest(config, 'GET', '/');
+    if (getResponse.ok) {
+      console.log(`${logPrefix} 连接成功（GET）`);
+      return { ok: true, message: '连接成功（GET）' };
     }
 
     console.error(`${logPrefix} 连接失败`, { status: response.status, statusText: response.statusText });

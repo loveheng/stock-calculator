@@ -36,12 +36,22 @@ export default defineConfig({
         server.middlewares.use('/api-webdav', async (req, res) => {
           // 1. 处理 OPTIONS 预检
           res.setHeader('Access-Control-Allow-Origin', '*');
-          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS');
           res.setHeader('Access-Control-Allow-Headers', '*');
 
           if (req.method === 'OPTIONS') {
             res.statusCode = 200;
             res.end();
+            return;
+          }
+
+          // 与线上 middleware.js 一致的方法白名单：完整支持标准 HTTP 与 WebDAV
+          // 方法（含 HEAD），仅对白名单之外的方法返回 405。
+          const ALLOWED_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PROPFIND', 'MKCOL', 'MOVE', 'COPY'];
+          if (!ALLOWED_METHODS.includes(req.method || '')) {
+            res.statusCode = 405;
+            res.setHeader('Allow', ALLOWED_METHODS.join(', '));
+            res.end(JSON.stringify({ error: 'Method Not Allowed' }));
             return;
           }
 
@@ -199,7 +209,7 @@ export default defineConfig({
             res.writeHead(200, {
               'Access-Control-Allow-Origin': '*',
               'Access-Control-Allow-Methods':
-                'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS',
+                'GET, HEAD, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS',
               'Access-Control-Allow-Headers': '*',
               'Access-Control-Max-Age': '86400',
             });

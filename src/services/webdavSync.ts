@@ -341,6 +341,37 @@ export async function ensureParentDir(config: WebDAVConfig, filePath: string): P
     return false;
   }
 }
+/**
+ * 上传前置的“确保父目录存在”检查（MKCOL）。
+ *
+ * Koofr 等 WebDAV 服务端在目标文件的父级目录（如 stock-calculator）尚未创建时，
+ * 会直接对 PUT 返回 404 Not Found。因此在执行 PUT 写入文件之前，先提取文件所在的
+ * 父级目录完整 URL，并向其发送一次 MKCOL 请求自动创建目录：
+ *   - 201 Created          —— 目录创建成功；
+ *   - 405/301/409 等状态   —— 目录已存在（不同服务端返回码不一），同样视为成功；
+ *   - 网络错误/其它非致命异常 —— 忽略，后续仍按原流程执行 PUT（配合 backupToWebDAV
+ *     里的 404/409 重试兜底，保证健壮性）。
+ *
+ * 本函数刻意使用最简实现（直接 fetch 代理 + Authorization 头），作为上传前的一步
+ * “尽力而为”预检，返回值无业务含义。
+ *
+ * @param dirUrl     远端父级目录的完整 URL（如 https://app.koofr.net/dav/Koofr/stock-calculator）
+ * @param authHeader Basic Auth 头（如 'Basic xxxxx'）
+ */
+async function ensureDirectoryExists(dirUrl: string, authHeader: string): Promise<void> {
+  try {
+    const proxyUrl = `/api/webdav?url=${encodeURIComponent(dirUrl)}`;
+    await fetch(proxyUrl, {
+      method: 'MKCOL',
+      headers: {
+        'Authorization': authHeader,
+      },
+    });
+    // 201 Created: 创建成功；405/301/409: 目录已存在，均视为成功
+  } catch (e) {
+    // 忽略已存在或非致命错误
+  }
+}
 
 // ============================================================
 // 3. 核心同步操作
@@ -1073,9 +1104,20 @@ export async function backupToWebDAV(payload: unknown, force = false): Promise<B
       const proxyUrl = buildProxyUrl(config, `/${cleanPath}`);
       const authHeader = 'Basic ' + btoa(`${config.username}:${config.password}`);
 
+      // 上传前置检查：先确保远端父目录存在（MKCOL）。
+      // Koofr 等 WebDAV 服务端在目标文件的父级目录（如 stock-calculator）尚未创建时，
+      // 会直接对 PUT 返回 404 Not Found。这里提取文件所在的父级目录 URL，发起一次
+      // MKCOL 请求自动创建目录（若已存在或非致命错误则忽略），随后再执行 PUT 写入。
+      const parentDir = cleanPath.substring(0, cleanPath.lastIndexOf('/'));
+      if (parentDir) {
+        const parentDirUrl = `${baseUrl}/${parentDir}`;
+        await ensureDirectoryExists(parentDirUrl, authHeader);
+      }
+
       console.log(`[WebDAV] 发起单次 PUT 上传 -> ${targetUrl}`);
 
-      const res = await fetch(proxyUrl, {
+      const putBody = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+      const doPut = () => fetch(proxyUrl, {
         method: 'PUT',
         cache: 'no-store',
         headers: {
@@ -1083,8 +1125,20 @@ export async function backupToWebDAV(payload: unknown, force = false): Promise<B
           'Content-Type': 'application/json',
           Overwrite: 'T',
         },
-        body: typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2),
+        body: putBody,
       });
+
+      let res = await doPut();
+
+      // 远端父目录不存在时（Koofr 等 WebDAV 服务端对 PUT 直接返回 404/409），
+      // 先 MKCOL 自动创建父级文件夹，再重试一次 PUT。
+      if (res.status === 404 || res.status === 409) {
+        const dirCreated = await ensureParentDir(config, `/${cleanPath}`);
+        if (dirCreated) {
+          console.log(`[WebDAV] 已自动创建父目录，重试 PUT -> ${targetUrl}`);
+          res = await doPut();
+        }
+      }
 
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} ${res.statusText}`);

@@ -754,7 +754,8 @@ describe('backupToWebDAV 全局唯一执行锁 + 10s 绝对冷却', () => {
     const second = await backupToWebDAV({ v: 2 }); // 非 force → 冷却合并
     expect(second.success).toBe(true);
     expect(second.message).toContain('冷却');
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // 第一次备份：前置 MKCOL + PUT；第二次被冷却合并，不产生新请求
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it('并发调用：在途时第二个调用复用同一 Promise，PUT 仅发出 1 次', async () => {
@@ -772,7 +773,8 @@ describe('backupToWebDAV 全局唯一执行锁 + 10s 绝对冷却', () => {
     const [r1, r2] = await Promise.all([first, second]);
     expect(r1.success).toBe(true);
     expect(r2.success).toBe(true);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // 两次调用复用同一 Promise：仅发出 1 次前置 MKCOL + 1 次 PUT，共 2 个请求
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it('force 可绕过冷却期并发出新的上传', async () => {
@@ -783,7 +785,8 @@ describe('backupToWebDAV 全局唯一执行锁 + 10s 绝对冷却', () => {
     await backupToWebDAV({ v: 1 }, true); // 进入冷却
     const second = await backupToWebDAV({ v: 2 }, true); // force 绕过
     expect(second.success).toBe(true);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // 每次强制备份 = 前置 MKCOL + PUT，两次共 4 个请求
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
   });
 
   it('未配置时返回失败且不发请求', async () => {
@@ -795,6 +798,44 @@ describe('backupToWebDAV 全局唯一执行锁 + 10s 绝对冷却', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+it('上传前先 MKCOL 确保父目录存在（proactive），再执行 PUT', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 201 })) // 前置 MKCOL 创建父目录 → 201
+      .mockResolvedValueOnce(new Response(null, { status: 201 })); // PUT → 201
+
+    const r = await backupToWebDAV({ version: 1 }, true);
+
+    expect(r.success).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const methods = fetchSpy.mock.calls.map(([, init]) => (init as RequestInit).method);
+    // 顺序应为：MKCOL（自动建父目录）→ PUT
+    expect(methods[0]).toBe('MKCOL');
+    expect(methods[1]).toBe('PUT');
+    // 前置 MKCOL 应指向文件父级目录的 URL
+    const mkcolUrl = fetchSpy.mock.calls[0][0] as string;
+    expect(mkcolUrl).toContain(encodeURIComponent('https://dav.example.com/dav/stock-calculator'));
+  });
+
+  it('PUT 返回 404/409 时兜底自动创建父目录并重试成功', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 405 }))          // 前置 MKCOL：目录已存在，忽略
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))  // PUT → 404（父目录仍不存在）
+      .mockResolvedValueOnce(new Response(null, { status: 201 }))          // ensureParentDir 的 MKCOL → 201
+      .mockResolvedValueOnce(new Response(null, { status: 201 }));         // 重试 PUT → 201
+
+    const r = await backupToWebDAV({ version: 1 }, true);
+
+    expect(r.success).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    // 顺序应为：MKCOL(前置) → PUT → MKCOL(兜底建父目录) → 重试 PUT
+    const methods = fetchSpy.mock.calls.map(([, init]) => (init as RequestInit).method);
+    expect(methods[0]).toBe('MKCOL');
+    expect(methods[1]).toBe('PUT');
+    expect(methods[2]).toBe('MKCOL');
+    expect(methods[3]).toBe('PUT');
+  });
   it('scheduleBackup 防抖：多个连续触发合并为最后一次并仅执行一次备份', async () => {
     vi.useFakeTimers();
     try {
@@ -812,7 +853,8 @@ describe('backupToWebDAV 全局唯一执行锁 + 10s 绝对冷却', () => {
       await Promise.resolve(); // 等待内部 async 完成
       await Promise.resolve();
 
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      // 防抖把 3 次触发合并为 1 次备份；该次备份 = 前置 MKCOL + PUT，共 2 个请求
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
       __resetWebDAVAutoBackup();

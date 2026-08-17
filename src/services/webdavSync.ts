@@ -212,8 +212,8 @@ function buildProxyUrl(config: WebDAVConfig, path: string): string {
 /**
  * 构建 WebDAV 请求的 headers（含 Basic Auth）。
  *
- * 使用标准 `Authorization` 头，Vercel Edge Middleware 会严格清洗请求头，
- * 保留 authorization 并转发到上游，不再需要自定义头变通方案。
+ * 使用标准 `Authorization` 头，线上 Vercel Serverless Function（api/webdav.js）
+ * 会严格清洗请求头，保留 authorization 并转发到上游，不再需要自定义头变通方案。
  */
 function buildWebDAVHeaders(config: WebDAVConfig, extra: Record<string, string> = {}): Record<string, string> {
   const credentials = btoa(`${config.username}:${config.password}`);

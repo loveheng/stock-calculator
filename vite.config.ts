@@ -6,7 +6,7 @@
  *
  * 【WebDAV 代理说明】
  *   开发环境下，Vite 代理 /api/webdav 请求到动态目标 URL，使用 bypass 函数
- *   实现与线上 Vercel Edge Middleware 完全一致的请求头清洗逻辑
+ *   实现与线上 Vercel Serverless Function（api/webdav.js）完全一致的请求头清洗逻辑
  *   （剔除 host/referer/origin/cookie/x-vercel-* / x-forwarded-*，
  *   保留 authorization/content-type/depth/overwrite/if-match），
  *   确保本地开发与线上行为一致，不再出现本地 404 或 CORS 问题。
@@ -23,9 +23,9 @@ export default defineConfig({
   plugins: [
     react(),
     // 本地 WebDAV 代理中间件插件：让 Vite 开发服务器拦截并转发 /api-webdav。
-    // Vercel 的 middleware.ts 只在线上生效；本地 npm run dev 时若缺这个插件，
+    // 线上由 Vercel Serverless Function（api/webdav.js）接管；本地 npm run dev 时若缺这个插件，
     // 对 /api-webdav 的请求会落到 SPA 静态服务上返回 404。
-    // 行为与线上 Vercel Edge Middleware 保持一致：
+    // 行为与线上 api/webdav.js 保持一致：
     //   1) OPTIONS 预检直接返回 200（解决 405）；
     //   2) 严格白名单头转发（authorization/content-type/depth/overwrite/if-match/
     //      if-none-match），剥离浏览器特征头（解决 403）；
@@ -45,7 +45,7 @@ export default defineConfig({
             return;
           }
 
-          // 与线上 middleware.js 一致的方法白名单：完整支持标准 HTTP 与 WebDAV
+          // 与线上 api/webdav.js 一致的方法白名单：完整支持标准 HTTP 与 WebDAV
           // 方法（含 HEAD），仅对白名单之外的方法返回 405。
           const ALLOWED_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PROPFIND', 'MKCOL', 'MOVE', 'COPY'];
           if (!ALLOWED_METHODS.includes(req.method || '')) {

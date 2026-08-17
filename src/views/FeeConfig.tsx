@@ -4,7 +4,7 @@
  *              实时测算买卖一手费用试算，并支持持久化保存、JSON/CSV 导入导出。
  *              保存后通过 Store 广播 setFeeConfig 触发做T流水池全局级联重算。
  * @layer UI
- * @storage_impact 写入 settings 表（feeConfig 记录）；间接影响 tRounds（做T撮合口径）/positions 等
+ * @storage_impact 写入 feeConfigs 表（单行费率配置）；间接影响 tRounds（做T撮合口径）/positions 等
  *                 依赖费率的计算口径（由 store 级联重算触发）。
  * @author 开发团队
  */
@@ -23,7 +23,7 @@ import type { FeeConfig } from '../utils/mathUtils';
  *  - 实时测算输入基准价格×数量的买卖双方费用明细
  *  - 保存配置、重置为系统模板、JSON/CSV 导入导出
  * @returns {JSX.Element} 费率配置页视图
- * @note 保存动作调用 useAppStore.setFeeConfig，最终写入 IndexedDB settings 表；
+ * @note 保存动作调用 useAppStore.setFeeConfig，最终写入 IndexedDB feeConfigs 表；
  *       导入 JSON/CSV 后需手工点保存才会持久化
  */
 export default function FeeConfigPage() {

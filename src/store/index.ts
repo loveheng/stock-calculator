@@ -6,6 +6,11 @@
  *              v6.1 修复：deletePositionBatch 实现修复（改为调用单条删除 + 更新持仓）、
  *              safePersist 增加指数退避重试（最多 3 次，1s→2s→4s→8s）与失败队列，
  *              移除 window.dispatchEvent DOM 耦合，使用 persistError 模块状态替代。
+ *              v9 收紧 API 表面：删除 8 个无引用的死 Action（addRound/clearRounds/loadStocks/
+ *              resetFeeConfig/updateStreamRecord/validateSellWithPosition/addLongTermRecord/
+ *              removeLongTermRecord）；持久化军械（safePersist/重试队列/persistError/远端同步标记）
+ *              与费率常量（DEFAULT_FEE_CONFIG/FEE_PRESETS/FEE_TEMPLATES）分别迁出至
+ *              ./persistence.ts 与 ./feePresets.ts，本文件仅重导出以保持向后兼容。
  * @layer Store
  * @author 开发团队
  */
@@ -20,7 +25,6 @@ import {
   type StockStreamResult,
 } from '../utils/tStreamEngine';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
-import { validateSellOrder } from '../utils/validation';
 import {
   putFeeConfig,
   putPosition,
@@ -32,20 +36,18 @@ import {
   replacePositionSnapshotWithBatches,
   deleteAdjustmentBatches,
   putTRound,
-  putRoundWithTransactions,
   deleteTRoundWithTransactions,
   putTransaction,
   deleteTransaction,
   putLongTermRecord,
-  deleteLongTermRecord,
   completeRoundWithMerge,
   completeRoundClear,
   safeImportAllData,
   loadPositionsFromDB,
   loadTRoundsFromDB,
-  loadStocksFromDB,
   } from '../db/index';
-import { isInitialLoadDone } from '../db/storeInit';
+import { safePersist, setIsSyncingFromRemote } from './persistence';
+import { DEFAULT_FEE_CONFIG } from './feePresets';
 import { positionAdjustmentPort } from '../services/positionAdjustmentPort';
 import {
   generateId,
@@ -82,114 +84,11 @@ export type {
 } from './types';
 export { EXPORT_VERSION } from './types';
 export { generateId, buildBasePositionCosts, recomputePositionSnapshot, getCloseBlockReason, useStreamResults, activeStreamsFromRounds } from './utils';
+export { DEFAULT_FEE_CONFIG, FEE_PRESETS, FEE_TEMPLATES } from './feePresets';
+export { getPersistError, clearPersistError, getIsSyncingFromRemote } from './persistence';
 export type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 
-let persistError: string | null = null;
-let pendingQueue: Array<() => Promise<void>> = [];
-let isProcessingQueue = false;
-
-/**
- * 远端同步标记：当从云端恢复/合并数据时（importData 的 silent 模式），
- * 此标记设为 true，防止自动同步监听器将刚导入的数据又上传回云端。
- * 自动同步触发器（如 store.subscribe / useEffect）必须检查此标记：
- *   if (isSyncingFromRemote) { isSyncingFromRemote = false; return; }
- * 使用完成后立即复位，避免影响后续用户手动操作。
- */
-let isSyncingFromRemote = false;
-export function getIsSyncingFromRemote(): boolean { return isSyncingFromRemote; }
-
-export function getPersistError(): string | null { return persistError; }
-export function clearPersistError(): void { persistError = null; }
-
-/**
- * 带指数退避重试机制的持久化函数。
- * - 最多重试 3 次（第 0 次为首次尝试，之后最多 3 次重试）
- * - 退避间隔为 1s → 2s → 4s（最大 8s，实际第 3 次重试间隔 4s）
- * - 所有重试均失败后，将操作加入待处理队列（pendingQueue），
- *   等待下次 safePersist 成功时自动重放（processPendingQueue）
- * - 不再直接操作 DOM（移除 window.dispatchEvent），
- *   改为设置 persistError 模块状态，由 UI 层通过 getPersistError() 读取
- * - 成功时自动清除 persistError 并触发队列重放
- */
-async function safePersist(fn: () => Promise<void>): Promise<void> {
-  if (!isInitialLoadDone()) return;
-
-  const maxRetries = 3;
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      await fn();
-      // 成功时清除错误并尝试处理队列中的待办操作
-      if (persistError) {
-        persistError = null;
-        processPendingQueue();
-      }
-      return;
-    } catch (err) {
-      lastError = err;
-      if (attempt < maxRetries) {
-        const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
-        console.warn(`[StorePersistence] 第 ${attempt + 1} 次重试失败，${delay}ms 后重试...`, err);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  const msg = lastError instanceof Error ? lastError.message : String(lastError);
-  persistError = msg;
-  console.error('[StorePersistence] 所有重试均失败，已加入待处理队列:', lastError);
-
-  // 将失败操作加入队列，下次成功时重放
-  pendingQueue.push(fn);
-}
-
-/**
- * 重放待处理队列中的操作。
- * - 当 safePersist 所有重试均失败后，操作被加入 pendingQueue；
- * - 下次任何 safePersist 调用成功时，自动触发本函数重放队列；
- * - 重放期间若再次失败，操作重新入队，2s 后自动重试，避免无限递归；
- * - 使用 isProcessingQueue 互斥锁防止并发重放。
- */
-async function processPendingQueue(): Promise<void> {
-  if (isProcessingQueue || pendingQueue.length === 0) return;
-  isProcessingQueue = true;
-
-  const queue = [...pendingQueue];
-  pendingQueue = [];
-
-  for (const task of queue) {
-    try {
-      await task();
-    } catch (err) {
-      console.error('[StorePersistence] 队列处理失败，重新加入队列:', err);
-      pendingQueue.push(task);
-    }
-  }
-
-  isProcessingQueue = false;
-  if (pendingQueue.length > 0) {
-    // 仍有待处理项，延迟重试
-    setTimeout(() => processPendingQueue(), 2000);
-  }
-}
-
-export const DEFAULT_FEE_CONFIG: FeeConfig = {
-  commissionRate: 0.00025, isFreeFive: false, minCommission: 0.5,
-  transferRate: 0.00001, stampRate: 0.0005,
-  etfCommissionRate: 0.00025, etfIsFreeFive: true, etfMinCommission: 0.2,
-  etfTransferRate: 0, etfStampRate: 0,
-};
-
-export const FEE_PRESETS: Record<FeePresetName, FeeConfig> = {
-  '默认A股': { commissionRate: 0.00025, isFreeFive: false, minCommission: 0.5, transferRate: 0.00001, stampRate: 0.0005, etfCommissionRate: 0.00025, etfIsFreeFive: true, etfMinCommission: 0.2, etfTransferRate: 0, etfStampRate: 0 },
-  'A股标准模板': { commissionRate: 0.00025, isFreeFive: false, minCommission: 0.5, transferRate: 0.00001, stampRate: 0.0005, etfCommissionRate: 0.00025, etfIsFreeFive: true, etfMinCommission: 0.2, etfTransferRate: 0, etfStampRate: 0 },
-  'ETF模板': { commissionRate: 0.00025, isFreeFive: true, minCommission: 0.2, transferRate: 0, stampRate: 0, etfCommissionRate: 0.00025, etfIsFreeFive: true, etfMinCommission: 0.2, etfTransferRate: 0, etfStampRate: 0 },
-  '港股/美股免佣模板': { commissionRate: 0.0001, isFreeFive: true, minCommission: 0.5, transferRate: 0.000025, stampRate: 0.0013, etfCommissionRate: 0.0001, etfIsFreeFive: true, etfMinCommission: 0.2, etfTransferRate: 0, etfStampRate: 0 },
-};
-
-/** @deprecated Use FEE_PRESETS. Alias for backward compatibility. */
-export const FEE_TEMPLATES = FEE_PRESETS;
+// ---- 持久化军械与费率模板已迁移至 ./persistence.ts / ./feePresets.ts（见顶部 import 与 re-export） ----
 
 // Helper: normalize short-T deductions using positionAdjustmentPort.emitRoundAdjustments
 /**
@@ -440,11 +339,9 @@ export const useAppStore = create<AppStore>()((set, get) => ({
 
   loadPositions: async () => { const positions = await loadPositionsFromDB(); if (positions.length) set(s => ({ positions: [...s.positions.filter(p => !positions.some(np => np.id === p.id)), ...positions] })); },
   loadTRounds: async () => { const rounds = await loadTRoundsFromDB(); if (rounds.length) set(s => ({ tRounds: [...s.tRounds.filter(r => !rounds.some(nr => nr.id === r.id)), ...rounds] })); },
-  loadStocks: async () => { const stocks = await loadStocksFromDB(); if (stocks.length) set(s => ({ stocks: [...s.stocks.filter(st => !stocks.some(ns => ns.fullCode === st.fullCode)), ...stocks] })); },
   setCoreDataLoaded: (loaded: boolean) => { set({ coreDataLoaded: loaded }); },
 
   setFeeConfig: (partial) => { set(s => ({ feeConfig: { ...s.feeConfig, ...partial } })); safePersist(() => putFeeConfig(get().feeConfig)); },
-  resetFeeConfig: (config) => { set({ feeConfig: { ...config } }); safePersist(() => putFeeConfig(config)); },
 
   addStreamRecord: (record) => {
     if (!get().coreDataLoaded) return { cleared: false, rejected: true, rejectedReason: '系统数据加载中，请稍后重试' };
@@ -549,29 +446,6 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     });
   },
 
-  updateStreamRecord: (id, updates) => {
-    const { feeConfig, tRounds, positions } = get();
-    // 更新对应 Round 中的流水（保留 fullCode/stockName 归属）
-    const nextRounds: TRoundArchive[] = tRounds.map(r => ({
-      ...r,
-      transactions: (r.transactions ?? []).map(t => t.id === id ? { ...t, ...updates, fullCode: t.fullCode ?? r.fullCode, stockName: t.stockName ?? r.stockName } as RoundTxn : t),
-      lastUpdated: Date.now(),
-    }));
-    const activeStreams = activeStreamsFromRounds(nextRounds);
-    const { positions: finalPositions, streams: finalStreams, results } = reconcilePositionsWithStreams(positions, activeStreams, feeConfig, nextRounds);
-    let rounds = nextRounds;
-    for (const r of results) { if (r.status === 'CLEARED') rounds = finalizeRoundIfCleared(r, rounds); }
-    set({ tRounds: rounds, positions: finalPositions });
-    safePersist(async () => {
-      const updatedRound = rounds.find(r => (r.transactions ?? []).some(t => t.id === id));
-      if (updatedRound) {
-        const txn = (updatedRound.transactions ?? []).find(t => t.id === id);
-        if (txn) await putTransaction(updatedRound.id, txn);
-        await putTRound(updatedRound);
-      }
-      await persistPositionDiffs(positions, finalPositions);
-    });
-  },
   clearStreams: () => {
     const { tRounds, positions, feeConfig } = get();
     const openIds = tRounds.filter(r => (r.status ?? 'OPENED') !== 'COMPLETED').map(r => r.id);
@@ -587,18 +461,6 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     set({ tRounds: keptRounds, positions: fixedPositions });
     safePersist(async () => { for (const id of openIds) await deleteTRoundWithTransactions(id); for (const p of changed) { await replacePositionSnapshotWithBatches(p, p.batches); } });
   },
-
-  validateSellWithPosition: (stockFullCode, _direction, _price, amount) => {
-    const stockStreams = activeStreamsFromRounds(get().tRounds).filter(s => s.fullCode === stockFullCode);
-    // 从原始流水中估算待处理买入数量（买入总量 - 卖出总量）
-    const totalBuy = stockStreams.filter(s => s.direction === 'buy').reduce((sum, s) => sum + s.amount, 0);
-    const totalSell = stockStreams.filter(s => s.direction === 'sell').reduce((sum, s) => sum + s.amount, 0);
-    const pendingBuyAmount = Math.max(0, totalBuy - totalSell);
-    const baseAmount = get().positions.find(p => p.fullCode === stockFullCode && !p.isClosed)?.currentAmount ?? 0;
-    return validateSellOrder(amount, pendingBuyAmount, baseAmount);
-  },
-
-  addRound: (round) => { set(s => ({ tRounds: [...s.tRounds, round] })); safePersist(() => putRoundWithTransactions(round)); },
 
   removeRound: (id) => {
     const state = get(); const round = state.tRounds.find(r => r.id === id);
@@ -622,8 +484,6 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     });
     return { ok: true };
   },
-
-  clearRounds: () => { const ids = get().tRounds.map(r => r.id); set({ tRounds: [] }); safePersist(async () => { for (const id of ids) await deleteTRoundWithTransactions(id); }); },
 
   transferToPosition: (fullCode, transferAmount, transferPrice) => {
     const { tRounds, positions, feeConfig } = get();
@@ -817,9 +677,6 @@ export const useAppStore = create<AppStore>()((set, get) => ({
   },
   removePosition: (id) => { set(s => ({ positions: s.positions.filter(p => p.id !== id) })); safePersist(() => deletePositionWithBatches(id)); },
 
-  addLongTermRecord: (record) => { set(s => ({ longTermRecords: [...s.longTermRecords, record] })); safePersist(() => putLongTermRecord(record)); },
-  removeLongTermRecord: (id) => { set(s => ({ longTermRecords: s.longTermRecords.filter(r => r.id !== id) })); safePersist(() => deleteLongTermRecord(id)); },
-
   exportData: () => { const state = get(); return { version: EXPORT_VERSION, feeConfig: state.feeConfig, tRounds: state.tRounds, positions: state.positions, stocks: state.stocks, longTermRecords: state.longTermRecords }; },
 
   importData: (data, silent) => {
@@ -829,11 +686,11 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     // silent 模式：来自远端拉取合并（Pull & Merge），跳过后续自动上传/同步逻辑
     // 设置 isSyncingFromRemote 标记，自动同步监听器必须检查此标记后跳过触发
     if (silent) {
-      isSyncingFromRemote = true;
+      setIsSyncingFromRemote(true);
       // 下轮微任务中自动复位，确保不影响后续用户手动触发同步
       // 使用 setTimeout(0) 而非 Promise.resolve().then()，因为 Zustand set 同步执行，
       // 自动同步监听器若使用 store.subscribe 会同步/微任务内触发，需要在此之后才复位
-      setTimeout(() => { isSyncingFromRemote = false; }, 0);
+      setTimeout(() => { setIsSyncingFromRemote(false); }, 0);
     }
   },
 

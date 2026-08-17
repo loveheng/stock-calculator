@@ -594,46 +594,6 @@ export async function fetchBatchesByPositionId(positionId: string): Promise<Posi
 }
 
 /**
- * 分页查询已平仓持仓（isClosed === 1, isDeleted === 0）。
- */
-export async function fetchClosedPositionsPage(
-  page: number,
-  pageSize: number,
-): Promise<PageResult<PositionRow>> {
-  const total = await db.positions
-    .where('[isClosed+isDeleted]').equals([1, 0])
-    .count();
-  const entities = await db.positions
-    .where('[isClosed+isDeleted]').equals([1, 0])
-    .offset((page - 1) * pageSize)
-    .limit(pageSize)
-    .toArray();
-  const relevantFullCodes = [...new Set(entities.map((p) => p.fullCode))];
-  const stocks = relevantFullCodes.length > 0
-    ? await db.stocks.where('fullCode').anyOf(relevantFullCodes).toArray()
-    : [];
-  const stockMap = new Map(stocks.map((s) => [s.fullCode, s]));
-  const items: PositionRow[] = [];
-  for (const p of entities) {
-    const batches = await fetchBatchesByPositionId(p.id);
-    items.push({
-      id: p.id,
-      stockName: stockMap.get(p.fullCode)?.stockName ?? p.fullCode,
-      fullCode: p.fullCode,
-      currentCost: p.currentCost,
-      currentAmount: p.currentAmount,
-      batches,
-      isClosed: p.isClosed === 1,
-      createdAt: new Date(p.createdAt).toISOString(),
-      closedAt: p.closedAt ? new Date(p.closedAt).toISOString() : undefined,
-      realizedPnL: p.realizedPnL,
-      totalInvested: p.totalInvested,
-    });
-  }
-  return { items, total, page, pageSize, hasMore: page * pageSize < total };
-}
-
-/**
  * 查询全部已平仓持仓（用于导出）。
  */
 export async function fetchAllClosedPositions(): Promise<PositionRow[]> {

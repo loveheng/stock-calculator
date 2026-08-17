@@ -149,28 +149,17 @@ export interface AppStoreActions {
   setCoreDataLoaded: (loaded: boolean) => void;
   loadPositions: () => Promise<void>;
   loadTRounds: () => Promise<void>;
-  loadStocks: () => Promise<void>;
 
   // -- 费率 --
   setFeeConfig: (partial: Partial<FeeConfig>) => void;
-  resetFeeConfig: (config: FeeConfig) => void;
 
   // -- 流水池 --
   addStreamRecord: (record: TStreamRecord) => StreamAddResult;
   removeStreamRecord: (id: string) => void;
-  updateStreamRecord: (id: string, updates: Partial<TStreamRecord>) => void;
   clearStreams: () => void;
-  validateSellWithPosition: (
-    stockFullCode: string,
-    direction: string,
-    price: number,
-    amount: number,
-  ) => { valid: boolean; maxSellable: number; error?: string; missingPosition?: boolean };
 
   // -- Round 归档 --
-  addRound: (round: TRoundArchive) => void;
   removeRound: (id: string) => { ok: boolean; message?: string };
-  clearRounds: () => void;
   transferToPosition: (
     fullCode: string,
     transferAmount?: number,
@@ -200,10 +189,6 @@ export interface AppStoreActions {
    */
   deletePositionBatch: (positionId: string, batchId: string) => void;
   removePosition: (id: string) => void;
-
-  // -- 中长期 --
-  addLongTermRecord: (record: LongTermRecord) => void;
-  removeLongTermRecord: (id: string) => void;
 
   // -- 导入导出 --
   exportData: () => AppStoreExport;

@@ -155,17 +155,6 @@ export function getCloseBlockReason(
   return null;
 }
 
-/** @deprecated 已由 positionAdjustmentPort.rollbackRound 取代，不再使用 */
-export function rollbackTransferPosition(
-  _positions: Position[],
-  _fullCode: string,
-  _transferAmount: number,
-  _avgPrice: number,
-  _fee?: number,
-): { positions: Position[]; ok: boolean; message?: string } {
-  throw new Error('rollbackTransferPosition 已废弃，请使用 positionAdjustmentPort.rollbackRound');
-}
-
 /**
  * 从 Round 库派生「活跃流水池」：仅 OPENED Round 的 transactions 参与撮合。
  *

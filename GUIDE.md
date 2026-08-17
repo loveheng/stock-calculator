@@ -46,10 +46,10 @@ stock-calculator/
     ├── store/             # █ 全局状态层 (Zustand)
     │   ├── index.ts       #   Store 本体：31 个 Action + safePersist 增量写库
     │   ├── types.ts       #   全部类型定义（AppStore 接口 ≈ 后端 API 文档）
-    │   └── utils.ts       #   纯函数：generateId / 归并回滚 / useStreamResults / 自动归档
+    │   └── utils.ts       #   纯函数：generateId / recomputePositionSnapshot / useStreamResults / 自动归档
     │
     ├── hooks/             # █ 共享 React Hooks
-    │   ├── useDataLoader.ts    #   按需加载钩子（useLoadCoreData / useLoadPositions / ...）
+    │   ├── useDataLoader.ts    #   核心数据加载钩子（useLoadCoreData）
     │   └── useArchivedRounds.ts # 懒加载已完成 Round 战报
     │
     ├── services/          # █ 外部数据服务
@@ -64,22 +64,23 @@ stock-calculator/
     │   ├── mathUtils.ts   #   费率计算（Decimal.js）、涨跌幅、成本摊薄（20 个导出函数）
     │   └── tStreamEngine.ts #  FIFO 撮合引擎 + 做T状态机（20 个导出函数）
     │
-    ├── views/             # █ 页面视图（6 个页面）
+    ├── views/             # █ 页面视图（7 个页面）
     │   ├── Home.tsx
     │   ├── ChangeRate.tsx
     │   ├── TCalculator.tsx    # 短线交易（最复杂页面）
     │   ├── CostAveraging.tsx
     │   ├── Statistics.tsx
-    │   └── FeeConfig.tsx
+    │   ├── FeeConfig.tsx
+    │   └── WebDAVConfig.tsx   # 云端同步
     │
     ├── components/ui/     # █ 通用 UI 组件
     │   ├── StockAutocomplete.tsx  # 股票代码/名称自动补全
     │   ├── ConfirmModal.tsx       # 确认弹窗
     │   └── InstallPrompt.tsx      # PWA 安装提示
     │
-    └── __tests__/         # █ 单元测试 (Vitest，共 46 用例)
-        ├── mathUtils.test.ts                 # 35 用例
-        └── rollbackTransferPosition.test.ts  # 11 用例
+    └── __tests__/         # █ 单元测试 (Vitest，共 14 文件 / 164 用例)
+        ├── mathUtils.test.ts                 # 31 用例
+        └── ...（recalculatePosition / tStreamEngine / roundLifecycle 等）
 ```
 
 ---
@@ -95,9 +96,9 @@ Hooks (React Custom Hooks)                  ← 共享逻辑层（按需加载�
 Store (Zustand useAppStore)                 ← 内存状态 + Action 逻辑
     ├─ index.ts   31 个 Action + safePersist 增量写库
     ├─ types.ts   AppStore 接口（状态 + 全部 Action 签名）
-    └─ utils.ts   纯函数（撮合结果派生 Hook、Round 自动归档、归并回滚）
+    └─ utils.ts   纯函数（撮合结果派生 Hook、Round 自动归档、履历重建）
 DB Layer (Dexie IndexedDB)                  ← 持久化存储
-    └─ schema.ts（11 表） / index.ts（40+ 函数） / storeInit.ts
+    └─ schema.ts（12 表） / index.ts（40+ 函数） / storeInit.ts
 ```
 
 ### 3.2 数据流（v7：按需加载 + 增量持久化）
@@ -114,7 +115,8 @@ DB Layer (Dexie IndexedDB)                  ← 持久化存储
 首帧渲染后（AppLayout 挂载时）:
   useLoadCoreData() → loadTRounds() + loadPositions()   # 并行（tRounds 的 OPENED 轮次内含流水池）
                     → setCoreDataLoaded(true)                            # 核心数据就绪
-  各页面再按需加载: useLoadPositions / useLoadTRounds / useLoadStocks
+  各页面不再各自按需加载：核心数据由 useLoadCoreData 统一加载，股票搜索在
+  StockAutocomplete 挂载时按需 loadStocks()
 
 运行时（以 addStreamRecord 为例）:
   用户点击"添加流水"
@@ -187,7 +189,7 @@ async function safePersist(fn: () => Promise<void>) {
 | **增量写入** | `putFeeConfig`, `putStock`, `bulkPutStocks`, `putPosition`, `putPositionWithBatches`, `putPositionBatch`, `addBatchToPosition`, `replacePositionBatches`, `putTRound`（概览）, `putTransaction`（单笔流水）, `putRoundWithTransactions`（整轮替换）, `replaceRoundTransactions`, `putLongTermRecord` |
 | **精确删除** | `deleteStock`, `deletePositionWithBatches`, `deletePositionBatch`, `deleteTRoundWithTransactions`, `deleteTransaction`, `bulkDeleteTransactions`, `deleteLongTermRecord`, `deleteLongTermRecordsBySourceReportId`, `deleteRoundWithCascade` |
 | **级联结算** | `completeRoundWithMerge`（划转底仓）, `completeRoundClear`（清仓结算） |
-| **查询/分页** | `fetchBatchesByPositionId`, `fetchClosedPositionsPage`, `fetchAllClosedPositions`, `fetchOpenRoundsWithTransactions`（进行中 Round，含明细）, `fetchCompletedRoundsPage`（已完成 Round，仅摘要，不含明细）, `fetchAllCompletedRounds`（导出用，含明细）, `fetchTransactionsByRoundId`（明细按需查询）, `fetchAllLongTermRecords` |
+| **查询/分页** | `fetchBatchesByPositionId`, `fetchAllClosedPositions`, `fetchOpenRoundsWithTransactions`（进行中 Round，含明细）, `fetchCompletedRoundsPage`（已完成 Round，仅摘要，不含明细）, `fetchAllCompletedRounds`（导出用，含明细）, `fetchTransactionsByRoundId`（明细按需查询）, `fetchAllLongTermRecords` |
 | **安全导入** | `safeImportAllData` — 逐表批量 upsert + 清理残留记录，绝不调用 clear() |
 
 > 写库前统一经 `cleanUndefined()` 剔除 undefined 字段（IndexedDB 结构化克隆不允许 undefined）。
@@ -351,7 +353,7 @@ OPENED Round.transactions（流水池，v8 取代独立 tStreams）
 - Round 在**首笔流水录入时即创建**（OPENED），流水逐笔落库 tTransactions；
 - 结清时复用同一 Round 翻转 status（不新建、不复制流水），消除原 tStreams 模型的「重复归档」缺陷；
 - 划转/归并场景（`transferToPosition` / `settleShortRound`）同样复用 OPENED Round 结清，走 `completeRoundWithMerge` / `completeRoundClear` 级联结算；
-- 删除带归并的战报自动触发 `rollbackTransferPosition` 剥离底仓、回退加权成本（`src/store/utils.ts`）；
+- 删除带归并的战报经 `positionAdjustmentPort.rollbackRound` 按登记簿精确剥离批次、回退加权成本（`src/services/positionAdjustmentPort.ts`）；
 - 已完成战报按需懒加载（`useArchivedRounds`），展开「查看成交明细」时才按需查询 `fetchTransactionsByRoundId`。
 
 ##### 当前项目过滤（COMPLETED 自动出列）
@@ -396,14 +398,11 @@ OPENED Round.transactions（流水池，v8 取代独立 tStreams）
 | `stepTEngine` | tStreamEngine.ts | 状态机单步推进（交互展示用） |
 | `useStreamResults` | store/utils.ts | 派生全市场撮合结果 Hook（级联重算核心） |
 
-### 4.6 `hooks/useDataLoader.ts` — 按需加载钩子（v7 核心机制）
+### 4.6 `hooks/useDataLoader.ts` — 核心数据加载钩子（v7 关键机制）
 
 | Hook | 加载内容 | 使用场景 |
 |---|---|---|
 | `useLoadCoreData()` | tRounds（OPENED 含流水池）+ positions | AppLayout 挂载时调用一次 |
-| `useLoadPositions()` | positions | CostAveraging 等 |
-| `useLoadTRounds()` | tRounds（OPENED 含流水池） | TCalculator 等 |
-| `useLoadStocks()` | stocks | 需要股票自动补全的页面 |
 
 > v8：`useLoadTStreams` 已移除 —— 流水随 OPENED Round 的 transactions 一并加载。
 > 关键实现：`useCallback(useAppStore.getState().loadXxx, [])` 稳定函数引用，避免 useEffect 竞态重复触发；`useRef` 保证每个钩子只加载一次。

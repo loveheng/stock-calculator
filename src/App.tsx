@@ -2,7 +2,7 @@
  * @file App.tsx
  * @description 应用根组件与主布局：基于 React Router 的 SPA 壳层，
  *              负责装配侧边栏导航、顶部标题栏、移动端抽屉菜单与
- *              六个功能页面（首页/涨跌幅/做T计算器/成本摊薄/统计/费率配置）的路由分发；
+ *              七个功能页面（首页/涨跌幅/短线交易/中长期交易/数据统计/费率配置/云端同步）的路由分发；
  *              同时挂载 PWA 安装引导组件。
  * @layer UI
  * @storage_impact 本文件不直接读写 IndexedDB；页面数据持久化由各视图组件
@@ -26,7 +26,7 @@ import {
 import InstallPrompt from './components/ui/InstallPrompt';
 import { useLoadCoreData } from './hooks/useDataLoader';
 
-// --- Lazy loaded views ---
+// --- 页面视图导入（静态导入，非懒加载） ---
 import HomePage from './views/Home';
 import ChangeRate from './views/ChangeRate';
 import TCalculator from './views/TCalculator';

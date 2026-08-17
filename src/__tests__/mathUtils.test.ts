@@ -11,9 +11,7 @@ import {
   calcChangeRate,
   calcTargetPrice,
   calcTradeFees,
-  calcRoundTripFees,
   isValidLotSize,
-  formatCurrency,
   matchSecurityKind,
   calcFeeBreakdown,
   calcCostAveraging,
@@ -111,20 +109,6 @@ describe('calcTradeFees', () => {
 });
 
 // ============================================================
-// calcRoundTripFees
-// ============================================================
-describe('calcRoundTripFees', () => {
-  test('买入+卖出一次完整交易的总费用', () => {
-    const r = calcRoundTripFees(10, 1000, 11, 1000, DEFAULT_FEE);
-    expect(r.totalFee).toBeGreaterThan(0);
-    // 买入: 佣金5 (非免五) + 过户费0.1 = 5.1
-    expect(r.buyFee.total).toBe(5.1);
-    // 卖出: 佣金5 (非免五) + 过户费0.11 + 印花税5.5 = 10.61
-    expect(r.sellFee.total).toBeGreaterThan(0);
-  });
-});
-
-// ============================================================
 // isValidLotSize
 // ============================================================
 describe('isValidLotSize', () => {
@@ -137,22 +121,6 @@ describe('isValidLotSize', () => {
     expect(isValidLotSize(0)).toBe(false);
   });
   test('负数无效', () => expect(isValidLotSize(-100)).toBe(false));
-});
-
-// ============================================================
-// formatCurrency
-// ============================================================
-describe('formatCurrency', () => {
-  test('正数', () => {
-    const s = formatCurrency(1234.5);
-    expect(s).toContain('1,234.50');
-  });
-  test('负数', () => {
-    const s = formatCurrency(-1234.5);
-    expect(s).toContain('1,234.50');
-    expect(s.startsWith('-')).toBe(true);
-  });
-  test('零', () => expect(formatCurrency(0)).toContain('0.00'));
 });
 
 // ============================================================

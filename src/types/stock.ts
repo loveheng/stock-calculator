@@ -1,8 +1,7 @@
 /**
  * @file stock.ts
  * @description 股票基础类型定义：行情服务搜索返回的标的条目（StockSearchItem）、
- *              应用内规范化元数据（StockMeta）、腾讯实时行情摘要（StockQuoteSummary）
- *              与搜索接口响应结构（StockSearchResponse）。
+ *              应用内规范化元数据（StockMeta）、腾讯实时行情摘要（StockQuoteSummary）。
  * @layer DAO（类型层）
  * @storage_impact 纯类型定义，无运行时代码，不读写任何存储。
  * @author 开发团队
@@ -119,23 +118,4 @@ export interface StockQuoteSummary {
   circulatingCap: number;
   /** 市净率 */
   pbRatio: number;
-}
-
-/**
- * 股票搜索接口的响应结构。
- *
- * @description 行情服务统一返回包裹层：数据位于 `QuotationCodeTable.Data`；
- *              Status 非 0 时 Message 描述失败原因。
- */
-export interface StockSearchResponse {
-  QuotationCodeTable: {
-    /** 搜索结果列表 */
-    Data: StockSearchItem[];
-    /** 状态码（0 表示成功） */
-    Status: number;
-    /** 状态消息 */
-    Message: string;
-    /** 命中总数 */
-    TotalCount: number;
-  };
 }

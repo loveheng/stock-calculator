@@ -6,8 +6,8 @@
  *              （Round 卡片 + 胜率 + 累计净收益）。
  * @layer UI
  * @storage_impact 写表：tTransactions（做T流水，随录入逐笔落库）、tRounds（Round 概览与结清）、
- *                 positions/batches/cashTransactions（划转/现金流）；
- *                 读表：settings（费率）。
+ *                 positions/positionBatches（划转/结清经 store 与 positionAdjustmentPort 落库）；
+ *                 读表：feeConfigs（费率）。
  * @author 开发团队
  */
 

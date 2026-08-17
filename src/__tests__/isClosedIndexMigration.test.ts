@@ -10,7 +10,7 @@
 import 'fake-indexeddb/auto';
 import Dexie, { type Table } from 'dexie';
 import { describe, expect, it } from 'vitest';
-import { db, fetchClosedPositionsPage, loadPositionsFromDB, putPosition } from '../db';
+import { db, fetchAllClosedPositions, loadPositionsFromDB, putPosition } from '../db';
 import type { Position } from '../store';
 
 /** 模拟 v6 时期的旧库（isClosed 为 boolean，仅声明 positions 表即可） */
@@ -101,7 +101,7 @@ describe('positions 表 isClosed 索引迁移', () => {
     const newOpen = await db.positions.where('[isClosed+isDeleted]').equals([0, 0]).toArray();
     expect(newOpen.map((p) => p.id)).toContain('new-open');
 
-    // 8) 已平仓分页查询接口（equals([1,0])）同样正常
+    // 8) 已平仓查询接口（equals([1,0])）同样正常
     await putPosition({
       ...newPosition,
       id: 'new-closed',
@@ -109,9 +109,9 @@ describe('positions 表 isClosed 索引迁移', () => {
       isClosed: true,
       closedAt: '2026-01-02T00:00:00.000Z',
     });
-    const page = await fetchClosedPositionsPage(1, 10);
-    expect(page.items.map((p) => p.id)).toEqual(['new-closed']);
-    expect(page.items[0].isClosed).toBe(true);
+    const closedItems = await fetchAllClosedPositions();
+    expect(closedItems.map((p) => p.id)).toEqual(['new-closed']);
+    expect(closedItems[0].isClosed).toBe(true);
 
     await db.close();
     await db.delete();

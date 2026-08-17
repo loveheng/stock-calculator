@@ -113,17 +113,6 @@ export interface TradeFees {
   total: number;
 }
 
-/**
- * 买卖双边规费汇总（含往返合计）。
- *
- * @description calcRoundTripFees 的返回结构，buyFee/sellFee 分别对应买入与卖出单边明细。
- */
-export interface RoundTripFees {
-  buyFee: TradeFees;
-  sellFee: TradeFees;
-  totalFee: number;
-}
-
 export interface ChangeRateResult {
   percent: number;
   diff: number;
@@ -331,33 +320,6 @@ export function calcTradeFees(
     commission: commission.toNumber(),
     transfer: transfer.toNumber(),
     total: total.toNumber(),
-  };
-}
-
-/**
- * 计算做T买卖双边的总摩擦成本（规费总和）。
- *
- * @description 分别计算买入与卖出单边规费后求和。
- * @param {number} buyPrice - 买入单价
- * @param {number} buyAmount - 买入数量
- * @param {number} sellPrice - 卖出单价
- * @param {number} sellAmount - 卖出数量
- * @param {FeeConfig} feeConfig - 全局费率配置
- * @returns {RoundTripFees} 包含 buyFee / sellFee 明细与 totalFee 合计
- */
-export function calcRoundTripFees(
-  buyPrice: number,
-  buyAmount: number,
-  sellPrice: number,
-  sellAmount: number,
-  feeConfig: FeeConfig
-): RoundTripFees {
-  const buyFee = calcTradeFees(buyPrice, buyAmount, 'buy', feeConfig);
-  const sellFee = calcTradeFees(sellPrice, sellAmount, 'sell', feeConfig);
-  return {
-    buyFee,
-    sellFee,
-    totalFee: roundTo(buyFee.total + sellFee.total, 2),
   };
 }
 
@@ -682,31 +644,4 @@ export function calcFeeBreakdown(
  */
 export function isValidLotSize(value: number): boolean {
   return value > 0 && value % 100 === 0;
-}
-
-/**
- * 格式化金额为人民币显示字符串。
- *
- * @description 使用 Intl.NumberFormat 格式化为带 ¥ 前缀、2 位小数的金额字符串。
- * @param {number} value - 金额数值
- * @returns {string} 格式化后的金额字符串，如 "¥1,234.56"
- */
-export function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('zh-CN', {
-    style: 'currency',
-    currency: 'CNY',
-  }).format(value);
-}
-
-/**
- * 根据盈亏数值返回对应的 Tailwind CSS 颜色类名。
- *
- * @description 正数为红色（盈利/涨），负数为绿色（亏损/跌），零为灰色。
- * @param {number} value - 盈亏数值
- * @returns {string} Tailwind CSS 文本颜色类名
- */
-export function pnlColor(value: number): string {
-  if (value > 0) return 'text-red-400';
-  if (value < 0) return 'text-green-400';
-  return 'text-slate-400';
 }

@@ -144,12 +144,10 @@ function CostAveraging() {
 本项目大量使用自定义 Hook 封装「数据加载」逻辑（`src/hooks/useDataLoader.ts`），页面组件一行代码即可完成按需加载：
 
 ```tsx
-function CostAveraging() {
-  // 挂载时只加载一次持仓数据，返回 loading 状态
-  const { loading } = useLoadPositions();
-  const positions = useAppStore((s) => s.positions);
-  if (loading) return <div>加载中...</div>;
-  return <div>{/* 渲染持仓列表 */}</div>;
+function AppLayout() {
+  // 挂载时异步加载 tRounds + positions（仅一次），核心数据加载前显示占位
+  useLoadCoreData();
+  ...
 }
 ```
 

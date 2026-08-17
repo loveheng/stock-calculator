@@ -1,13 +1,13 @@
 /**
  * @file Home.tsx
- * @description 首页仪表盘：聚合展示做T总览（实时已实现收益/待对冲持仓/底仓状态）、
- *              近 N 日收益趋势、持仓分布、账户现金流（现金/总资产）与做T异动预警。
+ * @description 首页仪表盘：聚合展示短线总览（实时已实现收益/待对冲持仓/底仓状态）、
+ *              近 N 日收益趋势、持仓分布、账户现金流（现金/总资产）与短线异动预警。
  *              数据来源：useStreamResults（流水池撮合引擎）+ Store positions（持仓账本）
  *              + tRounds（已完成战报归档）。
  *              v8+ 适配：合并统计 OPENED 流水池（active streams）与 COMPLETED 战报（archived rounds）
- *              的净收益数据，做T降本最多仓位与当前仓位总盈利体现全量做T收益。
+ *              的净收益数据，短线降本最多仓位与当前仓位总盈利体现全量短线收益。
  * @layer UI
- * @storage_impact 只读消费：positions（底仓持仓）、tRounds（做T轮次，含 OPENED + COMPLETED）；
+ * @storage_impact 只读消费：positions（底仓持仓）、tRounds（短线轮次，含 OPENED + COMPLETED）；
  *                 不直接写入任何 IndexedDB 表，跳转类操作委托各功能页完成。
  * @author 开发团队
  */
@@ -55,9 +55,9 @@ interface AlertItem {
  *
  * @description 组合 Store positions 与流水池：
  *               - 计算总持仓市值、现金余额与总资产
- *               - 汇总做T实时收益（transferProfit 口径）
+ *               - 汇总短线实时收益（transferProfit 口径）
  *               - 按 1d/7d/30d/all 时间维度过滤收益趋势
- *               - 生成做T异动预警条目（如倒数第二持仓归零、大额收益等）
+ *               - 生成短线异动预警条目（如倒数第二持仓归零、大额收益等）
  * @returns {JSX.Element} 首页仪表盘视图
  * @note 本组件仅读不写；所有写操作（开T/归档/调整底仓）跳转到对应页面完成
  */
@@ -78,7 +78,7 @@ export default function Home() {
     return now - days * 86400000;
   }, [timeRange]);
 
-  // ---- 筛选：时间区间内处于"开启/进行中"状态的做T项目（以最后一次操作时间为准） ----
+  // ---- 筛选：时间区间内处于"开启/进行中"状态的短线项目（以最后一次操作时间为准） ----
   const filteredActiveStreams = useMemo(() => {
     return streamResults.filter((s) => {
       if (s.status === 'CLEARED') return false;
@@ -91,7 +91,7 @@ export default function Home() {
     });
   }, [streamResults, timeRange, timeBoundary]);
 
-  // ---- 所有开启/进行中的做T项目（无时间筛选，用于总数统计） ----
+  // ---- 所有开启/进行中的短线项目（无时间筛选，用于总数统计） ----
   const allActiveStreams = useMemo(
     () => streamResults.filter((s) => s.status !== 'CLEARED'),
     [streamResults],
@@ -112,7 +112,7 @@ export default function Home() {
     });
   }, [completedRounds, timeRange, timeBoundary]);
 
-  // ---- 全量做T收益归集（按 fullCode 合并 active streams + completed rounds） ----
+  // ---- 全量短线收益归集（按 fullCode 合并 active streams + completed rounds） ----
   const combinedProfitByCode = useMemo(() => {
     const profitMap: Record<string, { stockName: string; totalProfit: number }> = {};
     // 来自进行中流水池的 transferProfit
@@ -133,10 +133,10 @@ export default function Home() {
   }, [streamResults, completedRounds]);
 
   // ==============================
-  // 模块 1：做T战况统计
+  // 模块 1：短线战况统计
   // ==============================
 
-  // 1a. 区间做T总金额（实际资金占用总额，排除流水重复计算）
+  // 1a. 区间短线总金额（实际资金占用总额，排除流水重复计算）
   const tTotalCapital = useMemo(() => {
     return filteredActiveStreams.reduce((sum, s) => {
       if (s.mode === 'long') {
@@ -148,7 +148,7 @@ export default function Home() {
     }, 0);
   }, [filteredActiveStreams]);
 
-  // 1b. 正在开启做T总数及分布（含已完成战报统计）
+  // 1b. 正在开启短线总数及分布（含已完成战报统计）
   const tActiveCount = allActiveStreams.length;
   const tLongCount = allActiveStreams.filter((s) => s.mode === 'long').length;
   const tShortCount = allActiveStreams.filter((s) => s.mode === 'short').length;
@@ -174,7 +174,7 @@ export default function Home() {
     return { totalFee, buyFee, sellFee };
   }, [filteredActiveStreams]);
 
-  // 1d. 当前做T盈亏明细（正T盈亏 / 倒T盈亏，合并进行中 + 已完成）
+  // 1d. 当前短线盈亏明细（正T盈亏 / 倒T盈亏，合并进行中 + 已完成）
   const tProfitDetails = useMemo(() => {
     let totalProfit = 0;
     let longProfit = 0;
@@ -194,7 +194,7 @@ export default function Home() {
     return { totalProfit, longProfit, shortProfit };
   }, [filteredActiveStreams, filteredCompletedRounds]);
 
-  // 1e. 区间最大盈利做T（落袋/浮盈金额最大的单笔做T标的，合并进行中 + 已完成）
+  // 1e. 区间最大盈利短线（落袋/浮盈金额最大的单笔短线标的，合并进行中 + 已完成）
   const topProfitRound = useMemo(() => {
     // 构建统一列表：active streams 用 transferProfit，completed rounds 用 netProfit
     const candidates: Array<{ stockName: string; fullCode: string; profit: number }> = [];
@@ -208,7 +208,7 @@ export default function Home() {
     return candidates.reduce((best, c) => (c.profit > best.profit ? c : best));
   }, [filteredActiveStreams, filteredCompletedRounds]);
 
-  // 1f. 区间最大亏损做T（亏损金额最大的单笔做T标的，合并进行中 + 已完成）
+  // 1f. 区间最大亏损短线（亏损金额最大的单笔短线标的，合并进行中 + 已完成）
   const topLossRound = useMemo(() => {
     const candidates: Array<{ stockName: string; fullCode: string; profit: number }> = [];
     for (const s of filteredActiveStreams) {
@@ -289,7 +289,7 @@ export default function Home() {
     });
   }, [openPositions]);
 
-  // 2e. 做T降本最多仓位（开启仓位中做T累计落袋收益最高的标的，合并流水池 + 已完成战报）
+  // 2e. 短线降本最多仓位（开启仓位中短线累计落袋收益最高的标的，合并流水池 + 已完成战报）
   const bestCostReduction = useMemo(() => {
     // 使用 combinedProfitByCode（已合并 active streams + completed rounds）
     const openCodes = new Set(openPositions.map((p) => p.fullCode));
@@ -304,7 +304,7 @@ export default function Home() {
     return best;
   }, [combinedProfitByCode, openPositions]);
 
-  // 2f. 当前仓位总盈利（浮动盈亏）= 所有开启仓位对应的做T收益之和（合并流水池 + 已完成战报）
+  // 2f. 当前仓位总盈利（浮动盈亏）= 所有开启仓位对应的短线收益之和（合并流水池 + 已完成战报）
   const positionTotalProfit = useMemo(() => {
     const openCodes = new Set(openPositions.map((p) => p.fullCode));
     let total = 0;
@@ -326,7 +326,7 @@ export default function Home() {
   // ---- 快捷入口卡片 ----
   const quickCards = [
     {
-      label: '做T计算器',
+      label: '短线计算器',
       icon: RefreshCw,
       path: '/t-calculator',
       color: 'text-blue-400',
@@ -403,7 +403,7 @@ export default function Home() {
   return (
     <div className="page-container space-y-5 pb-[calc(env(safe-area-inset-bottom)+16px)]">
       {/* ============================ */}
-      {/* 模块 1：做T战况统计 (T-Trading Metrics) */}
+      {/* 模块 1：短线战况统计 (T-Trading Metrics) */}
       {/* ============================ */}
       <div className="card !p-0 overflow-hidden border-slate-700/80 bg-gradient-to-br from-slate-900 to-slate-950">
         {/* 卡片标题 */}
@@ -413,7 +413,7 @@ export default function Home() {
               <Activity className="h-4 w-4 text-blue-400" />
             </div>
             <span className="text-sm font-semibold text-slate-200">
-              做 T 战况
+              短 线 战况
             </span>
           </div>
         </div>
@@ -440,10 +440,10 @@ export default function Home() {
 
         {/* 核心数据网格：6 cells, 2-col mobile / 4-col sm, last 2 span-2 */}
         <div className="grid grid-cols-2 gap-3 px-5 pt-4 pb-5 sm:grid-cols-4">
-          {/* 区间做T总金额 */}
+          {/* 区间短线总金额 */}
           <div className="rounded-2xl bg-slate-950/80 p-3">
             <div className="text-[11px] text-slate-500">
-              区间做T总金额
+              区间短线总金额
             </div>
             <div className="mt-1.5 text-base font-bold text-white sm:text-lg">
               {fmtMoneyAbs(tTotalCapital)}
@@ -453,10 +453,10 @@ export default function Home() {
             </div>
           </div>
 
-          {/* 正在开启做T总数 */}
+          {/* 正在开启短线总数 */}
           <div className="rounded-2xl bg-slate-950/80 p-3">
             <div className="text-[11px] text-slate-500">
-              正在开启做T总数
+              正在开启短线总数
             </div>
             <div className="mt-1.5 text-base font-bold text-white sm:text-lg">
               {tActiveCount} 笔
@@ -469,7 +469,7 @@ export default function Home() {
           {/* 已完成战报统计 */}
           <div className="rounded-2xl bg-slate-950/80 p-3">
             <div className="text-[11px] text-slate-500">
-              已完成战报
+              已完成短线
             </div>
             <div className="mt-1.5 text-base font-bold text-slate-400 sm:text-lg">
               {tCompletedCount} 笔
@@ -492,10 +492,10 @@ export default function Home() {
             </div>
           </div>
 
-          {/* 当前做T盈亏明细 */}
+          {/* 当前短线盈亏明细 */}
           <div className="rounded-2xl bg-slate-950/80 p-3">
             <div className="text-[11px] text-slate-500">
-              当前做T盈亏
+              当前短线盈亏
             </div>
             <div
               className={`mt-1.5 text-base font-bold sm:text-lg ${
@@ -533,10 +533,10 @@ export default function Home() {
             </div>
           </div>
 
-          {/* 区间最大盈利做T */}
+          {/* 区间最大盈利短线 */}
           <div className="rounded-2xl bg-slate-950/80 p-3 col-span-1 sm:col-span-2">
             <div className="text-[11px] text-slate-500">
-              区间最大盈利做T
+              区间最大盈利短线
             </div>
             <div className="mt-1.5 text-sm font-bold text-white leading-tight">
               {topProfitRound && topProfitRound.profit > 0 ? (
@@ -554,10 +554,10 @@ export default function Home() {
             </div>
           </div>
 
-          {/* 区间最大亏损做T */}
+          {/* 区间最大亏损短线 */}
           <div className="rounded-2xl bg-slate-950/80 p-3 col-span-1 sm:col-span-2">
             <div className="text-[11px] text-slate-500">
-              区间最大亏损做T
+              区间最大亏损短线
             </div>
             <div className="mt-1.5 text-sm font-bold text-white leading-tight">
               {topLossRound ? (
@@ -622,7 +622,7 @@ export default function Home() {
         {alertItems.length === 0 && (
           <div className="mx-5 mb-5 rounded-2xl border border-slate-700/50 bg-slate-950/40 px-4 py-3">
             <p className="text-xs text-slate-500 text-center">
-              暂无待办提醒，所有做T项目状态正常
+              暂无待办提醒，所有短线项目状态正常
             </p>
           </div>
         )}
@@ -720,10 +720,10 @@ export default function Home() {
             </div>
           </div>
 
-          {/* 做T降本最多仓位 */}
+          {/* 短线降本最多仓位 */}
           <div className="rounded-2xl bg-slate-950/80 p-3 col-span-1 sm:col-span-2">
             <div className="text-[11px] text-slate-500">
-              做T降本最多仓位
+              短线降本最多仓位
             </div>
             <div className="mt-1.5 text-sm font-bold text-white leading-tight">
               {bestCostReduction ? (
@@ -760,7 +760,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* 持仓标的列表（移动端紧凑，点击直达做T/底仓详情） */}
+      {/* 持仓标的列表（移动端紧凑，点击直达短线/底仓详情） */}
       {openPositions.length > 0 && (
         <div>
           <h3 className="text-base font-semibold text-slate-300 mb-3">
@@ -824,7 +824,7 @@ export default function Home() {
         </h3>
         <ul className="space-y-2 text-sm text-slate-400">
           <li>
-            • 做T计算器：支持正T（先买后卖）和倒T（先卖后买）两种模式
+            • 短线计算器：支持正T（先买后卖）和倒T（先卖后买）两种模式
           </li>
           <li>
             • 涨跌幅计算：支持连续涨跌停阶梯推算
@@ -833,7 +833,7 @@ export default function Home() {
             • 成本摊薄：多批次建仓账本 + 目标成本推算工具
           </li>
           <li>
-            • 数据统计：做T账本统计与建仓履历展示
+            • 数据统计：短线账本统计与建仓履历展示
           </li>
           <li>
             • 费率配置：自定义佣金率、免五开关、过户费/印花税率

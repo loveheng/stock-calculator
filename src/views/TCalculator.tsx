@@ -1,11 +1,11 @@
 /**
  * @file TCalculator.tsx
- * @description 做T账本与计算器（页面核心）：管理做T（Round）全生命周期 ——
+ * @description 短线账本与计算器（页面核心）：管理短线（Round）全生命周期 ——
  *              流水池撮合（FIFO/加权平均/部分对冲/级联重算）、正T/倒T记录追加、
  *              一键划转底仓（绝对现金流法）、倒T结算归档，并内嵌归档历史库
  *              （Round 卡片 + 胜率 + 累计净收益）。
  * @layer UI
- * @storage_impact 写表：tTransactions（做T流水，随录入逐笔落库）、tRounds（Round 概览与结清）、
+ * @storage_impact 写表：tTransactions（短线流水，随录入逐笔落库）、tRounds（Round 概览与结清）、
  *                 positions/positionBatches（划转/结清经 store 与 positionAdjustmentPort 落库）；
  *                 读表：feeConfigs（费率）。
  * @author 开发团队
@@ -450,14 +450,14 @@ function TStateMachinePanel({
 }
 
 /**
- * 单个进行中做T项目卡片（核心业务卡片）。
+ * 单个进行中短线项目卡片（核心业务卡片）。
  *
  * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
  *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
  *              并提供「一键划转底仓」「结算倒T」「归档」等写操作入口。
  * @param {{ result: StockStreamResult; basePosition: Position | undefined }} props
 /**
- * 单个进行中做T项目卡片（核心业务卡片）。
+ * 单个进行中短线项目卡片（核心业务卡片）。
  *
  * @description 展示某标的的实时流水池撮合状态：剩余待对冲/倒T待回补、加权成本、
  *              累计已实现盈亏、流水明细列表（逐条可删除）、[+追加记录] 快速录入，
@@ -466,7 +466,7 @@ function TStateMachinePanel({
  *  - result: 该标的的流水池撮合结果
  *  - basePosition: 对应底仓持仓（用于超卖校验与划转）
  *  - quote: 该标的最新实时行情（批量请求返回，无行情时为 null）
- * @returns {JSX.Element} 做T项目卡片视图
+ * @returns {JSX.Element} 短线项目卡片视图
  * @note 写操作均委托 Store Action 落库并触发级联重算；超卖/数量校验由
  *       validateStreamTrade 在录入前拦截
  */
@@ -797,7 +797,7 @@ function CurrentProjectCard({
 /**
  * 归档历史库 Round 战报卡片。
  *
- * @description 展示已归档做T战报：Round 编号、正/倒T标签、结算类型（平仓/归并/划转）、
+ * @description 展示已归档短线战报：Round 编号、正/倒T标签、结算类型（平仓/归并/划转）、
  *              顶部一行状态徽章（左侧）+ 右上角结算徽章；中部 2×2 核心指标：
  *              落袋净收益（高亮）/ 已对冲数量 / 买·卖加权均价 / 归并底仓（或「全部结清」）；
  *              成交明细穿透逐行标注「撮合量+已实现收益」「买入规费」「归并」对冲状态；
@@ -1036,14 +1036,14 @@ function ArchiveRoundCard({
 }
 
 /**
- * 做T账本与计算器主页面组件。
+ * 短线账本与计算器主页面组件。
  *
  * @description 组合：
  *  - 添加交易流水表单（正T买入/倒T卖出，含费用预览、超卖校验与[全部卖出]快捷键）
- *  - 当前做T项目卡片流（实时撮合状态 + 追加记录 + 划转/结算 + 流水明细列表逐条删除）
+ *  - 当前短线项目卡片流（实时撮合状态 + 追加记录 + 划转/结算 + 流水明细列表逐条删除）
  *  - 历史战报归档库（胜率 + 累计净收益 + 战报卡片）
  *  所有写操作均通过 Store Action 落库 IndexedDB 并级联重算流水池。
- * @returns {JSX.Element} 做T账本与计算器页面视图
+ * @returns {JSX.Element} 短线账本与计算器页面视图
  * @note 页面挂载即订阅 tRounds（OPENED 流水池 + 归档）/positions 实时响应 Store 变化（数据由 useLoadCoreData 按需加载）
  */
 /** 生成本地时间输入框值：YYYY-MM-DD HH:mm（秒清零），与主表单 timestamp 保持一致 */
@@ -1101,13 +1101,13 @@ export default function TCalculator() {
   const clearStreams = useAppStore((s) => s.clearStreams);
   const results = useStreamResults();
 
-  // 仅展示进行中的做T项目（CLEARED = 池内流水已全部配对并自动归档为战报，不再属于当前项目）
+  // 仅展示进行中的短线项目（CLEARED = 池内流水已全部配对并自动归档为战报，不再属于当前项目）
   const activeResults = useMemo(() => results.filter((r) => r.status !== 'CLEARED'), [results]);
 
   // 表单状态
   const [stock, setStock] = useState<StockSearchItem | null>(null);
 
-  // 实时行情：订阅「当前页面显示的标的」= 选中股票 + 所有进行中做T项目的 fullCode，
+  // 实时行情：订阅「当前页面显示的标的」= 选中股票 + 所有进行中短线项目的 fullCode，
   // 批量合并为单次请求（q=sh600745,sz002594），返回后各卡片一起更新现价
   const quoteCodes = useMemo(
     () =>
@@ -1241,9 +1241,9 @@ export default function TCalculator() {
       setError(result.rejectedReason ?? '校验未通过');
       return;
     }
-    // 自动结清：本轮做T全部配对完成，Round 已归档
+    // 自动结清：本轮短线全部配对完成，Round 已归档
     if (result.cleared) {
-      showToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
+      showToast(`🎉 本轮短线已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
     }
     setPrice('');
     setAmount('');
@@ -1419,9 +1419,9 @@ export default function TCalculator() {
       showToast(`🛑 ${msg}`, 4000);
       return;
     }
-    // 自动结清：本轮做T全部配对完成，Round 已归档
+    // 自动结清：本轮短线全部配对完成，Round 已归档
     if (result.cleared) {
-      showToast(`🎉 本轮做T已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
+      showToast(`🎉 本轮短线已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
     }
     setSheetOpen(false);
     setSheetFullCode(null);
@@ -1439,7 +1439,7 @@ export default function TCalculator() {
       {/* Header 标题 */}
       <div className="flex items-center justify-between gap-2 pt-1">
         <div>
-          <h2 className="text-lg font-bold text-slate-200">做T账本 · Round 生命周期</h2>
+          <h2 className="text-lg font-bold text-slate-200">短线账本</h2>
           <p className="text-xs text-slate-500">流水池 FIFO 撮合 · 绝对现金流法 · 自动归档战报</p>
         </div>
       </div>
@@ -1477,7 +1477,7 @@ export default function TCalculator() {
       {/* 汇总卡片 */}
       <div className="grid grid-cols-3 gap-3">
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-3">
-          <div className="text-xs text-slate-500">累计已实现做T净收益</div>
+          <div className="text-xs text-slate-500">累计已实现短线净收益</div>
           <div className={`font-mono font-bold text-lg tabular-nums ${pnlColor(totalRealizedPnl)}`}>
             {formatCurrency(totalRealizedPnl)}
           </div>
@@ -1646,13 +1646,13 @@ export default function TCalculator() {
 
       {/* 当前项目（移动端默认折叠） */}
       <div className="space-y-3">
-        <MobileCollapse title="当前做T项目" defaultCollapsed={true}>
+        <MobileCollapse title="当前短线项目" defaultCollapsed={true}>
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200 hidden md:block">当前做T项目</h3>
+          <h3 className="text-base font-semibold text-slate-200 hidden md:block">当前短线项目</h3>
           {activeResults.length > 0 && (
             <button
               onClick={() => {
-                if (window.confirm('确认清空全部做T流水？')) clearStreams();
+                if (window.confirm('确认清空全部短线流水？')) clearStreams();
               }}
               className="text-xs text-slate-500 hover:text-red-400 underline"
             >
@@ -1663,7 +1663,7 @@ export default function TCalculator() {
 
         {activeResults.length === 0 ? (
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            暂无进行中的做T项目（已自动归档的战报请在下方「今日战报归档库」查看）
+            暂无进行中的短线项目（已自动归档的战报请在下方「今日战报归档库」查看）
           </div>
         ) : (
           activeResults.map((r) => {
@@ -1686,7 +1686,7 @@ export default function TCalculator() {
       {/* 归档历史库 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200">🏆 今日战报归档</h3>
+          <h3 className="text-base font-semibold text-slate-200">🏆 今日记录归档(只当日数据)</h3>
           {todayArchivedRounds.length > 0 && (
             <div className="text-xs text-slate-400 flex items-center gap-3">
               <span>
@@ -1711,7 +1711,7 @@ export default function TCalculator() {
           </div>
         ) : todayArchivedRounds.length === 0 ? (
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            今日暂无已完成战报（做T持仓归零自动锁定战报 → 生成 Round 卡片）
+            今日暂无已完成战报（短线持仓归零自动锁定战报 → 生成 Round 卡片）
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

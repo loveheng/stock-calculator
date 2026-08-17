@@ -1068,7 +1068,9 @@ export async function backupToWebDAV(payload: unknown, force = false): Promise<B
       const cleanPath = (config.remotePath || '/stock-calculator/data-backup.json').replace(/^\/+/, '');
       const baseUrl = (config.webdavUrl || '').replace(/\/+$/, '');
       const targetUrl = `${baseUrl}/${cleanPath}`;
-      const proxyUrl = `/api-webdav?url=${encodeURIComponent(targetUrl)}`;
+      // 统一走 buildProxyUrl 生成代理地址（/api/webdav?url=…）。
+      // 刻意不再使用旧别名 /api-webdav —— 线上没有该 /api 函数，会滑落到 SPA 静态层报 405。
+      const proxyUrl = buildProxyUrl(config, `/${cleanPath}`);
       const authHeader = 'Basic ' + btoa(`${config.username}:${config.password}`);
 
       console.log(`[WebDAV] 发起单次 PUT 上传 -> ${targetUrl}`);

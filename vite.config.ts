@@ -22,98 +22,8 @@ export default defineConfig({
   base: '/',
   plugins: [
     react(),
-    // 本地 WebDAV 代理中间件插件：让 Vite 开发服务器拦截并转发 /api-webdav。
-    // 线上由 Vercel Serverless Function（api/webdav.js）接管；本地 npm run dev 时若缺这个插件，
-    // 对 /api-webdav 的请求会落到 SPA 静态服务上返回 404。
-    // 行为与线上 api/webdav.js 保持一致：
-    //   1) OPTIONS 预检直接返回 200（解决 405）；
-    //   2) 严格白名单头转发（authorization/content-type/depth/overwrite/if-match/
-    //      if-none-match），剥离浏览器特征头（解决 403）；
-    //   3) 统一干净的 User-Agent。
-    {
-      name: 'webdav-dev-proxy',
-      configureServer(server) {
-        server.middlewares.use('/api-webdav', async (req, res) => {
-          // 1. 处理 OPTIONS 预检
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', '*');
-
-          if (req.method === 'OPTIONS') {
-            res.statusCode = 200;
-            res.end();
-            return;
-          }
-
-          // 与线上 api/webdav.js 一致的方法白名单：完整支持标准 HTTP 与 WebDAV
-          // 方法（含 HEAD），仅对白名单之外的方法返回 405。
-          const ALLOWED_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PROPFIND', 'MKCOL', 'MOVE', 'COPY'];
-          if (!ALLOWED_METHODS.includes(req.method || '')) {
-            res.statusCode = 405;
-            res.setHeader('Allow', ALLOWED_METHODS.join(', '));
-            res.end(JSON.stringify({ error: 'Method Not Allowed' }));
-            return;
-          }
-
-          try {
-            const reqUrl = new URL(req.url || '', `http://${req.headers.host}`);
-            const targetUrlStr = reqUrl.searchParams.get('url');
-
-            if (!targetUrlStr) {
-              res.statusCode = 400;
-              res.end(JSON.stringify({ error: 'Missing target url parameter' }));
-              return;
-            }
-
-            const targetUrl = new URL(targetUrlStr);
-
-            // 2. 读取客户端上传的数据体（PUT body）
-            const chunks: Buffer[] = [];
-            for await (const chunk of req) {
-              chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-            }
-            const bodyBuffer = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
-
-            // 3. 构造上游白名单请求头（剔除 host/origin/referer 等，解决 403）
-            const upstreamHeaders: Record<string, string> = {
-              'User-Agent': 'Stock-Calculator-WebDAV/1.0',
-            };
-
-            const ALLOWED_HEADERS = ['authorization', 'content-type', 'depth', 'overwrite', 'if-match', 'if-none-match'];
-            for (const [k, v] of Object.entries(req.headers)) {
-              if (ALLOWED_HEADERS.includes(k.toLowerCase()) && v) {
-                upstreamHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
-              }
-            }
-
-            // 4. 发起上游 fetch 请求
-            const upstreamRes = await fetch(targetUrl.toString(), {
-              method: req.method,
-              headers: upstreamHeaders,
-              body: ['GET', 'HEAD', 'OPTIONS', 'PROPFIND'].includes(req.method || '') ? undefined : bodyBuffer,
-            });
-
-            // 5. 将上游响应状态与数据透传回客户端
-            res.statusCode = upstreamRes.status;
-            res.statusMessage = upstreamRes.statusText;
-
-            upstreamRes.headers.forEach((val, key) => {
-              if (key.toLowerCase() !== 'content-encoding') {
-                res.setHeader(key, val);
-              }
-            });
-            res.setHeader('Access-Control-Allow-Origin', '*');
-
-            const resArrayBuffer = await upstreamRes.arrayBuffer();
-            res.end(Buffer.from(resArrayBuffer));
-          } catch (err: any) {
-            console.error('[Vite WebDAV Proxy Error]:', err);
-            res.statusCode = 502;
-            res.end(JSON.stringify({ error: err.message }));
-          }
-        });
-      },
-    },
+    // 本地开发：/api/webdav 由下方 server.proxy 的 bypass 回调代理（行为与线上
+    // Vercel Serverless Function api/webdav.js 一致），无需独立中间件插件。
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: [],
@@ -142,11 +52,10 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
-        // 导航回退拒绝列表：绝对不拦截 /api、/api-webdav、/webdav 等代理/路由，
+        // 导航回退拒绝列表：绝对不拦截 /api、/webdav 等代理/路由，
         // 确保 Service Worker 不把 WebDAV 流量当作 SPA 导航去回退缓存。
         navigateFallbackDenylist: [
           /^\/api($|\/)/, // 覆盖 /api/webdav
-          /^\/api-webdav/,
           /^\/api-gtimg/,
           /^\/api-qt/,
           /^\/api\/eastmoney/,

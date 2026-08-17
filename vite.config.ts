@@ -22,6 +22,88 @@ export default defineConfig({
   base: '/',
   plugins: [
     react(),
+    // 本地 WebDAV 代理中间件插件：让 Vite 开发服务器拦截并转发 /api-webdav。
+    // Vercel 的 middleware.ts 只在线上生效；本地 npm run dev 时若缺这个插件，
+    // 对 /api-webdav 的请求会落到 SPA 静态服务上返回 404。
+    // 行为与线上 Vercel Edge Middleware 保持一致：
+    //   1) OPTIONS 预检直接返回 200（解决 405）；
+    //   2) 严格白名单头转发（authorization/content-type/depth/overwrite/if-match/
+    //      if-none-match），剥离浏览器特征头（解决 403）；
+    //   3) 统一干净的 User-Agent。
+    {
+      name: 'webdav-dev-proxy',
+      configureServer(server) {
+        server.middlewares.use('/api-webdav', async (req, res) => {
+          // 1. 处理 OPTIONS 预检
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', '*');
+
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 200;
+            res.end();
+            return;
+          }
+
+          try {
+            const reqUrl = new URL(req.url || '', `http://${req.headers.host}`);
+            const targetUrlStr = reqUrl.searchParams.get('url');
+
+            if (!targetUrlStr) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ error: 'Missing target url parameter' }));
+              return;
+            }
+
+            const targetUrl = new URL(targetUrlStr);
+
+            // 2. 读取客户端上传的数据体（PUT body）
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+            }
+            const bodyBuffer = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
+
+            // 3. 构造上游白名单请求头（剔除 host/origin/referer 等，解决 403）
+            const upstreamHeaders: Record<string, string> = {
+              'User-Agent': 'Stock-Calculator-WebDAV/1.0',
+            };
+
+            const ALLOWED_HEADERS = ['authorization', 'content-type', 'depth', 'overwrite', 'if-match', 'if-none-match'];
+            for (const [k, v] of Object.entries(req.headers)) {
+              if (ALLOWED_HEADERS.includes(k.toLowerCase()) && v) {
+                upstreamHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
+              }
+            }
+
+            // 4. 发起上游 fetch 请求
+            const upstreamRes = await fetch(targetUrl.toString(), {
+              method: req.method,
+              headers: upstreamHeaders,
+              body: ['GET', 'HEAD', 'OPTIONS', 'PROPFIND'].includes(req.method || '') ? undefined : bodyBuffer,
+            });
+
+            // 5. 将上游响应状态与数据透传回客户端
+            res.statusCode = upstreamRes.status;
+            res.statusMessage = upstreamRes.statusText;
+
+            upstreamRes.headers.forEach((val, key) => {
+              if (key.toLowerCase() !== 'content-encoding') {
+                res.setHeader(key, val);
+              }
+            });
+            res.setHeader('Access-Control-Allow-Origin', '*');
+
+            const resArrayBuffer = await upstreamRes.arrayBuffer();
+            res.end(Buffer.from(resArrayBuffer));
+          } catch (err: any) {
+            console.error('[Vite WebDAV Proxy Error]:', err);
+            res.statusCode = 502;
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+      },
+    },
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: [],

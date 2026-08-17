@@ -61,6 +61,10 @@ const WEBDAV_ALLOWED_HEADERS = new Set([
 /** 静态代理需剔除的 Vercel 内部头前缀。 */
 const BLOCKED_PREFIXES = ['x-vercel-', 'x-forwarded-'];
 
+/** 统一 CORS 头：所有跨源响应（包括 400/404/500/502 等错误响应）都必须携带，
+    否则浏览器会拦截错误信息，前端无法读取失败原因。 */
+const CORS_ALLOW_ORIGIN = { 'Access-Control-Allow-Origin': '*' };
+
 // ============================================================
 // 2. Vercel Edge Middleware 配置
 // ============================================================
@@ -117,7 +121,7 @@ export default async function middleware(request) {
   // ----------------------------------------------------------
   const matchedPrefix = SORTED_PREFIXES.find((prefix) => pathname.startsWith(prefix));
   if (!matchedPrefix) {
-    return new Response('Proxy route not found', { status: 404 });
+    return new Response('Proxy route not found', { status: 404, headers: CORS_ALLOW_ORIGIN });
   }
 
   const upstream = UPSTREAMS[matchedPrefix];
@@ -128,7 +132,7 @@ export default async function middleware(request) {
     // ---------- WebDAV 动态代理：纯白名单转发 ----------
     const targetUrl = url.searchParams.get('url');
     if (!targetUrl) {
-      return new Response('Missing url parameter', { status: 400 });
+      return new Response('Missing url parameter', { status: 400, headers: CORS_ALLOW_ORIGIN });
     }
     upstreamUrl = targetUrl;
 
@@ -193,6 +197,9 @@ export default async function middleware(request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(`Proxy error: ${message}`, { status: 502 });
+    return new Response(`Proxy error: ${message}`, {
+      status: 502,
+      headers: CORS_ALLOW_ORIGIN,
+    });
   }
 }

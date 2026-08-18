@@ -133,7 +133,7 @@ export default function Home() {
   }, [streamResults, completedRounds]);
 
   // ==============================
-  // 模块 1：短线战况统计
+  // 模块 1：短线统计
   // ==============================
 
   // 1a. 区间短线总金额（实际资金占用总额，排除流水重复计算）
@@ -403,7 +403,7 @@ export default function Home() {
   return (
     <div className="page-container space-y-5 pb-[calc(env(safe-area-inset-bottom)+16px)]">
       {/* ============================ */}
-      {/* 模块 1：短线战况统计 (T-Trading Metrics) */}
+      {/* 模块 1：短线统计 (T-Trading Metrics) */}
       {/* ============================ */}
       <div className="card !p-0 overflow-hidden border-slate-700/80 bg-gradient-to-br from-slate-900 to-slate-950">
         {/* 卡片标题 */}
@@ -413,7 +413,7 @@ export default function Home() {
               <Activity className="h-4 w-4 text-blue-400" />
             </div>
             <span className="text-sm font-semibold text-slate-200">
-              短 线 战况
+              短线统计
             </span>
           </div>
         </div>

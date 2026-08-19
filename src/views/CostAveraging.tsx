@@ -10,17 +10,19 @@
  * @author 开发团队
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
-import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults } from '../store';
+import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults, generateId, calcBatchExecution } from '../store';
 import { recalculatePosition } from '../utils/calculator';
 import type { Position, PositionBatch } from '../store';
 import type { PositionBatchEntity } from '../db/schema';
 import type { StockSearchItem } from '../types/stock';
+import type { PlannedOrder } from '../store/types';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
+import PlanOrderCard from '../components/PlanOrderCard';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
 
 /**
@@ -254,6 +256,109 @@ function PositionLedger() {
   // 结仓资格校验所需：做T战报 + 全市场撮合结果（进行中 Round 检测）
   const tRounds = useAppStore((s) => s.tRounds);
   const streamResults = useStreamResults();
+  const plannedOrders = useAppStore((s) => s.plannedOrders);
+  const setPlannedOrder = useAppStore((s) => s.setPlannedOrder);
+  const markPlanExecuted = useAppStore((s) => s.markPlanExecuted);
+  const cancelPlan = useAppStore((s) => s.cancelPlan);
+
+  // ---- 计划单状态 ----
+  const [planFormOpen, setPlanFormOpen] = useState(false);
+  const [planStock, setPlanStock] = useState<StockSearchItem | null>(null);
+  const [planDirection, setPlanDirection] = useState<'buy' | 'sell'>('buy');
+  const [planPrice, setPlanPrice] = useState('');
+  const [planAmount, setPlanAmount] = useState('');
+  const [planValidity, setPlanValidity] = useState(3);
+
+  // 过滤出中长期上下文的计划单
+  const longTermPlans = useMemo(() => {
+    const now = Date.now();
+    const displayWindow = 3 * 24 * 60 * 60 * 1000;
+    return plannedOrders.filter((p) => {
+      if (p.status === 'cancelled') return false;
+      if (p.context !== 'long-term' && p.context !== 'both') return false;
+      if (p.status === 'expired' || p.status === 'executed') {
+        const expiresAt = new Date(p.expiresAt).getTime();
+        return (now - expiresAt) <= displayWindow;
+      }
+      return true;
+    });
+  }, [plannedOrders]);
+
+  const planQuoteCodes = useMemo(() => longTermPlans.map((p) => p.fullCode), [longTermPlans]);
+  const { quotes: planQuotes } = useLiveQuotes(planQuoteCodes);
+
+  // 创建计划单
+  const handleCreatePlan = () => {
+    if (!planStock?.fullCode) { return; }
+    const p = parseFloat(planPrice);
+    const a = parseFloat(planAmount);
+    if (!p || p <= 0) return;
+    if (!a || a <= 0) return;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + planValidity * 24 * 60 * 60 * 1000);
+    const order: PlannedOrder = {
+      id: generateId(),
+      fullCode: planStock.fullCode,
+      stockName: planStock.Name || planStock.ShortName || planStock.fullCode,
+      context: 'long-term',
+      direction: planDirection,
+      plannedPrice: p,
+      plannedAmount: a,
+      createdAt: now.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      validityDays: planValidity,
+      status: 'active',
+    };
+    setPlannedOrder(order);
+    setPlanFormOpen(false);
+    setPlanStock(null);
+    setPlanPrice('');
+    setPlanAmount('');
+    setPlanDirection('buy');
+    setPlanValidity(3);
+  };
+
+  // 计划单执行：创建批次 + 标记已执行
+  const handlePlanExecute = (order: PlannedOrder, actualPrice: number, actualAmount: number, note: string) => {
+    const pos = positions.find((p) => p.fullCode === order.fullCode && !p.isClosed);
+    if (!pos) {
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: '❌ 未找到对应持仓，请先建仓' }));
+      return;
+    }
+    const type = order.direction === 'buy' ? 'add' : 'reduce';
+    const calc = calcBatchExecution(pos, type, actualPrice, actualAmount, feeConfig);
+    const now = new Date().toISOString();
+    const batch: PositionBatch = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      timestamp: now,
+      type,
+      price: actualPrice,
+      amount: type === 'add' ? actualAmount : -actualAmount,
+      costAfter: calc.newCost,
+      amountAfter: calc.newAmount,
+      note: note || undefined,
+      fee: calc.totalFee,
+    };
+    addBatch(pos.id, batch, {
+      currentCost: calc.newCost,
+      currentAmount: calc.newAmount,
+      realizedPnL: calc.newRealizedPnL,
+      totalInvested: calc.newTotalInvested,
+    });
+    const isAchieved = order.direction === 'buy' ? actualPrice <= order.plannedPrice : actualPrice >= order.plannedPrice;
+    markPlanExecuted(order.id, {
+      executedAt: now,
+      actualPrice,
+      actualAmount,
+      note: note || undefined,
+      isAchieved,
+      newCost: calc.newCost,
+      newAmount: calc.newAmount,
+      newTotalInvested: calc.newTotalInvested,
+      totalFee: calc.totalFee,
+    });
+    window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 计划单已执行 · ${order.stockName}` }));
+  };
 
   // ---- 折叠状态 ----
   // 顶部建仓表单折叠
@@ -912,6 +1017,134 @@ function PositionLedger() {
       })}
       </>
     )}
+
+    {/* 计划单（中长期） */}
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-semibold text-slate-200">📋 计划单（中长期）</h3>
+        {longTermPlans.length > 0 && (
+          <span className="text-xs text-slate-500">{longTermPlans.filter(p => p.status === 'active').length} 个进行中</span>
+        )}
+      </div>
+
+      {!planFormOpen ? (
+        <button
+          onClick={() => setPlanFormOpen(true)}
+          className="w-full py-2 text-xs text-slate-400 hover:text-slate-200 border border-dashed border-slate-700 rounded-lg hover:border-slate-600 transition-colors"
+        >
+          + 添加计划单
+        </button>
+      ) : (
+        <div className="bg-slate-900 rounded-lg border border-slate-700 p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-300">新建计划单</span>
+            <button
+              onClick={() => { setPlanFormOpen(false); setPlanStock(null); }}
+              className="text-xs text-slate-500 hover:text-slate-300"
+            >
+              ✕
+            </button>
+          </div>
+          <StockAutocomplete
+            value={planStock}
+            onChange={(s) => setPlanStock(s)}
+            placeholder="搜索股票代码/名称..."
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setPlanDirection('buy')}
+              className={`text-xs rounded-lg py-2 font-medium transition-colors ${
+                planDirection === 'buy' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'
+              }`}
+            >
+              计划买入
+            </button>
+            <button
+              onClick={() => setPlanDirection('sell')}
+              className={`text-xs rounded-lg py-2 font-medium transition-colors ${
+                planDirection === 'sell' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400'
+              }`}
+            >
+              计划卖出
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[10px] text-slate-500 mb-1">计划价格（元）</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={planPrice}
+                onChange={(e) => setPlanPrice(e.target.value)}
+                placeholder="0.00"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 mb-1">计划数量（股）</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={planAmount}
+                onChange={(e) => setPlanAmount(e.target.value)}
+                placeholder="100"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] text-slate-500 mb-1">有效期</label>
+            <div className="flex gap-1.5">
+              {[1, 3, 7, 14, 30].map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setPlanValidity(d)}
+                  className={`flex-1 text-xs py-1.5 rounded-lg transition-colors ${
+                    planValidity === d ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
+                >
+                  {d}天
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={handleCreatePlan}
+            className="w-full text-xs py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+          >
+            确认创建
+          </button>
+        </div>
+      )}
+
+      {longTermPlans.length === 0 ? (
+        <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
+          暂无计划单，创建后可在执行前看到价格对比变化
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {longTermPlans.map((p) => (
+            <PlanOrderCard
+              key={p.id}
+              order={p}
+              quote={planQuotes[p.fullCode] ?? null}
+              position={positions.find((pos) => pos.fullCode === p.fullCode && !pos.isClosed) ?? null}
+              feeConfig={feeConfig}
+              onEdit={(order) => {
+                setPlanStock({ fullCode: order.fullCode, Name: order.stockName, ShortName: '', Code: order.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' });
+                setPlanDirection(order.direction);
+                setPlanPrice(String(order.plannedPrice));
+                setPlanAmount(String(order.plannedAmount));
+                setPlanValidity(order.validityDays);
+                setPlanFormOpen(true);
+              }}
+              onExecute={handlePlanExecute}
+              onCancel={(id) => cancelPlan(id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
 
     {/* 重复建仓提示 */}
       <ConfirmModal

@@ -10,7 +10,9 @@ import { useMemo } from 'react';
 import Decimal from 'decimal.js';
 import { processAllStreams, type TStreamRecord, type StockStreamResult, type StreamEntry } from '../utils/tStreamEngine';
 import { useAppStore } from './index';
-import type { Position, PositionBatch, TRoundArchive, RoundTxn } from './types';
+import type { Position, PositionBatch, TRoundArchive, RoundTxn, PlannedOrder } from './types';
+import type { FeeConfig } from '../utils/mathUtils';
+import { calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
 
 /**
  * 生成全局唯一 ID。
@@ -305,5 +307,90 @@ export function finalizeRoundIfCleared(
     closedAt,
   };
   return [...rounds, round];
+}
+
+/**
+ * 计划单实时对比计算：对比计划价 vs 现价，返回差额与百分比。
+ *
+ * @description 纯函数，实时计算计划单与当前行情的差异，不缓存。
+ * @param order 计划单
+ * @param currentPrice 当前现价（0 表示无行情）
+ * @returns { priceDiff: number; diffPercent: number; hasQuote: boolean }
+ */
+export function calcPlanComparison(
+  order: PlannedOrder,
+  currentPrice: number,
+): { priceDiff: number; diffPercent: number; hasQuote: boolean } {
+  const hasQuote = currentPrice > 0;
+  if (!hasQuote) {
+    return { priceDiff: 0, diffPercent: 0, hasQuote: false };
+  }
+  const priceDiff = currentPrice - order.plannedPrice;
+  const diffPercent = order.plannedPrice > 0 ? (priceDiff / order.plannedPrice) * 100 : 0;
+  return { priceDiff, diffPercent, hasQuote };
+}
+
+/**
+ * 计划单执行前模拟计算：预演执行后的成本/数量变化。
+ *
+ * @description 纯函数，从中长期 `handleBatchConfirm` 中提取核心算力逻辑，
+ *              不调用任何 store action，只返回计算结果。
+ * @param position 当前持仓（含批次履历）
+ * @param type 加仓或减仓
+ * @param price 执行价格
+ * @param amount 执行数量
+ * @param feeConfig 费率配置
+ * @returns 执行后的成本/数量/已实现盈亏/累计投入/规费明细
+ */
+export function calcBatchExecution(
+  position: Position,
+  type: 'add' | 'reduce',
+  price: number,
+  amount: number,
+  feeConfig: FeeConfig,
+): {
+  newCost: number;
+  newAmount: number;
+  newRealizedPnL: number;
+  newTotalInvested: number;
+  totalFee: number;
+} {
+  const direction = type === 'add' ? 'buy' : 'sell';
+  const tradeFee = calcTradeFees(price, amount, direction, feeConfig, matchSecurityKind('', position.fullCode.replace(/^sh|sz|bj/, '')));
+  const totalFee = tradeFee.total;
+
+  // 用总资金抽回法重新计算
+  const snap = recomputePositionSnapshot(position.batches);
+  let totalInvested = snap.totalInvested;
+  let totalAmount = snap.currentAmount;
+  let realizedPnL = snap.realizedPnL;
+
+  let newCost: number;
+  let newAmount: number;
+  let newRealizedPnL = realizedPnL;
+  let newTotalInvested = totalInvested;
+
+  if (type === 'add') {
+    newAmount = totalAmount + amount;
+    newTotalInvested += price * amount + totalFee;
+    newCost = newTotalInvested / newAmount;
+  } else {
+    if (totalAmount > 0) {
+      const costBasisPerShare = totalInvested / totalAmount;
+      const costBasisOfSold = costBasisPerShare * amount;
+      const netProceeds = price * amount - totalFee;
+      newRealizedPnL += netProceeds - costBasisOfSold;
+      newTotalInvested -= costBasisOfSold;
+    }
+    newAmount = totalAmount - amount;
+    if (newAmount <= 0) {
+      newCost = 0;
+      newTotalInvested = 0;
+    } else {
+      newCost = newTotalInvested / newAmount;
+    }
+  }
+
+  return { newCost, newAmount, newRealizedPnL, newTotalInvested, totalFee };
 }
 

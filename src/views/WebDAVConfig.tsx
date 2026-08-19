@@ -171,6 +171,7 @@ export default function WebDAVConfigPage() {
           positions: result.mergeResult.positions,
           stocks: result.mergeResult.stocks,
           longTermRecords: result.mergeResult.longTermRecords,
+          plannedOrders: result.mergeResult.plannedOrders ?? [],
         }, true); // silent: 来自远端拉取合并，不触发自动上传
       }
       if (result.ok) refresh();

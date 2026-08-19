@@ -121,6 +121,41 @@ export interface LongTermRecord {
   note?: string;
 }
 
+// ---- 计划单 ----
+export interface PlannedOrder {
+  id: string;
+  fullCode: string;
+  stockName: string;
+  context: 'long-term' | 'short-term' | 'both';
+  direction: 'buy' | 'sell';
+  plannedPrice: number;
+  plannedAmount: number;
+  note?: string;
+  createdAt: string;
+  expiresAt: string;
+  validityDays: number;
+  status: 'active' | 'expired' | 'cancelled' | 'executed';
+  actual?: {
+    executedAt: string;
+    actualPrice: number;
+    actualAmount: number;
+    note?: string;
+    isAchieved: boolean;
+    /** 中长期执行结果：新成本价 */
+    newCost?: number;
+    /** 中长期执行结果：新持有数量 */
+    newAmount?: number;
+    /** 中长期执行结果：新累计投入 */
+    newTotalInvested?: number;
+    /** 中长期执行结果：规费 */
+    totalFee?: number;
+    /** 短线执行结果：加权均价 */
+    avgPrice?: number;
+    /** 短线执行结果：净收益 */
+    netProfit?: number;
+  };
+}
+
 /** 费率模板名称 */
 export type FeePresetName = '默认A股' | 'A股标准模板' | 'ETF模板' | '港股/美股免佣模板';
 
@@ -141,6 +176,7 @@ export interface AppStoreExport {
   positions: Position[];
   stocks: StockMeta[];
   longTermRecords: LongTermRecord[];
+  plannedOrders: PlannedOrder[];
 }
 
 /** Store Action 接口：汇总所有可以操作的函数签名 */
@@ -190,6 +226,13 @@ export interface AppStoreActions {
   deletePositionBatch: (positionId: string, batchId: string) => void;
   removePosition: (id: string) => void;
 
+  // -- 计划单 --
+  loadPlannedOrders: () => Promise<void>;
+  setPlannedOrder: (order: PlannedOrder) => void;
+  removePlannedOrder: (id: string) => void;
+  markPlanExecuted: (id: string, actual: PlannedOrder['actual']) => void;
+  cancelPlan: (id: string) => void;
+
   // -- 导入导出 --
   exportData: () => AppStoreExport;
   /**
@@ -216,6 +259,7 @@ export interface AppStore extends AppStoreActions {
   positions: Position[];
   stocks: StockMeta[];
   longTermRecords: LongTermRecord[];
+  plannedOrders: PlannedOrder[];
   persistError: string | null;
 }
 

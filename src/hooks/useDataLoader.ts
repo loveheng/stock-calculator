@@ -35,6 +35,7 @@ export function useLoadCoreData(): { loading: boolean } {
   // 确保 loadXxx 函数在组件的整个生命周期内保持同一个引用，从而消除竞态条件。
   const loadPositions = useCallback(useAppStore.getState().loadPositions, []);
   const loadTRounds = useCallback(useAppStore.getState().loadTRounds, []);
+  const loadPlannedOrders = useCallback(useAppStore.getState().loadPlannedOrders, []);
   const setCoreDataLoaded = useCallback(useAppStore.getState().setCoreDataLoaded, []);
 
   useEffect(() => {
@@ -45,6 +46,7 @@ export function useLoadCoreData(): { loading: boolean } {
     Promise.all([
       loadPositions(),
       loadTRounds(),
+      loadPlannedOrders(),
     ]).then(() => {
       setCoreDataLoaded(true);
       setLoading(false);

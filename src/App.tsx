@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
 import { useLoadCoreData } from './hooks/useDataLoader';
+import { useAppStore } from './store';
 
 // --- 页面视图导入（静态导入，非懒加载） ---
 import HomePage from './views/Home';
@@ -85,6 +86,11 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
         {NAV_ITEMS.map((item) => {
           const isActive = location.pathname === item.path;
           const Icon = item.icon;
+          const activeCount = useAppStore((s) => {
+            if (item.path !== '/') return 0;
+            const now = Date.now();
+            return s.plannedOrders.filter((p) => p.status === 'active' && new Date(p.expiresAt).getTime() > now).length;
+          });
           return (
             <button
               key={item.path}
@@ -97,6 +103,11 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
             >
               <Icon className="w-4 h-4 flex-shrink-0" />
               <span>{item.label}</span>
+              {activeCount > 0 && (
+                <span className="ml-auto bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                  {activeCount}
+                </span>
+              )}
             </button>
           );
         })}

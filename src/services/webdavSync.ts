@@ -7,7 +7,7 @@
  * @author 开发团队
  */
 
-import type { AppStoreExport, TRoundArchive, Position, LongTermRecord } from '../store/types';
+import type { AppStoreExport, TRoundArchive, Position, LongTermRecord, PlannedOrder } from '../store/types';
 import type { FeeConfig } from '../utils/mathUtils';
 import type { StockMeta } from '../types/stock';
 
@@ -507,6 +507,7 @@ export function deserializeSnapshot(json: string): { data: AppStoreExport; times
       positions: snapshot.positions ?? [],
       stocks: snapshot.stocks ?? [],
       longTermRecords: snapshot.longTermRecords ?? [],
+      plannedOrders: snapshot.plannedOrders ?? [],
     };
 
     const timestamp = parsed.timestamp ?? snapshot.timestamp ?? Date.now();
@@ -745,6 +746,7 @@ export interface MergeResult {
   positions: Position[];
   stocks: StockMeta[];
   longTermRecords: LongTermRecord[];
+  plannedOrders: PlannedOrder[];
   feeConfig: FeeConfig;
   mergeStats: {
     roundsAdded: number;
@@ -754,6 +756,8 @@ export interface MergeResult {
     stocksAdded: number;
     longTermRecordsAdded: number;
     longTermRecordsUpdated: number;
+    plannedOrdersAdded: number;
+    plannedOrdersUpdated: number;
   };
 }
 
@@ -867,7 +871,14 @@ export function mergeData(
     (item) => item.id,
   );
 
-  // 5. 费率配置：取时间戳较新的版本
+  // 5. 合并 plannedOrders（计划单）
+  const planMerge = mergeRecordById(
+    localData.plannedOrders ?? [],
+    remoteData.plannedOrders ?? [],
+    (item) => item.id,
+  );
+
+  // 6. 费率配置：取时间戳较新的版本
   const localExported = (localData as any).exportedAt ? new Date((localData as any).exportedAt).getTime() : 0;
   const remoteExported = (remoteData as any).exportedAt ? new Date((remoteData as any).exportedAt).getTime() : 0;
   const feeConfig = remoteExported > localExported
@@ -879,6 +890,7 @@ export function mergeData(
     positions: positionsMerge.merged,
     stocks: stocksMerge.merged,
     longTermRecords: ltMerge.merged,
+    plannedOrders: planMerge.merged,
     feeConfig,
     mergeStats: {
       roundsAdded: roundsMerge.added,
@@ -888,6 +900,8 @@ export function mergeData(
       stocksAdded: stocksMerge.added,
       longTermRecordsAdded: ltMerge.added,
       longTermRecordsUpdated: ltMerge.updated,
+      plannedOrdersAdded: planMerge.added,
+      plannedOrdersUpdated: planMerge.updated,
     },
   };
 }
@@ -965,6 +979,7 @@ export async function mergeSync(
       positions: mergeResult.positions,
       stocks: mergeResult.stocks,
       longTermRecords: mergeResult.longTermRecords,
+      plannedOrders: mergeResult.plannedOrders ?? [],
     };
 
     const json = serializeSnapshot(mergedSnapshot);

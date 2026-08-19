@@ -28,8 +28,13 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { useStreamResults, useAppStore } from '../store';
-import { roundTo } from '../utils/mathUtils';
+import { roundTo, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
+import { generateId, calcBatchExecution } from '../store/utils';
 import type { StockStreamResult } from '../utils/tStreamEngine';
+import type { PlannedOrder, PositionBatch, StreamAddResult } from '../store/types';
+import type { TStreamRecord } from '../utils/tStreamEngine';
+import PlanOrderCard from '../components/PlanOrderCard';
+import { useLiveQuotes } from '../hooks/useLiveQuotes';
 
 // ---- 时间维度 ----
 type TimeRange = '1d' | '7d' | '30d' | 'all';
@@ -66,6 +71,11 @@ export default function Home() {
   const streamResults = useStreamResults();
   const positions = useAppStore((s) => s.positions);
   const tRounds = useAppStore((s) => s.tRounds);
+  const feeConfig = useAppStore((s) => s.feeConfig);
+  const addBatch = useAppStore((s) => s.addBatch);
+  const addStreamRecord = useAppStore((s) => s.addStreamRecord);
+  const markPlanExecuted = useAppStore((s) => s.markPlanExecuted);
+  const cancelPlan = useAppStore((s) => s.cancelPlan);
 
   // ---- 时间筛选状态 ----
   const [timeRange, setTimeRange] = useState<TimeRange>('7d');
@@ -221,7 +231,108 @@ export default function Home() {
     return candidates.reduce((worst, c) => (c.profit < worst.profit ? c : worst));
   }, [filteredActiveStreams, filteredCompletedRounds]);
 
-  // 1g. 待办轮动提醒：倒T底仓出空或待平仓项目
+  // 1g. 计划单待办
+  const plannedOrders = useAppStore((s) => s.plannedOrders);
+  const activePlanCount = useMemo(() => {
+    const now = Date.now();
+    return plannedOrders.filter((p) => p.status === 'active' && new Date(p.expiresAt).getTime() > now).length;
+  }, [plannedOrders]);
+
+  // 首页计划单列表：过滤出 active / expired（展示窗口内）
+  const homePlans = useMemo(() => {
+    const now = Date.now();
+    const displayWindow = 3 * 24 * 60 * 60 * 1000;
+    return plannedOrders.filter((p) => {
+      if (p.status === 'cancelled') return false;
+      if (p.status === 'expired' || p.status === 'executed') {
+        const expiresAt = new Date(p.expiresAt).getTime();
+        return (now - expiresAt) <= displayWindow;
+      }
+      return true;
+    });
+  }, [plannedOrders]);
+
+  // 订阅所有计划单标的的实时行情
+  const homePlanQuoteCodes = useMemo(() => homePlans.map((p) => p.fullCode), [homePlans]);
+  const { quotes: homePlanQuotes } = useLiveQuotes(homePlanQuoteCodes);
+
+  // 首页计划单快速执行
+  const handleHomePlanExecute = useCallback((order: PlannedOrder, actualPrice: number, actualAmount: number, note: string) => {
+    let streamResult: StreamAddResult | undefined;
+    let calcResult: { newCost: number; newAmount: number; newRealizedPnL: number; newTotalInvested: number; totalFee: number } | undefined;
+
+    if (order.context === 'short-term' || order.context === 'both') {
+      // 短线执行：添加流水记录
+      const direction = order.direction;
+      const txnFee = calcTradeFees(actualPrice, actualAmount, direction, feeConfig, matchSecurityKind('', order.fullCode.replace(/^sh|sz|bj/, '')));
+      const record: TStreamRecord = {
+        id: generateId(),
+        timestamp: new Date().toISOString(),
+        fullCode: order.fullCode,
+        stockName: order.stockName,
+        direction,
+        price: actualPrice,
+        amount: actualAmount,
+        fee: roundTo(txnFee.total, 2),
+        note: note || undefined,
+      };
+      streamResult = addStreamRecord(record);
+      if (streamResult?.rejected) {
+        window.dispatchEvent(new CustomEvent('app-toast', { detail: `🛑 ${streamResult.rejectedReason ?? '校验未通过'}` }));
+        return;
+      }
+    }
+
+    if (order.context === 'long-term' || order.context === 'both') {
+      // 中长期执行：添加批次
+      const pos = positions.find((p) => p.fullCode === order.fullCode && !p.isClosed);
+      if (pos) {
+        const type = order.direction === 'buy' ? 'add' : 'reduce';
+        calcResult = calcBatchExecution(pos, type, actualPrice, actualAmount, feeConfig);
+        const now = new Date().toISOString();
+        const batch: PositionBatch = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          timestamp: now,
+          type,
+          price: actualPrice,
+          amount: type === 'add' ? actualAmount : -actualAmount,
+          costAfter: calcResult.newCost,
+          amountAfter: calcResult.newAmount,
+          note: note || undefined,
+          fee: calcResult.totalFee,
+        };
+        addBatch(pos.id, batch, {
+          currentCost: calcResult.newCost,
+          currentAmount: calcResult.newAmount,
+          realizedPnL: calcResult.newRealizedPnL,
+          totalInvested: calcResult.newTotalInvested,
+        });
+      }
+    }
+
+    const isAchieved = order.direction === 'buy' ? actualPrice <= order.plannedPrice : actualPrice >= order.plannedPrice;
+    markPlanExecuted(order.id, {
+      executedAt: new Date().toISOString(),
+      actualPrice,
+      actualAmount,
+      note: note || undefined,
+      isAchieved,
+      newCost: calcResult?.newCost,
+      newAmount: calcResult?.newAmount,
+      newTotalInvested: calcResult?.newTotalInvested,
+      totalFee: calcResult?.totalFee,
+      avgPrice: streamResult?.avgPrice,
+      netProfit: streamResult?.netProfit,
+    });
+    window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 计划单已执行 · ${order.stockName}` }));
+  }, [addBatch, addStreamRecord, markPlanExecuted, feeConfig, positions]);
+
+  // 首页计划单导航
+  const handleHomePlanNavigate = useCallback((order: PlannedOrder) => {
+    navigate(order.context === 'short-term' || order.context === 'both' ? '/t-calculator' : '/cost-averaging');
+  }, [navigate]);
+
+  // 1h. 待办轮动提醒：倒T底仓出空或待平仓项目
   const alertItems = useMemo<AlertItem[]>(() => {
     const items: AlertItem[] = [];
     for (const s of allActiveStreams) {
@@ -787,6 +898,47 @@ export default function Home() {
                 </div>
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* 计划单待办 — 首页快速执行 */}
+      {homePlans.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-base font-semibold text-slate-300">
+              📋 计划单待办
+              {activePlanCount > 0 && (
+                <span className="ml-2 text-xs font-normal text-amber-400">
+                  {activePlanCount} 个待执行
+                </span>
+              )}
+            </h3>
+            {homePlans.length > 3 && (
+              <button
+                onClick={() => navigate('/t-calculator')}
+                className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+              >
+                查看全部 →
+              </button>
+            )}
+          </div>
+          <div className="space-y-3">
+            {homePlans.slice(0, 10).map((p) => {
+              const pos = positions.find((pos) => pos.fullCode === p.fullCode && !pos.isClosed);
+              return (
+                <PlanOrderCard
+                  key={p.id}
+                  order={p}
+                  quote={homePlanQuotes[p.fullCode] ?? null}
+                  position={pos ?? null}
+                  feeConfig={feeConfig}
+                  onExecute={handleHomePlanExecute}
+                  onCancel={cancelPlan}
+                  onNavigate={handleHomePlanNavigate}
+                />
+              );
+            })}
           </div>
         </div>
       )}

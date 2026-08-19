@@ -42,7 +42,9 @@ import {
 import { validateSellWithStreamResult } from '../utils/validation';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import ConfirmModal from '../components/ui/ConfirmModal';
+import PlanOrderCard from '../components/PlanOrderCard';
 import type { StockQuoteSummary, StockSearchItem } from '../types/stock';
+import type { PlannedOrder } from '../store/types';
 import type {
   BasePosition,
   TStepNode,
@@ -1104,6 +1106,10 @@ export default function TCalculator() {
   const addStreamRecord = useAppStore((s) => s.addStreamRecord);
   const removeRound = useAppStore((s) => s.removeRound);
   const clearStreams = useAppStore((s) => s.clearStreams);
+  const plannedOrders = useAppStore((s) => s.plannedOrders);
+  const setPlannedOrder = useAppStore((s) => s.setPlannedOrder);
+  const markPlanExecuted = useAppStore((s) => s.markPlanExecuted);
+  const cancelPlan = useAppStore((s) => s.cancelPlan);
   const results = useStreamResults();
 
   // 仅展示进行中的短线项目（CLEARED = 池内流水已全部配对并自动归档为战报，不再属于当前项目）
@@ -1139,6 +1145,13 @@ export default function TCalculator() {
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  // 计划单状态
+  const [planFormOpen, setPlanFormOpen] = useState(false);
+  const [planStock, setPlanStock] = useState<StockSearchItem | null>(null);
+  const [planDirection, setPlanDirection] = useState<'buy' | 'sell'>('buy');
+  const [planPrice, setPlanPrice] = useState('');
+  const [planAmount, setPlanAmount] = useState('');
+  const [planValidity, setPlanValidity] = useState(3);
   const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
@@ -1255,6 +1268,87 @@ export default function TCalculator() {
     setNote('');
     setError('');
   };
+
+  // ---- 计划单（短线上下文） ----
+  const shortTermPlans = useMemo(() => {
+    const now = Date.now();
+    const displayWindow = 3 * 24 * 60 * 60 * 1000;
+    return plannedOrders.filter((p) => {
+      if (p.status === 'cancelled') return false;
+      if (p.context !== 'short-term' && p.context !== 'both') return false;
+      if (p.status === 'expired' || p.status === 'executed') {
+        const expiresAt = new Date(p.expiresAt).getTime();
+        return (now - expiresAt) <= displayWindow;
+      }
+      return true;
+    });
+  }, [plannedOrders]);
+
+  const handlePlanExecute = useCallback((order: PlannedOrder, actualPrice: number, actualAmount: number, note: string) => {
+    const direction = order.direction;
+    const txnFee = calcTradeFees(actualPrice, actualAmount, direction, feeConfig).total;
+    const record: TStreamRecord = {
+      id: generateId(),
+      timestamp: new Date().toISOString(),
+      fullCode: order.fullCode,
+      stockName: order.stockName,
+      direction,
+      price: actualPrice,
+      amount: actualAmount,
+      fee: roundTo(txnFee, 2),
+      note: note || undefined,
+    };
+    const result = addStreamRecord(record);
+    if (result?.rejected) {
+      showToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`, 4000);
+      return;
+    }
+    const isAchieved = order.direction === 'buy' ? actualPrice <= order.plannedPrice : actualPrice >= order.plannedPrice;
+    markPlanExecuted(order.id, {
+      executedAt: new Date().toISOString(),
+      actualPrice,
+      actualAmount,
+      note: note || undefined,
+      isAchieved,
+      avgPrice: result?.avgPrice,
+      netProfit: result?.netProfit,
+    });
+    showToast(`✅ 计划单已执行 · ${order.stockName}`, 3000);
+  }, [addStreamRecord, markPlanExecuted, feeConfig, showToast]);
+
+  const handleCreatePlan = () => {
+    if (!planStock?.fullCode) { showToast('请选择股票', 3000); return; }
+    const p = parseFloat(planPrice);
+    const a = parseFloat(planAmount);
+    if (!p || p <= 0) { showToast('请输入有效价格', 3000); return; }
+    if (!a || a <= 0) { showToast('请输入有效数量', 3000); return; }
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + planValidity * 24 * 60 * 60 * 1000);
+    const order: PlannedOrder = {
+      id: generateId(),
+      fullCode: planStock.fullCode,
+      stockName: planStock.Name || planStock.ShortName || planStock.fullCode,
+      context: 'short-term',
+      direction: planDirection,
+      plannedPrice: p,
+      plannedAmount: a,
+      createdAt: now.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      validityDays: planValidity,
+      status: 'active',
+    };
+    setPlannedOrder(order);
+    setPlanFormOpen(false);
+    setPlanStock(null);
+    setPlanPrice('');
+    setPlanAmount('');
+    setPlanDirection('buy');
+    setPlanValidity(3);
+    showToast(`📋 计划单已创建 · ${order.stockName}`, 3000);
+  };
+
+  const planQuoteCodes = useMemo(() => shortTermPlans.map((p) => p.fullCode), [shortTermPlans]);
+  const { quotes: planQuotes } = useLiveQuotes(planQuoteCodes);
 
   // ---- 归档历史库胜率统计（仅统计近14天完成的战报） ----
   const recentArchivedRounds = useMemo(() => {
@@ -1685,6 +1779,138 @@ export default function TCalculator() {
           })
         )}
         </MobileCollapse>
+      </div>
+
+      {/* 计划单（短线） */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-semibold text-slate-200">📋 计划单（短线）</h3>
+          {shortTermPlans.length > 0 && (
+            <span className="text-xs text-slate-500">{shortTermPlans.filter(p => p.status === 'active').length} 个进行中</span>
+          )}
+        </div>
+
+        {/* 创建计划单按钮/表单 */}
+        {!planFormOpen ? (
+          <button
+            onClick={() => setPlanFormOpen(true)}
+            className="w-full py-2 text-xs text-slate-400 hover:text-slate-200 border border-dashed border-slate-700 rounded-lg hover:border-slate-600 transition-colors"
+          >
+            + 添加计划单
+          </button>
+        ) : (
+          <div className="bg-slate-900 rounded-lg border border-slate-700 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-300">新建计划单</span>
+              <button
+                onClick={() => { setPlanFormOpen(false); setPlanStock(null); }}
+                className="text-xs text-slate-500 hover:text-slate-300"
+              >
+                ✕
+              </button>
+            </div>
+            <StockAutocomplete
+              value={planStock}
+              onChange={(s) => setPlanStock(s)}
+              placeholder="搜索股票代码/名称..."
+            />
+            {/* 方向选择 */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setPlanDirection('buy')}
+                className={`text-xs rounded-lg py-2 font-medium transition-colors ${
+                  planDirection === 'buy' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                计划买入
+              </button>
+              <button
+                onClick={() => setPlanDirection('sell')}
+                className={`text-xs rounded-lg py-2 font-medium transition-colors ${
+                  planDirection === 'sell' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                计划卖出
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] text-slate-500 mb-1">计划价格（元）</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={planPrice}
+                  onChange={(e) => setPlanPrice(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-500 mb-1">计划数量（股）</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={planAmount}
+                  onChange={(e) => setPlanAmount(e.target.value)}
+                  placeholder="100"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+            {/* 有效期选择 */}
+            <div>
+              <label className="block text-[10px] text-slate-500 mb-1">有效期</label>
+              <div className="flex gap-1.5">
+                {[1, 3, 7, 14, 30].map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setPlanValidity(d)}
+                    className={`flex-1 text-xs py-1.5 rounded-lg transition-colors ${
+                      planValidity === d ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    {d}天
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button
+              onClick={handleCreatePlan}
+              className="w-full text-xs py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+            >
+              确认创建
+            </button>
+          </div>
+        )}
+
+        {/* 计划单列表 */}
+        {shortTermPlans.length === 0 ? (
+          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
+            暂无计划单，创建后可在执行前看到价格对比变化
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {shortTermPlans.map((p) => (
+              <PlanOrderCard
+                key={p.id}
+                order={p}
+                quote={planQuotes[p.fullCode] ?? null}
+                position={positions.find((pos) => pos.fullCode === p.fullCode && !pos.isClosed) ?? null}
+                feeConfig={feeConfig}
+                onEdit={(order) => {
+                  setPlanStock({ fullCode: order.fullCode, Name: order.stockName, ShortName: '', Code: order.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' });
+                  setPlanDirection(order.direction);
+                  setPlanPrice(String(order.plannedPrice));
+                  setPlanAmount(String(order.plannedAmount));
+                  setPlanValidity(order.validityDays);
+                  setPlanFormOpen(true);
+                }}
+                onExecute={handlePlanExecute}
+                onCancel={(id) => cancelPlan(id)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* 归档历史库 */}

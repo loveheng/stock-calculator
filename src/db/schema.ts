@@ -341,6 +341,50 @@ export interface PositionAdjustmentEntity extends BaseEntity {
  * 但**不参与重放重建**；不可推导事件（rollback/manual-add/manual-reduce）是独立事实记录。
  * @see docs/position-ledger-spec.md §1.5
  */
+
+/**
+ * 计划单实体（plannedOrders 表）。
+ * 用户记录交易意图的备忘录，创建时填写计划价格/数量/有效期，
+ * 执行时改写实际值并调用 addBatch/addStreamRecord 触发真实交易。
+ * 每个标的（fullCode）全局最多一个 active 计划单。
+ * @layer DAO
+ */
+export interface PlannedOrderEntity extends BaseEntity {
+  /** 股票完整代码 */
+  fullCode: string;
+  /** 股票名称 */
+  stockName: string;
+  /** 来源页面 */
+  context: 'long-term' | 'short-term' | 'both';
+  /** 方向 */
+  direction: 'buy' | 'sell';
+  /** 计划价格 */
+  plannedPrice: number;
+  /** 计划数量 */
+  plannedAmount: number;
+  /** 备注 */
+  note?: string;
+  /** 过期时间 = createdAt + validityDays */
+  expiresAt: string;
+  /** 有效期天数（用户选择：1 | 3 | 7 | 14 | 30） */
+  validityDays: number;
+  /** 状态 */
+  status: 'active' | 'expired' | 'cancelled' | 'executed';
+  /** 实际执行记录（用户确认执行时填写） */
+  actualPrice?: number;
+  actualAmount?: number;
+  actualExecutedAt?: string;
+  actualNote?: string;
+  isAchieved?: boolean;
+  /** 中长期执行结果 */
+  newCost?: number;
+  newAmount?: number;
+  newTotalInvested?: number;
+  totalFee?: number;
+  /** 短线执行结果 */
+  avgPrice?: number;
+  netProfit?: number;
+}
 export interface PositionEventEntity extends BaseEntity {
   /** 全局唯一 ID */
   id: string;
@@ -426,12 +470,18 @@ const STORES_V9 = {
   positionEvents: 'id, fullCode, roundId, eventType, timestamp, updatedAt, isDeleted',
 } as const;
 
+/** v10：新增 plannedOrders 表（计划单） */
+const STORES_V10 = {
+  ...STORES_V9,
+  plannedOrders: 'id, fullCode, status, expiresAt, [status+expiresAt]',
+} as const;
+
 /**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
- * @description 集中管理全部 11 张规范化表，并声明各表的索引字段以支持高效查询。
+ * @description 集中管理全部 12 张规范化表，并声明各表的索引字段以支持高效查询。
  * @note 索引字符串格式为 Dexie schema：主键在前（`++` 自增 / 普通字段），逗号分隔的字段均会被建立索引。
- * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V9 常量定义。
+ * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V10 常量定义。
  */
 export class TradingLedgerDB extends Dexie {
   /** 股票基础信息表 */
@@ -461,6 +511,9 @@ export class TradingLedgerDB extends Dexie {
 
   /** 底仓变动痕迹表（append-only 事件流） */
   positionEvents!: Table<PositionEventEntity, string>;
+
+  /** 计划单表 */
+  plannedOrders!: Table<PlannedOrderEntity, string>;
 
   /**
    * 初始化数据库结构（版本链 v2→v9）。
@@ -495,6 +548,7 @@ export class TradingLedgerDB extends Dexie {
       });
     this.version(8).stores(STORES_V8 as Record<string, string | null>);
     this.version(9).stores(STORES_V9 as Record<string, string | null>);
+    this.version(10).stores(STORES_V10 as Record<string, string | null>);
   }
 }
 

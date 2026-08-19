@@ -45,6 +45,9 @@ import {
   safeImportAllData,
   loadPositionsFromDB,
   loadTRoundsFromDB,
+  loadPlannedOrdersFromDB,
+  putPlannedOrder,
+  deletePlannedOrder,
   } from '../db/index';
 import { safePersist, getIsSyncingFromRemote, setIsSyncingFromRemote } from './persistence';
 import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
@@ -64,6 +67,7 @@ import type {
   RoundTxn,
   TRoundArchive,
   LongTermRecord,
+  PlannedOrder,
   FeePresetName,
   StreamAddResult,
   AppStoreExport,
@@ -78,13 +82,14 @@ export type {
   RoundTxn,
   TRoundArchive,
   LongTermRecord,
+  PlannedOrder,
   FeePresetName,
   StreamAddResult,
   AppStoreExport,
   AppStore,
 } from './types';
 export { EXPORT_VERSION } from './types';
-export { generateId, buildBasePositionCosts, recomputePositionSnapshot, getCloseBlockReason, useStreamResults, activeStreamsFromRounds } from './utils';
+export { generateId, buildBasePositionCosts, recomputePositionSnapshot, getCloseBlockReason, useStreamResults, activeStreamsFromRounds, calcPlanComparison, calcBatchExecution } from './utils';
 export { DEFAULT_FEE_CONFIG, FEE_PRESETS, FEE_TEMPLATES } from './feePresets';
 export { getPersistError, clearPersistError, getIsSyncingFromRemote } from './persistence';
 export type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
@@ -335,7 +340,7 @@ export function reconcilePositionsWithStreams(
 
 export const useAppStore = create<AppStore>()((set, get) => ({
   feeConfig: { ...DEFAULT_FEE_CONFIG }, tRounds: [],
-  positions: [], stocks: [], longTermRecords: [], coreDataLoaded: false,
+  positions: [], stocks: [], longTermRecords: [], plannedOrders: [], coreDataLoaded: false,
   persistError: null,
 
   loadPositions: async () => { const positions = await loadPositionsFromDB(); if (positions.length) set(s => ({ positions: [...s.positions.filter(p => !positions.some(np => np.id === p.id)), ...positions] })); },
@@ -680,12 +685,48 @@ export const useAppStore = create<AppStore>()((set, get) => ({
   },
   removePosition: (id) => { set(s => ({ positions: s.positions.filter(p => p.id !== id) })); safePersist(() => deletePositionWithBatches(id)); },
 
-  exportData: () => { const state = get(); return { version: EXPORT_VERSION, feeConfig: state.feeConfig, tRounds: state.tRounds, positions: state.positions, stocks: state.stocks, longTermRecords: state.longTermRecords }; },
+  // -- 计划单 --
+  loadPlannedOrders: async () => {
+    const orders = await loadPlannedOrdersFromDB();
+    if (orders.length) set({ plannedOrders: orders });
+  },
+  setPlannedOrder: (order) => {
+    set((s) => {
+      // 同标的覆盖：移除该标的已有的 active 计划单
+      const filtered = s.plannedOrders.filter((p) => !(p.fullCode === order.fullCode && p.status === 'active'));
+      return { plannedOrders: [...filtered, order] };
+    });
+    safePersist(() => putPlannedOrder(order));
+  },
+  removePlannedOrder: (id) => {
+    set((s) => ({ plannedOrders: s.plannedOrders.filter((p) => p.id !== id) }));
+    safePersist(() => deletePlannedOrder(id));
+  },
+  markPlanExecuted: (id, actual) => {
+    set((s) => ({
+      plannedOrders: s.plannedOrders.map((p) =>
+        p.id === id ? { ...p, status: 'executed' as const, actual } : p
+      ),
+    }));
+    const order = get().plannedOrders.find((p) => p.id === id);
+    if (order) safePersist(() => putPlannedOrder(order));
+  },
+  cancelPlan: (id) => {
+    set((s) => ({
+      plannedOrders: s.plannedOrders.map((p) =>
+        p.id === id ? { ...p, status: 'cancelled' as const } : p
+      ),
+    }));
+    const order = get().plannedOrders.find((p) => p.id === id);
+    if (order) safePersist(() => putPlannedOrder(order));
+  },
+
+  exportData: () => { const state = get(); return { version: EXPORT_VERSION, feeConfig: state.feeConfig, tRounds: state.tRounds, positions: state.positions, stocks: state.stocks, longTermRecords: state.longTermRecords, plannedOrders: state.plannedOrders }; },
 
   importData: (data, silent) => {
     const rounds = data.tRounds ?? [];
-    set({ feeConfig: data.feeConfig, tRounds: rounds, positions: data.positions ?? [], stocks: data.stocks ?? [], longTermRecords: data.longTermRecords ?? [] });
-    safePersist(() => safeImportAllData(data.feeConfig, data.positions ?? [], rounds, data.stocks ?? [], data.longTermRecords ?? []));
+    set({ feeConfig: data.feeConfig, tRounds: rounds, positions: data.positions ?? [], stocks: data.stocks ?? [], longTermRecords: data.longTermRecords ?? [], plannedOrders: data.plannedOrders ?? [] });
+    safePersist(() => safeImportAllData(data.feeConfig, data.positions ?? [], rounds, data.stocks ?? [], data.longTermRecords ?? [], data.plannedOrders ?? []));
     // silent 模式：来自远端拉取合并（Pull & Merge），跳过后续自动上传/同步逻辑
     // 设置 isSyncingFromRemote 标记，自动同步监听器必须检查此标记后跳过触发
     if (silent) {
@@ -713,7 +754,7 @@ export const useAppStore = create<AppStore>()((set, get) => ({
         roundMap.set(r.id, r);
       }
     }
-    return { version: EXPORT_VERSION, feeConfig: state.feeConfig, tRounds: Array.from(roundMap.values()), positions: [...state.positions, ...closedPositions], stocks: state.stocks, longTermRecords: [...state.longTermRecords, ...ltRecs] };
+    return { version: EXPORT_VERSION, feeConfig: state.feeConfig, tRounds: Array.from(roundMap.values()), positions: [...state.positions, ...closedPositions], stocks: state.stocks, longTermRecords: [...state.longTermRecords, ...ltRecs], plannedOrders: state.plannedOrders };
   },
 
   importJSON: (data) => {
@@ -765,7 +806,8 @@ export function initAutoSync(): () => void {
       state.positions === prevState.positions &&
       state.stocks === prevState.stocks &&
       state.longTermRecords === prevState.longTermRecords &&
-      state.feeConfig === prevState.feeConfig
+      state.feeConfig === prevState.feeConfig &&
+      state.plannedOrders === prevState.plannedOrders
     ) {
       return;
     }

@@ -29,6 +29,7 @@ import {
   type CashFlowEntity,
   type FeeConfigEntity,
   type LongTermRecordEntity,
+  type PlannedOrderEntity,
   type PositionAdjustmentEntity,
   type PositionBatchEntity,
   type PositionEntity,
@@ -48,10 +49,10 @@ export interface PageResult<T> {
   hasMore: boolean;
 }
 
-import type { LongTermRecord } from '../store/types';
+import type { LongTermRecord, PlannedOrder } from '../store/types';
 export type { FeeConfig } from '../utils/mathUtils';
 export type { Position, PositionBatch, TRoundArchive, RoundTxn } from '../store';
-export type { LongTermRecord } from '../store/types';
+export type { LongTermRecord, PlannedOrder } from '../store/types';
 export type { StockMeta } from '../types/stock';
 
 /** 费率配置的行级视图模型（用于 UI 展示，非实体） */
@@ -91,6 +92,9 @@ export type StockRow = StockMeta;
 
 /** 中长期操作记录的行级视图模型 = Store 层 LongTermRecord 类型（两者完全一致） */
 export type LongTermRecordRow = LongTermRecord;
+
+/** 计划单行视图模型 = Store 层 PlannedOrder 类型 */
+export type PlannedOrderRow = PlannedOrder;
 
 /** 全局数据库实例（别名转发自 ./schema） */
 export const db = tradingDb;
@@ -358,6 +362,97 @@ function toLongTermRecordRow(entity: LongTermRecordEntity): LongTermRecordRow {
     sourceReportId: entity.sourceReportId,
     note: entity.note,
   };
+}
+
+/**
+ * 将计划单实体映射为 Store 层 PlannedOrder。
+ */
+function toPlannedOrderRow(entity: PlannedOrderEntity): PlannedOrder {
+  return {
+    id: entity.id,
+    fullCode: entity.fullCode,
+    stockName: entity.stockName,
+    context: entity.context,
+    direction: entity.direction,
+    plannedPrice: entity.plannedPrice,
+    plannedAmount: entity.plannedAmount,
+    note: entity.note,
+    createdAt: new Date(entity.createdAt).toISOString(),
+    expiresAt: entity.expiresAt,
+    validityDays: entity.validityDays,
+    status: entity.status,
+    actual: entity.actualPrice !== undefined ? {
+      executedAt: entity.actualExecutedAt ?? '',
+      actualPrice: entity.actualPrice,
+      actualAmount: entity.actualAmount ?? 0,
+      note: entity.actualNote,
+      isAchieved: entity.isAchieved ?? false,
+      newCost: entity.newCost,
+      newAmount: entity.newAmount,
+      newTotalInvested: entity.newTotalInvested,
+      totalFee: entity.totalFee,
+      avgPrice: entity.avgPrice,
+      netProfit: entity.netProfit,
+    } : undefined,
+  };
+}
+
+/**
+ * 将 Store 层 PlannedOrder 映射为实体。
+ */
+export function toPlannedOrderEntity(order: PlannedOrder): PlannedOrderEntity {
+  return {
+    id: order.id,
+    fullCode: order.fullCode,
+    stockName: order.stockName,
+    context: order.context,
+    direction: order.direction,
+    plannedPrice: order.plannedPrice,
+    plannedAmount: order.plannedAmount,
+    note: order.note,
+    createdAt: Date.parse(order.createdAt),
+    expiresAt: order.expiresAt,
+    validityDays: order.validityDays,
+    status: order.status,
+    actualPrice: order.actual?.actualPrice,
+    actualAmount: order.actual?.actualAmount,
+    actualExecutedAt: order.actual?.executedAt,
+    actualNote: order.actual?.note,
+    isAchieved: order.actual?.isAchieved,
+    newCost: order.actual?.newCost,
+    newAmount: order.actual?.newAmount,
+    newTotalInvested: order.actual?.newTotalInvested,
+    totalFee: order.actual?.totalFee,
+    avgPrice: order.actual?.avgPrice,
+    netProfit: order.actual?.netProfit,
+    updatedAt: Date.now(),
+    isDeleted: 0,
+  };
+}
+
+/**
+ * 从 DB 加载所有计划单。
+ */
+export async function loadPlannedOrdersFromDB(): Promise<PlannedOrder[]> {
+  const entities = await db.plannedOrders
+    .filter((p) => p.isDeleted === 0)
+    .toArray();
+  return entities.map(toPlannedOrderRow);
+}
+
+/**
+ * 写入（新增或更新）计划单。
+ */
+export async function putPlannedOrder(order: PlannedOrder): Promise<void> {
+  const entity = toPlannedOrderEntity(order);
+  await db.plannedOrders.put(cleanUndefined(entity));
+}
+
+/**
+ * 删除计划单（软删除）。
+ */
+export async function deletePlannedOrder(id: string): Promise<void> {
+  await db.plannedOrders.update(id, { isDeleted: 1, updatedAt: Date.now() });
 }
 
 /**
@@ -1052,8 +1147,9 @@ export async function safeImportAllData(
   tRounds: TRoundRow[],
   stocks: StockRow[],
   longTermRecords: LongTermRecordRow[] = [],
+  plannedOrders: PlannedOrder[] = [],
 ): Promise<void> {
-  await db.transaction('rw', [db.feeConfigs, db.stocks, db.positions, db.positionBatches, db.tRounds, db.tTransactions, db.longTermRecords], async () => {
+  await db.transaction('rw', [db.feeConfigs, db.stocks, db.positions, db.positionBatches, db.tRounds, db.tTransactions, db.longTermRecords, db.plannedOrders], async () => {
     const now = Date.now();
 
     // 1. 费率配置：直接 put（id=1 单行 upsert）
@@ -1118,6 +1214,17 @@ export async function safeImportAllData(
     const staleLtrIds = oldLtrIds.filter((id) => !newLtrIds.has(id));
     if (staleLtrIds.length > 0) {
       await db.longTermRecords.bulkDelete(staleLtrIds);
+    }
+
+    // 6. 计划单
+    const newPlanIds = new Set(plannedOrders.map((o) => o.id));
+    if (plannedOrders.length > 0) {
+      await db.plannedOrders.bulkPut(plannedOrders.map((o) => cleanUndefined({ ...toPlannedOrderEntity(o), updatedAt: now, createdAt: now, isDeleted: 0 })));
+    }
+    const oldPlanIds = (await db.plannedOrders.toArray()).map((e) => e.id);
+    const stalePlanIds = oldPlanIds.filter((id) => !newPlanIds.has(id));
+    if (stalePlanIds.length > 0) {
+      await db.plannedOrders.bulkDelete(stalePlanIds);
     }
   });
 }

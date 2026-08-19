@@ -13,6 +13,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles.css';
 import { initStore } from './db/storeInit';
+import { initAutoSync } from './store';
 
 /**
  * 应用引导启动函数。
@@ -27,7 +28,10 @@ async function bootstrap(): Promise<void> {
   // 1) Hydrate in-memory Zustand store from IndexedDB
   await initStore();
 
-  // 2) Render the app (persistence is handled incrementally inside Zustand actions)
+  // 2) Initialize auto-sync (subscribes to store changes, triggers WebDAV backup when autoSync enabled)
+  initAutoSync();
+
+  // 3) Render the app (persistence is handled incrementally inside Zustand actions)
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <App />

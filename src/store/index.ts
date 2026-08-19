@@ -46,7 +46,8 @@ import {
   loadPositionsFromDB,
   loadTRoundsFromDB,
   } from '../db/index';
-import { safePersist, setIsSyncingFromRemote } from './persistence';
+import { safePersist, getIsSyncingFromRemote, setIsSyncingFromRemote } from './persistence';
+import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
 import { DEFAULT_FEE_CONFIG } from './feePresets';
 import { positionAdjustmentPort } from '../services/positionAdjustmentPort';
 import {
@@ -726,3 +727,51 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     return [headers.join(','), ...rows.map(row => row.map(cell => `"${cell}"`).join(','))].join('\n');
   },
 }));
+
+/**
+ * 初始化自动同步：监听 Zustand Store 状态变化，
+ * 当 autoSync 开启且有数据变更时，自动触发 WebDAV 备份。
+ *
+ * 安全机制（从外到内）：
+ * 1. `coreDataLoaded` 守卫：冷启动加载阶段不触发，防止半载数据上传
+ * 2. `isSyncingFromRemote` 守卫：远端同步导入时不触发，
+ *    配合 importData 中的 setTimeout(0) 复位，防回环
+ * 3. `autoSync` 配置开关：仅用户启用时生效
+ * 4. 引用比较：仅 tRounds/positions/stocks/longTermRecords/feeConfig
+ *    真正变化时触发，避免 coreDataLoaded/persistError 等元字段误触发
+ * 5. `scheduleBackup` 防抖（800ms）：连续操作合并为一次上传
+ * 6. `backupToWebDAV` 冷却（10s）+ Promise 互斥锁 + 跨标签 Web Locks：
+ *    不产生并发 PUT，避免远端文件损坏
+ *
+ * @returns {() => void} 取消订阅函数（应用生命周期内无需调用）
+ */
+export function initAutoSync(): () => void {
+  return useAppStore.subscribe((state, prevState) => {
+    // ① 冷启动加载中，跳过
+    if (!state.coreDataLoaded) return;
+
+    // ② 远端同步导入进行中，跳过（防回环）
+    if (getIsSyncingFromRemote()) return;
+
+    // ③ 用户未开启自动同步，跳过
+    const config = getWebDAVConfig();
+    if (!config.autoSync) return;
+
+    // ④ 检查数据是否真的变更（避免元字段变化误触发）
+    if (
+      state.tRounds === prevState.tRounds &&
+      state.positions === prevState.positions &&
+      state.stocks === prevState.stocks &&
+      state.longTermRecords === prevState.longTermRecords &&
+      state.feeConfig === prevState.feeConfig
+    ) {
+      return;
+    }
+
+    // ⑤ 导出当前快照并调度备份
+    //    scheduleBackup 内部有 800ms 防抖，
+    //    backupToWebDAV 内部有 10s 冷却 + Promise 互斥锁 + Web Locks
+    const snapshot = useAppStore.getState().exportData();
+    scheduleBackup(snapshot);
+  });
+}

@@ -316,10 +316,12 @@ function TStateMachinePanel({
   entries,
   basePosition,
   feeConfig,
+  embedded,
 }: {
   entries: TStreamRecord[];
   basePosition: BasePosition | null;
   feeConfig: FeeConfig | undefined;
+  embedded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [defenseSMCopy, setDefenseSMCopy] = useState<TStateMachineState | null>(null);
@@ -400,6 +402,46 @@ function TStateMachinePanel({
 
   if (!basePosition || entries.length === 0 || !smState || smState.steps.length === 0) return null;
 
+  const stateContent = (
+    <div className="mt-2 space-y-2">
+      {/* 步骤节点卡片 */}
+      {smState.steps.map((step, i) => (
+        <StepNodeCard
+          key={step.recordId}
+          node={step}
+          baseCost={basePosition.cost}
+          baseQty={basePosition.quantity}
+          netPendingQty={pendingPerStep[i] ?? 0}
+        />
+      ))}
+
+      {/* 结算卡片 */}
+      {smState.settlementCard && (
+        <SettlementCardView card={smState.settlementCard} />
+      )}
+
+      {/* 防御弹窗 */}
+      {defenseSMCopy?.defenseDialog && (
+        <DefenseOverflowModal
+          dialog={defenseSMCopy.defenseDialog}
+          onSelect={handleDefenseSelect}
+          onCancel={handleDefenseCancel}
+        />
+      )}
+
+      {/* 未触发防御但有活跃弹窗 */}
+      {!triggeredDefense && smState.defenseDialog && !defenseSMCopy && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
+          ⚠️ 防御弹窗待处理：{smState.defenseDialog.type} — 请通过原有流程处理
+        </div>
+      )}
+    </div>
+  );
+
+  if (embedded) {
+    return <div className="pt-1 border-t border-slate-600/50 mt-1">{stateContent}</div>;
+  }
+
   return (
     <div className="pt-1 border-t border-slate-600/50 mt-1">
       <button
@@ -410,41 +452,7 @@ function TStateMachinePanel({
           ? '🔼 收起状态机详情'
           : `🔽 状态机详情（${smState.steps.length} 步${smState.isClosed ? ' · ' + (smState.settlementCard?.label ?? '已结束') : ''}）`}
       </button>
-      {expanded && (
-        <div className="mt-2 space-y-2">
-          {/* 步骤节点卡片 */}
-          {smState.steps.map((step, i) => (
-            <StepNodeCard
-              key={step.recordId}
-              node={step}
-              baseCost={basePosition.cost}
-              baseQty={basePosition.quantity}
-              netPendingQty={pendingPerStep[i] ?? 0}
-            />
-          ))}
-
-          {/* 结算卡片 */}
-          {smState.settlementCard && (
-            <SettlementCardView card={smState.settlementCard} />
-          )}
-
-          {/* 防御弹窗 */}
-          {defenseSMCopy?.defenseDialog && (
-            <DefenseOverflowModal
-              dialog={defenseSMCopy.defenseDialog}
-              onSelect={handleDefenseSelect}
-              onCancel={handleDefenseCancel}
-            />
-          )}
-
-          {/* 未触发防御但有活跃弹窗 */}
-          {!triggeredDefense && smState.defenseDialog && !defenseSMCopy && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
-              ⚠️ 防御弹窗待处理：{smState.defenseDialog.type} — 请通过原有流程处理
-            </div>
-          )}
-        </div>
-      )}
+      {expanded && stateContent}
     </div>
   );
 }
@@ -665,99 +673,102 @@ function CurrentProjectCard({
               : `🔽 展开明细（${result.entries.length} 笔）`}
           </button>
           {showEntries && (
-            <div className="mt-2 bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
-              {sortedEntries.map((entry, idx) => (
-                <div
-                  key={entry.id}
-                  className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          entry.direction === 'buy'
-                            ? 'bg-blue-500/15 text-blue-400'
-                            : 'bg-purple-500/15 text-purple-400'
-                        }`}
-                      >
-                        {entry.direction === 'buy' ? '买入' : '卖出'}
-                      </span>
-                      <span className="text-slate-500">
-                        {new Date(entry.timestamp).toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-slate-400">
-                      <span>¥{entry.price.toFixed(3)}</span>
-                      <span>{entry.amount} 股</span>
-                      <span>手续费 ¥{entry.fee.toFixed(2)}</span>
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-slate-500">对冲/收益</div>
-                      {idx === 0 ? (
-                        <button
-                          onClick={() => removeStreamRecord(entry.id)}
-                          className="tap-target text-slate-400 hover:text-red-400 transition-colors rounded-lg"
-                          aria-label="撤销最新一笔流水"
-                          title="撤销最新一笔流水"
-                        >
-                          🗑️
-                        </button>
-                      ) : (
+            <>
+              <div className="mt-2 bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
+                {sortedEntries.map((entry, idx) => (
+                  <div
+                    key={entry.id}
+                    className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
                         <span
-                          className="tap-target text-slate-600 cursor-not-allowed"
-                          title="为保证对冲逻辑正确，仅支持按顺序撤销最新的一条操作"
-                        >
-                          🔒
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap gap-2 items-center">
-                      {entry.direction === 'buy' ? (
-                        /* BUY（开仓腿）：无撮合收益，仅展示对冲进度，隐藏误导性的 +¥0.00 */
-                        <span
-                          className={`font-mono tabular-nums ${
-                            entry.matchedAmount > 0 ? 'text-sky-400' : 'text-amber-400'
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            entry.direction === 'buy'
+                              ? 'bg-blue-500/15 text-blue-400'
+                              : 'bg-purple-500/15 text-purple-400'
                           }`}
                         >
-                          {entry.matchedAmount <= 0
-                            ? `待对冲 (${entry.amount}股未平)`
-                            : `已对冲 ${entry.matchedAmount}股 / 余 ${entry.amount - entry.matchedAmount}股`}
+                          {entry.direction === 'buy' ? '买入' : '卖出'}
                         </span>
-                      ) : (
-                        /* SELL（平仓腿）：保持原有撮合量与收益展示 */
-                        <>
-                          <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
-                          <span
-                            className={
-                              entry.realizedProfit >= 0
-                                ? 'text-red-400'
-                                : 'text-green-400'
-                            }
+                        <span className="text-slate-500">
+                          {new Date(entry.timestamp).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-slate-400">
+                        <span>¥{entry.price.toFixed(3)}</span>
+                        <span>{entry.amount} 股</span>
+                        <span>手续费 ¥{entry.fee.toFixed(2)}</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-slate-500">对冲/收益</div>
+                        {idx === 0 ? (
+                          <button
+                            onClick={() => removeStreamRecord(entry.id)}
+                            className="tap-target text-slate-400 hover:text-red-400 transition-colors rounded-lg"
+                            aria-label="撤销最新一笔流水"
+                            title="撤销最新一笔流水"
                           >
-                            {entry.realizedProfit >= 0 ? '+' : ''}
-                            {formatCurrency(entry.realizedProfit)}
+                            🗑️
+                          </button>
+                        ) : (
+                          <span
+                            className="tap-target text-slate-600 cursor-not-allowed"
+                            title="为保证对冲逻辑正确，仅支持按顺序撤销最新的一条操作"
+                          >
+                            🔒
                           </span>
-                        </>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2 items-center">
+                        {entry.direction === 'buy' ? (
+                          /* BUY（开仓腿）：无撮合收益，仅展示对冲进度，隐藏误导性的 +¥0.00 */
+                          <span
+                            className={`font-mono tabular-nums ${
+                              entry.matchedAmount > 0 ? 'text-sky-400' : 'text-amber-400'
+                            }`}
+                          >
+                            {entry.matchedAmount <= 0
+                              ? `待对冲 (${entry.amount}股未平)`
+                              : `已对冲 ${entry.matchedAmount}股 / 余 ${entry.amount - entry.matchedAmount}股`}
+                          </span>
+                        ) : (
+                          /* SELL（平仓腿）：保持原有撮合量与收益展示 */
+                          <>
+                            <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
+                            <span
+                              className={
+                                entry.realizedProfit >= 0
+                                  ? 'text-red-400'
+                                  : 'text-green-400'
+                              }
+                            >
+                              {entry.realizedProfit >= 0 ? '+' : ''}
+                              {formatCurrency(entry.realizedProfit)}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      {entry.note && (
+                        <div className="text-slate-500">{entry.note}</div>
                       )}
                     </div>
-                    {entry.note && (
-                      <div className="text-slate-500">{entry.note}</div>
-                    )}
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+
+              <TStateMachinePanel
+                entries={result.entries.map((e) => ({ ...e, fullCode: (e as unknown as TStreamRecord).fullCode ?? result.fullCode, stockName: (e as unknown as TStreamRecord).stockName ?? result.stockName } as TStreamRecord))}
+                basePosition={basePosition ? { cost: basePosition.currentCost, quantity: basePosition.currentAmount } : null}
+                feeConfig={feeConfig}
+                embedded={true}
+              />
+            </>
           )}
         </div>
       )}
-
-      <TStateMachinePanel
-        entries={result.entries.map((e) => ({ ...e, fullCode: (e as unknown as TStreamRecord).fullCode ?? result.fullCode, stockName: (e as unknown as TStreamRecord).stockName ?? result.stockName } as TStreamRecord))}
-        basePosition={basePosition ? { cost: basePosition.currentCost, quantity: basePosition.currentAmount } : null}
-        feeConfig={feeConfig}
-      />
 
       <div className="pt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
         <button
@@ -1068,7 +1079,7 @@ function apDialogError(
  * 移动端折叠卡片：仅在手机屏幕（<768px）下默认折叠标题，点击展开内容。
  * 桌面端始终展开。
  */
-function MobileCollapse({ title, defaultCollapsed, children }: { title: string; defaultCollapsed?: boolean; children: React.ReactNode }) {
+function MobileCollapse({ title, badge, defaultCollapsed, children }: { title: string; badge?: React.ReactNode; defaultCollapsed?: boolean; children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed ?? false);
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
   const effectiveCollapsed = isMobile ? collapsed : false;
@@ -1080,6 +1091,9 @@ function MobileCollapse({ title, defaultCollapsed, children }: { title: string; 
         className="tap-target md:hidden flex items-center justify-between w-full text-left"
       >
         <h3 className="text-base font-semibold text-slate-200">{title}</h3>
+        {effectiveCollapsed && badge && (
+          <span className="text-xs text-slate-400 ml-2">{badge}</span>
+        )}
         <span className="text-slate-400 text-lg transition-transform duration-200" style={{ transform: effectiveCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }}>
           ▾
         </span>
@@ -1646,7 +1660,7 @@ export default function TCalculator() {
 
       {/* 当前项目（移动端默认折叠） */}
       <div className="space-y-3">
-        <MobileCollapse title="当前短线项目" defaultCollapsed={true}>
+        <MobileCollapse title="当前短线项目" defaultCollapsed={true} badge={`${activeResults.length} 个项目`}>
         <div className="flex items-center justify-between">
           <h3 className="text-base font-semibold text-slate-200 hidden md:block">当前短线项目</h3>
           {activeResults.length > 0 && (
@@ -1711,7 +1725,7 @@ export default function TCalculator() {
           </div>
         ) : todayArchivedRounds.length === 0 ? (
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            今日暂无已完成战报（短线持仓归零自动锁定战报 → 生成 Round 卡片）
+            今日暂无已完成战报
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

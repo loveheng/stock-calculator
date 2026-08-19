@@ -2,11 +2,12 @@
  * @file schema.ts
  * @description 定义 TradingLedgerDB_v3 的全部 IndexedDB 实体类型（Entity）与 Dexie 数据库表结构，是整个应用数据持久化的类型基石。
  * @layer DAO
- * @storage_impact 声明 stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes / feeConfigs / longTermRecords / positionAdjustments / positionEvents 共 12 张表的实体结构，并导出 Dexie 实例 db。
+ * @storage_impact 声明 stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes / feeConfigs / longTermRecords 共 10 张表的实体结构，并导出 Dexie 实例 db。
  * @author 开发团队
  */
 
 import Dexie, { type Table } from 'dexie';
+
 
 /**
  * 所有持久化实体的公共基础字段。
@@ -428,7 +429,7 @@ const STORES_V9 = {
 /**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
- * @description 集中管理全部 12 张规范化表，并声明各表的索引字段以支持高效查询。
+ * @description 集中管理全部 11 张规范化表，并声明各表的索引字段以支持高效查询。
  * @note 索引字符串格式为 Dexie schema：主键在前（`++` 自增 / 普通字段），逗号分隔的字段均会被建立索引。
  * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V9 常量定义。
  */

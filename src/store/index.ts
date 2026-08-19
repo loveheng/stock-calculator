@@ -516,15 +516,17 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const investedBefore = cleanSnap.totalInvested;
     const addInvested = avg * addQty + txnFee; const newAmount = totalBefore + addQty;
     const newInvested = investedBefore + addInvested; const newCost = newAmount > 0 ? newInvested / newAmount : 0;
-    const batch: PositionBatch = { id: generateId(), timestamp: now, type: 'add', price: avg, amount: addQty, costAfter: newCost, amountAfter: newAmount, note: `做T划转底仓（P_avg=${avg}）`, fee: txnFee };
+    // 预先查找 OPENED Round，获取 roundId 用于批次关联（删除战报时可回滚划转批次）
+    const openRound = tRounds.find(r => r.fullCode === fullCode && (r.status ?? 'OPENED') !== 'COMPLETED');
+    const roundId = openRound?.id ?? generateId();
+    const batch: PositionBatch = { id: generateId(), timestamp: now, type: 'add', price: avg, amount: addQty, costAfter: newCost, amountAfter: newAmount, note: `做T划转底仓（P_avg=${avg}）`, fee: txnFee, sourceRoundId: roundId };
     if (created) {
-      const ob: PositionBatch = { id: generateId(), timestamp: now, type: 'open', price: avg, amount: addQty, costAfter: newCost, amountAfter: newAmount, note: `做T划转新建底仓（P_avg=${avg}）`, fee: txnFee };
+      const ob: PositionBatch = { id: generateId(), timestamp: now, type: 'open', price: avg, amount: addQty, costAfter: newCost, amountAfter: newAmount, note: `做T划转新建底仓（P_avg=${avg}）`, fee: txnFee, sourceRoundId: roundId };
       newPositions = [...newPositions, { ...posDef, currentCost: newCost, currentAmount: newAmount, totalInvested: newInvested, batches: [ob] }];
     } else {
       newPositions = newPositions.map(p => p.id === posDef.id ? { ...p, currentCost: newCost, currentAmount: newAmount, totalInvested: newInvested, batches: [...cleanBatches, batch] } : p);
     }
     // v8：复用已有 OPENED Round 结清（不再新建），流水保持完整
-    const openRound = tRounds.find(r => r.fullCode === fullCode && (r.status ?? 'OPENED') !== 'COMPLETED');
     const round: TRoundArchive = openRound
       ? {
           ...openRound,
@@ -544,9 +546,9 @@ export const useAppStore = create<AppStore>()((set, get) => ({
           lastTouched: now,
           lastUpdated: Date.now(),
         }
-      : { id: generateId(), fullCode, stockName: stream.stockName, mode: stream.mode, status: 'COMPLETED', roundCode: formatTradeNo(now), settleType: 'partial', transactions: stream.entries.map(e => ({ id: e.id, timestamp: e.timestamp, fullCode, stockName: stream.stockName, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, matchedAmount: e.matchedAmount ?? 0, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: stream.transferProfit, totalFees: stream.totalFee, sellAmount: stream.realizedSellAmount, avgPrice: stream.avgPrice, buyAmount: stream.buyAmount, tradeCount: stream.tradeCount, holdingDays: stream.holdingDays, win: stream.transferProfit >= 0, openedAt: stream.openedAt ?? stream.entries[0]?.timestamp ?? now, closedAt: now, transferAmount: toTransfer };
-    const ltRecord: LongTermRecord = { id: generateId(), fullCode, stockName: stream.stockName, timestamp: now, type: 'merge', price: avg, amount: toTransfer, fee: txnFee, sourceReportId: round.id, note: `做T划转底仓（${formatTradeNo(now)}）` };
-    set(s => ({ tRounds: [...s.tRounds.filter(r => r.id !== round.id), round], positions: newPositions, longTermRecords: [...s.longTermRecords, ltRecord] }));
+      : { id: roundId, fullCode, stockName: stream.stockName, mode: stream.mode, status: 'COMPLETED', roundCode: formatTradeNo(now), settleType: 'partial', transactions: stream.entries.map(e => ({ id: e.id, timestamp: e.timestamp, fullCode, stockName: stream.stockName, direction: e.direction, price: e.price, amount: e.amount, fee: e.fee, matchedAmount: e.matchedAmount ?? 0, realizedProfit: e.realizedProfit ?? 0, note: e.note })), netProfit: stream.transferProfit, totalFees: stream.totalFee, sellAmount: stream.realizedSellAmount, avgPrice: stream.avgPrice, buyAmount: stream.buyAmount, tradeCount: stream.tradeCount, holdingDays: stream.holdingDays, win: stream.transferProfit >= 0, openedAt: stream.openedAt ?? stream.entries[0]?.timestamp ?? now, closedAt: now, transferAmount: toTransfer };
+    const ltRecord: LongTermRecord = { id: generateId(), fullCode, stockName: stream.stockName, timestamp: now, type: 'merge', price: avg, amount: toTransfer, fee: txnFee, sourceReportId: roundId, note: `做T划转底仓（${formatTradeNo(now)}）` };
+    set(s => ({ tRounds: [...s.tRounds.filter(r => r.id !== roundId), round], positions: newPositions, longTermRecords: [...s.longTermRecords, ltRecord] }));
     safePersist(() => completeRoundWithMerge(round, ltRecord, newPositions));
     return { ok: true, message: `已将 ${toTransfer} 股划转至底仓（P_avg=${avg.toFixed(2)}）` };
   },

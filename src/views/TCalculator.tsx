@@ -1256,27 +1256,26 @@ export default function TCalculator() {
     setError('');
   };
 
-  // ---- 归档历史库胜率统计（仅统计「今日」完成的战报） ----
-  const todayArchivedRounds = useMemo(() => {
-    const now = new Date();
-    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+  // ---- 归档历史库胜率统计（仅统计近14天完成的战报） ----
+  const recentArchivedRounds = useMemo(() => {
+    const now = Date.now();
+    const cutoff = now - 14 * 24 * 60 * 60 * 1000;
     return archivedRounds.filter((r) => {
       const t = new Date(r.closedAt ?? r.openedAt).getTime();
-      return t >= dayStart && t < dayEnd;
+      return t >= cutoff;
     });
   }, [archivedRounds]);
 
   const archiveStats = useMemo(() => {
-    const wins = todayArchivedRounds.filter((r) => r.win).length;
-    const total = todayArchivedRounds.length;
+    const wins = recentArchivedRounds.filter((r) => r.win).length;
+    const total = recentArchivedRounds.length;
     return {
       wins,
       total,
       rate: total > 0 ? (wins / total) * 100 : 0,
-      cumulative: todayArchivedRounds.reduce((s, r) => s + r.netProfit, 0),
+      cumulative: recentArchivedRounds.reduce((s, r) => s + r.netProfit, 0),
     };
-  }, [todayArchivedRounds]);
+  }, [recentArchivedRounds]);
 
   // 汇总卡片口径：包含已结清（CLEARED）轮次在内，累计已实现净收益与「今日战报归档库」累计口径一致
   const totalPending = results.reduce((s, r) => s + Math.max(0, r.netPendingAmount), 0);
@@ -1691,8 +1690,8 @@ export default function TCalculator() {
       {/* 归档历史库 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200">🏆 今日记录归档(只显示当日结束的数据)</h3>
-          {todayArchivedRounds.length > 0 && (
+          <h3 className="text-base font-semibold text-slate-200">🏆 近期记录归档（近14天）</h3>
+          {recentArchivedRounds.length > 0 && (
             <div className="text-xs text-slate-400 flex items-center gap-3">
               <span>
                 胜率{' '}
@@ -1714,13 +1713,13 @@ export default function TCalculator() {
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
             加载历史战报数据...
           </div>
-        ) : todayArchivedRounds.length === 0 ? (
+        ) : recentArchivedRounds.length === 0 ? (
           <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            今日暂无已完成战报
+            近14天暂无已完成战报
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {[...todayArchivedRounds]
+            {[...recentArchivedRounds]
               .sort((a, b) => new Date(b.closedAt ?? b.openedAt).getTime() - new Date(a.closedAt ?? a.openedAt).getTime())
               .map((round) => (
                 <ArchiveRoundCard key={round.id} round={round} onRemove={(id) => removeRound(id)} />

@@ -673,99 +673,90 @@ function CurrentProjectCard({
               : `🔽 展开明细（${result.entries.length} 笔）`}
           </button>
           {showEntries && (
-            <>
-              <div className="mt-2 bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
-                {sortedEntries.map((entry, idx) => (
-                  <div
-                    key={entry.id}
-                    className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            entry.direction === 'buy'
-                              ? 'bg-blue-500/15 text-blue-400'
-                              : 'bg-purple-500/15 text-purple-400'
-                          }`}
-                        >
-                          {entry.direction === 'buy' ? '买入' : '卖出'}
-                        </span>
-                        <span className="text-slate-500">
-                          {new Date(entry.timestamp).toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-2 text-slate-400">
-                        <span>¥{entry.price.toFixed(3)}</span>
-                        <span>{entry.amount} 股</span>
-                        <span>手续费 ¥{entry.fee.toFixed(2)}</span>
-                      </div>
+            <div className="mt-2 bg-slate-900 rounded-lg p-3 space-y-2 text-xs text-slate-300">
+              {sortedEntries.map((entry, idx) => (
+                <div
+                  key={entry.id}
+                  className="grid grid-cols-1 md:grid-cols-2 gap-2 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          entry.direction === 'buy'
+                            ? 'bg-blue-500/15 text-blue-400'
+                            : 'bg-purple-500/15 text-purple-400'
+                        }`}
+                      >
+                        {entry.direction === 'buy' ? '买入' : '卖出'}
+                      </span>
+                      <span className="text-slate-500">
+                        {new Date(entry.timestamp).toLocaleString()}
+                      </span>
                     </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-slate-500">对冲/收益</div>
-                        {idx === 0 ? (
-                          <button
-                            onClick={() => removeStreamRecord(entry.id)}
-                            className="tap-target text-slate-400 hover:text-red-400 transition-colors rounded-lg"
-                            aria-label="撤销最新一笔流水"
-                            title="撤销最新一笔流水"
-                          >
-                            🗑️
-                          </button>
-                        ) : (
-                          <span
-                            className="tap-target text-slate-600 cursor-not-allowed"
-                            title="为保证对冲逻辑正确，仅支持按顺序撤销最新的一条操作"
-                          >
-                            🔒
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-2 items-center">
-                        {entry.direction === 'buy' ? (
-                          /* BUY（开仓腿）：无撮合收益，仅展示对冲进度，隐藏误导性的 +¥0.00 */
-                          <span
-                            className={`font-mono tabular-nums ${
-                              entry.matchedAmount > 0 ? 'text-sky-400' : 'text-amber-400'
-                            }`}
-                          >
-                            {entry.matchedAmount <= 0
-                              ? `待对冲 (${entry.amount}股未平)`
-                              : `已对冲 ${entry.matchedAmount}股 / 余 ${entry.amount - entry.matchedAmount}股`}
-                          </span>
-                        ) : (
-                          /* SELL（平仓腿）：保持原有撮合量与收益展示 */
-                          <>
-                            <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
-                            <span
-                              className={
-                                entry.realizedProfit >= 0
-                                  ? 'text-red-400'
-                                  : 'text-green-400'
-                              }
-                            >
-                              {entry.realizedProfit >= 0 ? '+' : ''}
-                              {formatCurrency(entry.realizedProfit)}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                      {entry.note && (
-                        <div className="text-slate-500">{entry.note}</div>
-                      )}
+                    <div className="flex flex-wrap gap-2 text-slate-400">
+                      <span>¥{entry.price.toFixed(3)}</span>
+                      <span>{entry.amount} 股</span>
+                      <span>手续费 ¥{entry.fee.toFixed(2)}</span>
                     </div>
                   </div>
-                ))}
-              </div>
-
-              <TStateMachinePanel
-                entries={result.entries.map((e) => ({ ...e, fullCode: (e as unknown as TStreamRecord).fullCode ?? result.fullCode, stockName: (e as unknown as TStreamRecord).stockName ?? result.stockName } as TStreamRecord))}
-                basePosition={basePosition ? { cost: basePosition.currentCost, quantity: basePosition.currentAmount } : null}
-                feeConfig={feeConfig}
-                embedded={true}
-              />
-            </>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-slate-500">对冲/收益</div>
+                      {idx === 0 ? (
+                        <button
+                          onClick={() => removeStreamRecord(entry.id)}
+                          className="tap-target text-slate-400 hover:text-red-400 transition-colors rounded-lg"
+                          aria-label="撤销最新一笔流水"
+                          title="撤销最新一笔流水"
+                        >
+                          🗑️
+                        </button>
+                      ) : (
+                        <span
+                          className="tap-target text-slate-600 cursor-not-allowed"
+                          title="为保证对冲逻辑正确，仅支持按顺序撤销最新的一条操作"
+                        >
+                          🔒
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2 items-center">
+                      {entry.direction === 'buy' ? (
+                        /* BUY（开仓腿）：无撮合收益，仅展示对冲进度，隐藏误导性的 +¥0.00 */
+                        <span
+                          className={`font-mono tabular-nums ${
+                            entry.matchedAmount > 0 ? 'text-sky-400' : 'text-amber-400'
+                          }`}
+                        >
+                          {entry.matchedAmount <= 0
+                            ? `待对冲 (${entry.amount}股未平)`
+                            : `已对冲 ${entry.matchedAmount}股 / 余 ${entry.amount - entry.matchedAmount}股`}
+                        </span>
+                      ) : (
+                        /* SELL（平仓腿）：保持原有撮合量与收益展示 */
+                        <>
+                          <span className="font-mono text-slate-200">撮合 {entry.matchedAmount} 股</span>
+                          <span
+                            className={
+                              entry.realizedProfit >= 0
+                                ? 'text-red-400'
+                                : 'text-green-400'
+                            }
+                          >
+                            {entry.realizedProfit >= 0 ? '+' : ''}
+                            {formatCurrency(entry.realizedProfit)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    {entry.note && (
+                      <div className="text-slate-500">{entry.note}</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -1700,7 +1691,7 @@ export default function TCalculator() {
       {/* 归档历史库 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200">🏆 今日记录归档(只当日数据)</h3>
+          <h3 className="text-base font-semibold text-slate-200">🏆 今日记录归档(只显示当日结束的数据)</h3>
           {todayArchivedRounds.length > 0 && (
             <div className="text-xs text-slate-400 flex items-center gap-3">
               <span>

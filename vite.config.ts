@@ -52,6 +52,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
+        // 显式设置 SPA 导航回退到 index.html，确保 SW 正确处理路由导航
+        navigateFallback: 'index.html',
         // 导航回退拒绝列表：绝对不拦截 /api、/webdav 等代理/路由，
         // 确保 Service Worker 不把 WebDAV 流量当作 SPA 导航去回退缓存。
         navigateFallbackDenylist: [

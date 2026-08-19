@@ -14,6 +14,7 @@ import App from './App';
 import './styles.css';
 import { initStore } from './db/storeInit';
 import { initAutoSync } from './store';
+import { registerSW } from 'virtual:pwa-register';
 
 /**
  * 应用引导启动函数。
@@ -38,5 +39,26 @@ async function bootstrap(): Promise<void> {
     </React.StrictMode>
   );
 }
+
+// 注册 Service Worker 并启用自动更新（registerType: 'autoUpdate' 配置已在 vite.config.ts 中设置）
+// 当检测到新版本时，SW 会自动执行 skipWaiting + clients.claim + 页面刷新
+registerSW({
+  onOfflineReady() {
+    console.log('[PWA] 应用已可离线使用');
+  },
+  onRegistered(registration) {
+    if (registration) {
+      console.log('[PWA] Service Worker 已注册，作用域:', registration.scope);
+      // 定期检查更新（每 30 分钟），防止浏览器默认的 24h 周期过长
+      setInterval(() => {
+        registration.update();
+        console.log('[PWA] 检查更新...');
+      }, 30 * 60 * 1000);
+    }
+  },
+  onRegisterError(error) {
+    console.error('[PWA] Service Worker 注册失败:', error);
+  },
+});
 
 bootstrap();

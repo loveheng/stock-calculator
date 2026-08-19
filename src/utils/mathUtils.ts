@@ -25,6 +25,8 @@ function resolveFeeConfig(feeConfig: FeeConfig, kind: SecurityKind) {
       minCommission: feeConfig.etfMinCommission ?? feeConfig.minCommission,
       transferRate: feeConfig.etfTransferRate ?? feeConfig.transferRate,
       stampRate: feeConfig.etfStampRate ?? feeConfig.stampRate,
+      exchangeFeeRate: feeConfig.etfExchangeFeeRate ?? 0,
+      regulatoryFeeRate: 0,
     };
   }
   return {
@@ -33,6 +35,8 @@ function resolveFeeConfig(feeConfig: FeeConfig, kind: SecurityKind) {
     minCommission: feeConfig.minCommission,
     transferRate: feeConfig.transferRate,
     stampRate: feeConfig.stampRate,
+    exchangeFeeRate: feeConfig.exchangeFeeRate ?? 0,
+    regulatoryFeeRate: feeConfig.regulatoryFeeRate ?? 0,
   };
 }
 Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
@@ -89,6 +93,12 @@ export interface FeeConfig {
   minCommission: number;
   transferRate: number;
   stampRate: number;
+  /** 经手费（交易所手续费） */
+  exchangeFeeRate?: number;
+  /** 证管费（证监会监管费） */
+  regulatoryFeeRate?: number;
+  /** ETF 经手费率 */
+  etfExchangeFeeRate?: number;
   /** ETF 佣金率（缺省回退到 commissionRate） */
   etfCommissionRate?: number;
   /** ETF 是否免五（缺省回退到 isFreeFive） */
@@ -99,6 +109,7 @@ export interface FeeConfig {
   etfTransferRate?: number;
   /** ETF 印花税率（缺省回退到 stampRate；ETF 通常为 0） */
   etfStampRate?: number;
+
 }
 
 /**
@@ -110,6 +121,10 @@ export interface TradeFees {
   stamp: number;
   commission: number;
   transfer: number;
+  /** 经手费 */
+  exchangeFee: number;
+  /** 证管费 */
+  regulatoryFee: number;
   total: number;
 }
 
@@ -286,6 +301,8 @@ export function calcTradeFees(
     minCommission = 0.5,
     transferRate = 0.00001,
     stampRate = 0.0005,
+    exchangeFeeRate = 0,
+    regulatoryFeeRate = 0,
   } = resolved;
 
   const turnover = new Decimal(price).mul(amount);
@@ -312,13 +329,21 @@ export function calcTradeFees(
   // 过户费 - 先四舍五入到分
   const transfer = turnover.mul(transferRate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
+  // 经手费 - 先四舍五入到分
+  const exchangeFee = turnover.mul(exchangeFeeRate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+  // 证管费 - 先四舍五入到分
+  const regulatoryFee = turnover.mul(regulatoryFeeRate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
   // 各项费用已各自四舍五入，直接相加
-  const total = stamp.plus(commission).plus(transfer);
+  const total = stamp.plus(commission).plus(transfer).plus(exchangeFee).plus(regulatoryFee);
 
   return {
     stamp: stamp.toNumber(),
     commission: commission.toNumber(),
     transfer: transfer.toNumber(),
+    exchangeFee: exchangeFee.toNumber(),
+    regulatoryFee: regulatoryFee.toNumber(),
     total: total.toNumber(),
   };
 }
@@ -602,7 +627,7 @@ export function calcFeeBreakdown(
   kind?: SecurityKind
 ): TradeFees {
   const resolved = resolveFeeConfig(feeConfig, kind ?? 'stock');
-  const { commissionRate = 0.00025, isFreeFive = false, minCommission = 0.5, transferRate = 0.00001, stampRate = 0.0005 } = resolved;
+  const { commissionRate = 0.00025, isFreeFive = false, minCommission = 0.5, transferRate = 0.00001, stampRate = 0.0005, exchangeFeeRate = 0, regulatoryFeeRate = 0 } = resolved;
   const tv = new Decimal(turnover);
 
   // 印花税（仅卖出）
@@ -625,12 +650,20 @@ export function calcFeeBreakdown(
   // 过户费
   const transfer = tv.mul(transferRate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
-  const total = stamp.plus(commission).plus(transfer);
+  // 经手费
+  const exchangeFee = tv.mul(exchangeFeeRate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+  // 证管费
+  const regulatoryFee = tv.mul(regulatoryFeeRate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+  const total = stamp.plus(commission).plus(transfer).plus(exchangeFee).plus(regulatoryFee);
 
   return {
     stamp: stamp.toNumber(),
     commission: commission.toNumber(),
     transfer: transfer.toNumber(),
+    exchangeFee: exchangeFee.toNumber(),
+    regulatoryFee: regulatoryFee.toNumber(),
     total: total.toNumber(),
   };
 }

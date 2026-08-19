@@ -226,6 +226,34 @@ export default function FeeConfigPage() {
           </div>
 
           <div className="form-group">
+            <label>经手费率</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                inputMode="decimal"
+                min="0"
+                value={localConfig.exchangeFeeRate ?? 0}
+                onChange={(e) => handleChange('exchangeFeeRate', Number(e.target.value))}
+              />
+              <span className="text-xs text-slate-500">（当前 {((localConfig.exchangeFeeRate ?? 0.0000341) * 100).toFixed(4)}%）</span>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>证管费率</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                inputMode="decimal"
+                min="0"
+                value={localConfig.regulatoryFeeRate ?? 0}
+                onChange={(e) => handleChange('regulatoryFeeRate', Number(e.target.value))}
+              />
+              <span className="text-xs text-slate-500">（当前 {((localConfig.regulatoryFeeRate ?? 0.00002) * 100).toFixed(3)}%）</span>
+            </div>
+          </div>
+
+          <div className="form-group">
             <label>印花税率</label>
             <div className="flex items-center gap-2">
               <input
@@ -299,6 +327,20 @@ export default function FeeConfigPage() {
                 min="0"
                 value={localConfig.etfTransferRate ?? localConfig.transferRate}
                 onChange={(e) => handleChange('etfTransferRate', Number(e.target.value))}
+              />
+              <span className="text-xs text-slate-500">（ETF 通常为 0）</span>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>ETF 经手费率</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                inputMode="decimal"
+                min="0"
+                value={localConfig.etfExchangeFeeRate ?? 0}
+                onChange={(e) => handleChange('etfExchangeFeeRate', Number(e.target.value))}
               />
               <span className="text-xs text-slate-500">（ETF 通常为 0）</span>
             </div>
@@ -385,6 +427,16 @@ export default function FeeConfigPage() {
                 <td className="py-2.5 pr-3 text-slate-400">过户费</td>
                 <td className="text-right py-2.5 px-3 text-slate-300">¥{buyFee.transfer.toFixed(2)}</td>
                 <td className="text-right py-2.5 pl-3 text-slate-300">¥{sellFee.transfer.toFixed(2)}</td>
+              </tr>
+              <tr className="border-b border-slate-800">
+                <td className="py-2.5 pr-3 text-slate-400">经手费</td>
+                <td className="text-right py-2.5 px-3 text-slate-300">¥{buyFee.exchangeFee.toFixed(2)}</td>
+                <td className="text-right py-2.5 pl-3 text-slate-300">¥{sellFee.exchangeFee.toFixed(2)}</td>
+              </tr>
+              <tr className="border-b border-slate-800">
+                <td className="py-2.5 pr-3 text-slate-400">证管费</td>
+                <td className="text-right py-2.5 px-3 text-slate-300">¥{buyFee.regulatoryFee.toFixed(2)}</td>
+                <td className="text-right py-2.5 pl-3 text-slate-300">¥{sellFee.regulatoryFee.toFixed(2)}</td>
               </tr>
               <tr className="border-b border-slate-800">
                 <td className="py-2.5 pr-3 text-slate-400">印花税</td>

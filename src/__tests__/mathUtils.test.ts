@@ -25,6 +25,8 @@ const DEFAULT_FEE: FeeConfig = {
   minCommission: 0.5,
   transferRate: 0.00001,
   stampRate: 0.0005,
+  exchangeFeeRate: 0.0000341,
+  regulatoryFeeRate: 0.00002,
   etfCommissionRate: 0.00025,
   etfIsFreeFive: true,
   etfMinCommission: 0.2,
@@ -81,20 +83,26 @@ describe('calcTradeFees', () => {
     // 佣金 = max(10000 * 0.00025, 5) = 5
     expect(f.commission).toBe(5);
     expect(f.transfer).toBe(0.1);
+    expect(f.exchangeFee).toBe(0.34);
+    expect(f.regulatoryFee).toBe(0.2);
     expect(f.stamp).toBe(0);
-    expect(f.total).toBe(5.1);
+    expect(f.total).toBe(5.64);
   });
-  test('卖出股票（非免五）：佣金+过户费+印花税', () => {
+  test('卖出股票（非免五）：佣金+过户费+经手费+证管费+印花税', () => {
     const f = calcTradeFees(10, 1000, 'sell', DEFAULT_FEE, 'stock');
     expect(f.commission).toBe(5);
     expect(f.transfer).toBe(0.1);
+    expect(f.exchangeFee).toBe(0.34);
+    expect(f.regulatoryFee).toBe(0.2);
     expect(f.stamp).toBe(5);
-    expect(f.total).toBe(10.1);
+    expect(f.total).toBe(10.64);
   });
-  test('买入 ETF：免印花税、免过户费', () => {
+  test('买入 ETF：免印花税、免过户费、免经手费、免证管费', () => {
     const f = calcTradeFees(10, 1000, 'buy', DEFAULT_FEE, 'etf');
     expect(f.commission).toBe(2.5);
     expect(f.transfer).toBe(0);
+    expect(f.exchangeFee).toBe(0);
+    expect(f.regulatoryFee).toBe(0);
     expect(f.stamp).toBe(0);
   });
   test('佣金不足最低佣金时使用最低佣金（非免五 = 5 元）', () => {
@@ -144,11 +152,14 @@ describe('calcFeeBreakdown', () => {
     const f = calcFeeBreakdown(10000, 'buy', DEFAULT_FEE, 'stock');
     expect(f.commission).toBe(5);
     expect(f.transfer).toBe(0.1);
+    expect(f.exchangeFee).toBe(0.34);
+    expect(f.regulatoryFee).toBe(0.2);
     expect(f.stamp).toBe(0);
   });
-  test('卖出股票：佣金+过户费+印花税', () => {
+  test('卖出股票：佣金+过户费+经手费+证管费+印花税', () => {
     const f = calcFeeBreakdown(10000, 'sell', DEFAULT_FEE, 'stock');
     expect(f.stamp).toBe(5);
+    expect(f.total).toBe(10.64);
   });
 });
 

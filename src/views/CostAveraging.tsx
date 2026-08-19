@@ -257,7 +257,7 @@ function PositionLedger() {
 
   // ---- 折叠状态 ----
   // 顶部建仓表单折叠
-  const [isFormCollapsed, setIsFormCollapsed] = useState(false);
+  const [isFormCollapsed, setIsFormCollapsed] = useState(true);
   // 持仓卡片独立折叠（默认全部收起）
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 

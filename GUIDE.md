@@ -8,7 +8,7 @@
 
 ## 一、项目概览
 
-一个面向个人投资者的 **股票做T账本与成本计算器 PWA**，全部数据保存在浏览器本地（IndexedDB），无需后端服务，离线可用（PWA）。共 6 个功能页面：
+一个面向个人投资者的 **股票做T账本与成本计算器 PWA**，全部数据保存在浏览器本地（IndexedDB），无需后端服务，离线可用（PWA）。共 8 个功能页面：
 
 | 页面 | 路由 | 核心功能 |
 |---|---|---|
@@ -16,7 +16,10 @@
 | 涨跌幅计算器 | `/change-rate` | 涨跌幅⇄目标价双向换算、涨跌停阶梯推算、手续费联动 |
 | 短线交易（做T计算器） | `/t-calculator` | 正T/倒T 双向记录，FIFO 撮合引擎自动配对结算，Round 战报自动归档 |
 | 中长期交易（成本摊薄） | `/cost-averaging` | 多批次建仓账本（建仓/加仓/减仓/结仓）+ 目标成本反推补仓 |
+| 沙盘复盘（What-if） | `/sandbox` | 以真实资金占用峰值为预算，重演不同买卖决策路径，三件套策略生成 + 多方案对比 |
 | 数据统计 | `/statistics` | 进行中流水 + 归档战报统一卡片流、多维筛选、个股行情快照、建仓履历 |
+| 费率配置 | `/fee-config` | 佣金/印花税/过户费按品种（股票/ETF/债券）分层配置，JSON/CSV 导入导出 |
+| 云端同步 | `/webdav` | WebDAV 数据备份/恢复 |
 | 费率配置 | `/fee-config` | 佣金/印花税/过户费按品种（股票/ETF/债券）分层配置，JSON/CSV 导入导出 |
 
 ---
@@ -58,25 +61,42 @@ stock-calculator/
     │
     ├── types/             # █ 类型定义
     │   ├── stock.ts       #   StockMeta / StockSearchItem（含 kind 费率分类）
-    │   └── tStrategy.ts   #   做T状态机 / 结算卡片 / 引擎输入输出
+    │   ├── tStrategy.ts   #   做T状态机 / 结算卡片 / 引擎输入输出
+    │   └── sandbox.ts     #   沙盘推演类型（三类分支/订单/K线/结果/快照/DCA 注入）
     │
-    ├── utils/             # █ 纯计算引擎
-    │   ├── mathUtils.ts   #   费率计算（Decimal.js）、涨跌幅、成本摊薄（20 个导出函数）
-    │   └── tStreamEngine.ts #  FIFO 撮合引擎 + 做T状态机（20 个导出函数）
+    ├── utils/             #   纯计算引擎
+    │   ├── mathUtils.ts            #   费率计算（Decimal.js）、涨跌幅、成本摊薄
+    │   ├── tStreamEngine.ts        #   FIFO 撮合引擎 + 做T状态机
+    │   ├── baselineExtractor.ts    #   [沙盘] 基线提取（批次履历 → 订单时间线 + 峰值资金 + 指纹）
+    │   ├── sandboxEngine.ts        #   [沙盘] 策略重演引擎（资金约束 + T+1 + 统一评估日 + 抖动）
+    │   ├── metricsEngine.ts        #   [沙盘] 回撤/波动率/B&H/四维对比
+    │   └── strategyGenerators.ts   #   [沙盘] 7 套策略生成器注册表
     │
-    ├── views/             # █ 页面视图（7 个页面）
-    │   ├── Home.tsx
-    │   ├── ChangeRate.tsx
+    ├── views/             #   █ 页面视图（8 个）
+    │   ├── Home.tsx / ChangeRate.tsx
     │   ├── TCalculator.tsx    # 短线交易（最复杂页面）
     │   ├── CostAveraging.tsx
-    │   ├── Statistics.tsx
-    │   ├── FeeConfig.tsx
-    │   └── WebDAVConfig.tsx   # 云端同步
+    │   ├── SandboxPlayback.tsx # 沙盘复盘（三态工作台，路由 /sandbox）
+    │   ├── Statistics.tsx / FeeConfig.tsx / WebDAVConfig.tsx
     │
     ├── components/ui/     # █ 通用 UI 组件
-    │   ├── StockAutocomplete.tsx  # 股票代码/名称自动补全
-    │   ├── ConfirmModal.tsx       # 确认弹窗
-    │   └── InstallPrompt.tsx      # PWA 安装提示
+    │   ├── StockAutocomplete.tsx / ConfirmModal.tsx / InstallPrompt.tsx
+    │
+    ├── components/sandbox/   # █ 沙盘专属组件（8 个）
+    │   ├── ScenarioList / ScenarioCard        # 方案列表卡（三态 + 时效戳）
+    │   ├── KlineChart / OrderTimeline         # 图表 + 可编辑时间线
+    │   ├── MetricsPanel / ComparisonTable     # 指标面板 + 四维对比/散点
+    │   ├── PresetDialog / EmptyStateGuide     # 预设生成 + 空状态引导
+    │
+    ├── services/             # █ 外部数据服务
+    │   ├── stockService.ts   #   腾讯行情搜索（GBK + \uXXXX 解析）
+    │   └── klineService.ts   #   [沙盘] 腾讯前复权日 K 线 + 三级缓存 + 增量/漂移检测
+    │
+    ├── store/                # █ 全局状态层 (Zustand)
+    │   ├── index.ts          #   App Store：31 个 Action + safePersist 增量写库
+    │   ├── types.ts          #   AppStore 类型
+    │   ├── utils.ts          #   纯函数
+    │   └── sandboxStore.ts   #   [沙盘] 分支管理 + 非响应式 memo + 过期检测 + DCA
     │
     └── __tests__/         # █ 单元测试 (Vitest，共 14 文件 / 164 用例)
         ├── mathUtils.test.ts                 # 31 用例
@@ -407,15 +427,39 @@ OPENED Round.transactions（流水池，v8 取代独立 tStreams）
 > v8：`useLoadTStreams` 已移除 —— 流水随 OPENED Round 的 transactions 一并加载。
 > 关键实现：`useCallback(useAppStore.getState().loadXxx, [])` 稳定函数引用，避免 useEffect 竞态重复触发；`useRef` 保证每个钩子只加载一次。
 
+### 4.7 沙盘复盘（What-if）—— 核心模块总览
+
+沙盘复盘（路由 `/sandbox`，主导航「沙盘复盘」）与短线/中长期为**独立功能**：以 `positions` 及 `positionBatches`
+为唯一数据源（基线），叠加假设操作重演。数据层新增 `SandboxStore`（`store/sandboxStore.ts`），三张新表。
+
+**核心数据流：**
+
+```
+Position.batches
+  → extractBaseline()           # 基线订单 + 峰值资金 + 指纹
+  +  前复权 K 线（klineService，三级缓存）
+  → runSandboxEngine()          # 资金约束 / T+1 / 统一评估日 / 抖动 / DCA
+  → enrichResult()               # 回撤 / 波动率 / B&H / 加权收益
+  → StrategyGenerators（7 套）→ 合并基线 → 引擎     # 预设/用户分支
+  → buildComparisonRows()        # 多方案四维对比
+```
+
+**入门文件（推荐顺序）：**
+1. `docs/sandbox-replay-implementation.md` — **实现现状 + 文件清单 + 运行逻辑 + 开发上手（最强推荐先读）**
+2. `docs/sandbox-replay-spec.md` —— 完整设计规格（含 DCA 增量附录）
+3. `src/store/sandboxStore.ts` —— 分支管理 + 非响应式 memo + 三源过期检测
+4. `src/utils/sandboxEngine.ts` —— 重演引擎核心
+5. `src/views/SandboxPlayback.tsx` —— 三态工作台组装 / 拒绝弹窗 / 未保存浮动栏
+
 ---
 ## 五、阅读路径建议
 
 ### 第一阶段：项目骨架（半天）
 1. **`GUIDE.md`**（本文件）— 项目全景
 2. **`src/main.tsx`** — 启动流程（仅 38 行）
-3. **`src/db/schema.ts`** — 11 张表结构
+3. **`src/db/schema.ts`** — 16 张表结构（STORES_V2→V11）
 4. **`src/store/types.ts`** — AppStore 接口（相当于"后端 Controller 的 API 文档"）
-5. **`src/App.tsx`** — 6 条路由与布局
+5. **`src/App.tsx`** — 8 条路由与布局
 
 ### 第二阶段：数据流（核心机制）
 6. **`src/db/storeInit.ts`** — 冷启动装载 + initialLoadDone 守卫
@@ -455,7 +499,7 @@ npm install          # 安装依赖
 npm run dev          # 开发服务器 (http://localhost:5173)，HMR 热更新
 npm run build        # 生产构建 → dist/（vite build + scripts/postbuild.js）
 npm run preview      # 预览生产构建
-npm test             # 运行单元测试（vitest run，46 用例）
+npm test             # 运行单元测试（vitest run；沙盘模块见 src/__tests__/sandbox*.test.ts）
 npm run test:watch   # 监听模式，文件变化自动重跑
 npx tsc --noEmit     # TypeScript 类型检查（tsconfig 排除了 src/__tests__）
 ```

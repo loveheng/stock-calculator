@@ -7,7 +7,7 @@ skinparam defaultFontName Microsoft YaHei
 skinparam defaultFontSize 12
 
 title 股票交易账本数据库 - 实体关系图 (UML)
-caption TradingLedgerDB_v3 — 共 11 张表
+caption TradingLedgerDB_v3 — 共 16 张表
 
 ' ========== 公共基础字段（抽象） ==========
 abstract class BaseEntity <<公共基础字段>> {
@@ -193,7 +193,54 @@ class longTermRecords <<表>> {
   sourceReportId?: string (关联战报ID) <<FK→tRounds>>
   note?: string (备注)
 }
-note top of longTermRecords : 中长期操作记录表\n底仓加仓/减仓/归并操作
+note top of longTermRecords : 中长期操作记录表
+下面箭头底仓，加仓/减仓/归并操作
+
+' ========== 沙盘推演三表（STORES_V11） ==========
+class sandboxBranches <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  fullCode: string (关联标的代码) <<FK→stocks>>
+  stockName: string (股票名称)
+  branchType: 'baseline'|'preset'|'user' (分支类型)
+  branchName: string (分支名)
+  status: 'draft'|'completed' (状态)
+  baselinePositionId?: string (基线关联持仓) <<FK→positions>>
+  peakCapitalLock: number (历史资金占用峰值·预算上限)
+  simulatedCash: number (模拟资金)
+  injectionType?: 'none'|'monthly'|'custom' (DCA注入频率)
+  dataAsOfDate: string (数据时效日)
+  presetStrategyId?: string (预设策略ID)
+  jitterFactor: number (抖动系数)
+  jitterWindowSize: number (抖动窗口)
+  resultJson?: string (推演结果JSON)
+}
+note top of sandboxBranches : 沙盘分支（三类统一存储）\n基线+预设只存元数据/派生，用户分支落订单
+
+class sandboxOrders <<表>> {
+  + id: string <<PK>> 「主键UUID」
+  --
+  branchId: string (所属分支) <<FK→sandboxBranches>>
+  seqIndex: number (时间线序号)
+  action: 'buy'|'sell' (方向)
+  timestamp: number (成交时间戳·epoch ms)
+  price: number (期望价/元)
+  quantity: number (数量/股)
+  fee?: number (规费/元)
+  kind?: 'borrow'|'merge' (做T调整标注)
+}
+note top of sandboxOrders : 沙盘订单（仅 user 分支落库）
+
+class klineCache <<表>> {
+  fullCode: string <<PK>> 「底部代码」
+  --
+  klinesJson: string (前复权日K线数组JSON)
+  factorsJson?: string (复权系数表JSON)
+  lastDate: string (缓存末根K线日期)
+  fetchedAt: number (拉取时间戳)
+}
+note top of klineCache : 前复权K线缓存（三级缓存持久层）
+主键 fullCode
 
 ' ============================================
 ' ========== 关系连线 ==========
@@ -218,6 +265,18 @@ note on link : 一只股票可有多轮做T
 ' tRounds → tTransactions (1:N via roundId)
 tRounds ||--o{ tTransactions : "roundId 关联"
 note on link : 一个轮次包含多笔成交明细
+
+' stocks → sandboxBranches (1:N via fullCode)
+stocks ||--o{ sandboxBranches : "fullCode 关联"
+note on link : 一个标的可建多个沙盘分支
+
+' positions → sandboxBranches (基线分支关联)
+positions ||--o{ sandboxBranches : "baselinePositionId 关联(基线)"
+note on link : 基线分支实时从真实持仓派生
+
+' sandboxBranches → sandboxOrders (1:N via branchId)
+sandboxBranches ||--o{ sandboxOrders : "branchId 关联"
+note on line : 用户分支含多笔订单
 
 ' stocks → tStreams (1:N via fullCode)
 stocks ||--o{ tStreams : "fullCode 关联"

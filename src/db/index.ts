@@ -28,12 +28,15 @@ import {
   type AccountCashEntity,
   type CashFlowEntity,
   type FeeConfigEntity,
+  type KlineCacheEntity,
   type LongTermRecordEntity,
   type PlannedOrderEntity,
   type PositionAdjustmentEntity,
   type PositionBatchEntity,
   type PositionEntity,
   type PositionEventEntity,
+  type SandboxBranchEntity,
+  type SandboxOrderEntity,
   type StockEntity,
   type TTransactionEntity,
   type TRoundEntity,
@@ -50,6 +53,7 @@ export interface PageResult<T> {
 }
 
 import type { LongTermRecord, PlannedOrder } from '../store/types';
+import type { KlineItem, SandboxBranch, SandboxOrder, CashInjection } from '../types/sandbox';
 export type { FeeConfig } from '../utils/mathUtils';
 export type { Position, PositionBatch, TRoundArchive, RoundTxn } from '../store';
 export type { LongTermRecord, PlannedOrder } from '../store/types';
@@ -1227,4 +1231,252 @@ export async function safeImportAllData(
       await db.plannedOrders.bulkDelete(stalePlanIds);
     }
   });
+}
+
+// ============================================================
+// 沙盘推演数据接口（sandboxBranches / sandboxOrders / klineCache）
+// ============================================================
+
+// ---- 分支 CRUD ----
+
+/**
+ * 将沙盘分支视图模型映射为实体（布尔 → 0|1，参数对象 → JSON）。
+ */
+export function toSandboxBranchEntity(branch: SandboxBranch): SandboxBranchEntity {
+  return {
+    id: branch.id,
+    fullCode: branch.fullCode,
+    stockName: branch.stockName,
+    branchType: branch.branchType,
+    branchName: branch.branchName,
+    status: branch.status,
+    baselinePositionId: branch.baselinePositionId,
+    peakCapitalLock: branch.peakCapitalLock,
+    simulatedCash: branch.simulatedCash,
+    dataAsOfDate: branch.dataAsOfDate,
+    lastRunAt: branch.lastRunAt,
+    generatedAtCash: branch.generatedAtCash,
+    lastBaselineSignature: branch.lastBaselineSignature,
+    presetStrategyId: branch.presetStrategyId,
+    presetParamsJson: branch.presetParams ? JSON.stringify(branch.presetParams) : undefined,
+    injectionType: branch.injectionType,
+    cashInjectionsJson: branch.cashInjections && branch.cashInjections.length > 0 ? JSON.stringify(branch.cashInjections) : undefined,
+    totalInjectedCash: branch.totalInjectedCash,
+    parentPresetId: branch.parentPresetId,
+    decoupledFromPreset: branch.decoupledFromPreset ? 1 : 0,
+    jitterFactor: branch.jitterFactor,
+    jitterWindowSize: branch.jitterWindowSize,
+    resultJson: branch.resultJson,
+    createdAt: branch.createdAt,
+    updatedAt: branch.updatedAt,
+    isDeleted: branch.isDeleted,
+  };
+}
+
+/**
+ * 将沙盘分支实体映射为视图模型（0|1 → 布尔，JSON → 对象）。
+ */
+export function toSandboxBranchRow(entity: SandboxBranchEntity): SandboxBranch {
+  return {
+    id: entity.id,
+    fullCode: entity.fullCode,
+    stockName: entity.stockName,
+    branchType: entity.branchType,
+    branchName: entity.branchName,
+    status: entity.status,
+    baselinePositionId: entity.baselinePositionId,
+    peakCapitalLock: entity.peakCapitalLock,
+    simulatedCash: entity.simulatedCash,
+    dataAsOfDate: entity.dataAsOfDate,
+    lastRunAt: entity.lastRunAt,
+    generatedAtCash: entity.generatedAtCash,
+    lastBaselineSignature: entity.lastBaselineSignature,
+    presetStrategyId: entity.presetStrategyId as SandboxBranch['presetStrategyId'],
+    presetParams: entity.presetParamsJson ? (JSON.parse(entity.presetParamsJson) as Record<string, number>) : undefined,
+    injectionType: entity.injectionType,
+    cashInjections: entity.cashInjectionsJson ? (JSON.parse(entity.cashInjectionsJson) as CashInjection[]) : undefined,
+    totalInjectedCash: entity.totalInjectedCash,
+    parentPresetId: entity.parentPresetId,
+    decoupledFromPreset: entity.decoupledFromPreset ? true : false,
+    jitterFactor: entity.jitterFactor,
+    jitterWindowSize: entity.jitterWindowSize,
+    resultJson: entity.resultJson,
+    createdAt: entity.createdAt,
+    updatedAt: entity.updatedAt,
+    isDeleted: (entity.isDeleted ?? 0) as 0 | 1,
+  };
+}
+
+/**
+ * 将沙盘订单视图模型映射为实体（ISO 时间戳 → epoch ms）。
+ */
+export function toSandboxOrderEntity(order: SandboxOrder): SandboxOrderEntity {
+  return {
+    id: order.id,
+    branchId: order.branchId,
+    seqIndex: order.seqIndex,
+    action: order.action,
+    timestamp: Date.parse(order.timestamp),
+    price: order.price,
+    quantity: order.quantity,
+    fee: order.fee,
+    kind: order.kind,
+    sourceRoundId: order.sourceRoundId,
+    note: order.note,
+    isBaseline: order.isBaseline ? 1 : 0,
+    updatedAt: Date.now(),
+    createdAt: Date.now(),
+    isDeleted: 0,
+  };
+}
+
+/**
+ * 将沙盘订单实体映射为视图模型（epoch ms → ISO 时间戳）。
+ */
+export function toSandboxOrderRow(entity: SandboxOrderEntity): SandboxOrder {
+  return {
+    id: entity.id,
+    branchId: entity.branchId,
+    seqIndex: entity.seqIndex,
+    action: entity.action,
+    timestamp: new Date(entity.timestamp).toISOString(),
+    price: entity.price,
+    quantity: entity.quantity,
+    fee: entity.fee,
+    kind: entity.kind,
+    sourceRoundId: entity.sourceRoundId,
+    note: entity.note,
+    isBaseline: entity.isBaseline ? true : false,
+  };
+}
+
+/**
+ * 写入（新增或更新）沙盘分支。
+ */
+export async function putSandboxBranch(branch: SandboxBranch): Promise<void> {
+  await db.sandboxBranches.put(cleanUndefined(toSandboxBranchEntity(branch)));
+}
+
+/**
+ * 加载全部沙盘分支（可按标的过滤），按更新时间倒序。
+ */
+export async function loadSandboxBranchesFromDB(fullCode?: string): Promise<SandboxBranch[]> {
+  const entities = fullCode
+    ? await db.sandboxBranches.where('fullCode').equals(fullCode).toArray()
+    : await db.sandboxBranches.toArray();
+  return entities
+    .filter((b) => (b.isDeleted ?? 0) === 0)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map(toSandboxBranchRow);
+}
+
+/**
+ * 软删除沙盘分支，并级联软删除其全部订单。
+ */
+export async function deleteSandboxBranch(branchId: string): Promise<void> {
+  await db.transaction('rw', db.sandboxBranches, db.sandboxOrders, async () => {
+    await db.sandboxBranches.update(branchId, { isDeleted: 1, updatedAt: Date.now() });
+    await db.sandboxOrders
+      .where('branchId')
+      .equals(branchId)
+      .modify({ isDeleted: 1, updatedAt: Date.now() });
+  });
+}
+
+// ---- 订单 CRUD ----
+
+/**
+ * 批量写入沙盘订单（先软删旧单再插入新单，与分支保持幂等一致）。
+ *
+ * @description 先对旧订单打软删除标记，再 bulkPut 新订单（同 id 覆盖回 isDeleted=0，
+ *              已删除的旧 id 保持软删状态），保证“保存”操作幂等且不残留孤儿单。
+ */
+export async function bulkPutSandboxOrders(branchId: string, orders: SandboxOrder[]): Promise<void> {
+  await db.transaction('rw', db.sandboxOrders, async () => {
+    await db.sandboxOrders
+      .where('branchId')
+      .equals(branchId)
+      .modify({ isDeleted: 1, updatedAt: Date.now() });
+    if (orders.length > 0) {
+      await db.sandboxOrders.bulkPut(orders.map((o) => cleanUndefined(toSandboxOrderEntity(o))));
+    }
+  });
+}
+
+/**
+ * 按分支加载全部订单（按 seqIndex 升序）。
+ */
+export async function loadSandboxOrdersByBranchId(branchId: string): Promise<SandboxOrder[]> {
+  const entities = await db.sandboxOrders
+    .where('branchId')
+    .equals(branchId)
+    .filter((o) => (o.isDeleted ?? 0) === 0)
+    .sortBy('seqIndex');
+  return entities.map(toSandboxOrderRow);
+}
+
+/**
+ * 删除分支全部订单（级联软删除）。
+ */
+export async function deleteSandboxOrdersByBranchId(branchId: string): Promise<void> {
+  await db.sandboxOrders
+    .where('branchId')
+    .equals(branchId)
+    .modify({ isDeleted: 1, updatedAt: Date.now() });
+}
+
+// ---- K 线缓存 CRUD ----
+
+/** K 线缓存载荷（前复权 K 线 + 复权系数表） */
+export interface KlineCachePayload {
+  /** 前复权日 K 线（时间升序） */
+  klines: KlineItem[];
+  /** 复权系数表：日期 → qfq收盘/raw收盘（基线真实成交价换算到前复权口径用） */
+  factors: Record<string, number>;
+  /** 缓存内最后一根 K 线日期（YYYY-MM-DD），增量合并起点 */
+  lastDate: string;
+}
+
+/**
+ * 写入 K 线缓存（整段覆盖，全量刷新或增量合并后调用）。
+ */
+export async function putKlineCache(
+  fullCode: string,
+  klines: KlineItem[],
+  factors?: Record<string, number>,
+): Promise<void> {
+  const last = klines[klines.length - 1];
+  await db.klineCache.put(
+    cleanUndefined({
+      fullCode,
+      klinesJson: JSON.stringify(klines),
+      factorsJson: factors && Object.keys(factors).length > 0 ? JSON.stringify(factors) : undefined,
+      lastDate: last ? last.date : '',
+      fetchedAt: Date.now(),
+    }),
+  );
+}
+
+/**
+ * 读取 K 线缓存；无缓存或载荷损坏时返回 null。
+ */
+export async function loadKlineCache(fullCode: string): Promise<KlineCachePayload | null> {
+  const entity = await db.klineCache.get(fullCode);
+  if (!entity || !entity.klinesJson) return null;
+  try {
+    return {
+      klines: JSON.parse(entity.klinesJson) as KlineItem[],
+      factors: entity.factorsJson ? (JSON.parse(entity.factorsJson) as Record<string, number>) : {},
+      lastDate: entity.lastDate,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 删除 K 线缓存（数据异常时强制刷新用）。
+ */
+export async function clearKlineCache(fullCode: string): Promise<void> {
+  await db.klineCache.delete(fullCode);
 }

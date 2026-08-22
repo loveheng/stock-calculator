@@ -2,7 +2,7 @@
  * @file schema.ts
  * @description 定义 TradingLedgerDB_v3 的全部 IndexedDB 实体类型（Entity）与 Dexie 数据库表结构，是整个应用数据持久化的类型基石。
  * @layer DAO
- * @storage_impact 声明 stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes / feeConfigs / longTermRecords 共 10 张表的实体结构，并导出 Dexie 实例 db。
+ * @storage_impact 声明 stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes / feeConfigs / longTermRecords / positionAdjustments / positionEvents / plannedOrders / sandboxBranches / sandboxOrders / klineCache 共 16 张表的实体结构，并导出 Dexie 实例 db。
  * @author 开发团队
  */
 
@@ -409,6 +409,106 @@ export interface PositionEventEntity extends BaseEntity {
 }
 
 /**
+ * 沙盘分支实体（sandboxBranches 表）。
+ *
+ * @description 一张表统一三类分支（基线/预设/用户方案）；基线分支通过
+ *              baselinePositionId 关联真实持仓，订单实时派生不落库；
+ *              预设分支只存策略元数据；用户方案分支元数据 + 订单全部落库。
+ */
+export interface SandboxBranchEntity extends BaseEntity {
+  /** 关联标的完整代码（含市场前缀，如 sh601318） */
+  fullCode: string;
+  stockName: string;
+  branchType: 'baseline' | 'preset' | 'user';
+  branchName: string;
+  status: 'draft' | 'completed';
+  /** 基线关联的真实持仓 id（branchType='baseline' 时存在，订单实时派生不落库） */
+  baselinePositionId?: string;
+  /** 历史资金占用峰值（元），沙盘总预算硬上限 */
+  peakCapitalLock: number;
+  /** 模拟资金（元，默认=峰值，UI 标注"模拟"） */
+  simulatedCash: number;
+  /** 生成/推演时最后一根 K 线日期（YYYY-MM-DD） */
+  dataAsOfDate: string;
+  /** 最后推演时间戳（epoch ms） */
+  lastRunAt: number;
+  /** 上次生成时资金 → ⚡ 资金变动检测 */
+  generatedAtCash: number;
+  /** 基线指纹（批次数量|末笔时间|当前股数）→ 🔄 持仓变动检测 */
+  lastBaselineSignature: string;
+  /** 预设策略标识：ma20-bounce | pyramid | grid | stop-profit | gap-fill | max-opportunity */
+  presetStrategyId?: string;
+  /** 预设参数（Record<string, number> 序列化） */
+  presetParamsJson?: string;
+  /** 注入频率类型：none | monthly | custom */
+  injectionType?: 'none' | 'monthly' | 'custom';
+  /** 逐笔现金注入事件（CashInjection[] 序列化） */
+  cashInjectionsJson?: string;
+  /** 累计投入本金 = 初始模拟资金 + Σ现金注入 */
+  totalInjectedCash?: number;
+  /** 溯源：来自哪个预设 */
+  parentPresetId?: string;
+  /** 已"保存为我的策略"（解除关联）：0 | 1 */
+  decoupledFromPreset?: number;
+  /** 抖动系数（默认 0.25） */
+  jitterFactor: number;
+  /** 抖动窗口（默认 5，取目标日期前后各 N 根 K 线统计波动率） */
+  jitterWindowSize: number;
+  /** 推演结果（SandboxResult 序列化） */
+  resultJson?: string;
+}
+
+/**
+ * 沙盘订单实体（sandboxOrders 表，仅 user 分支落库）。
+ *
+ * @description 时间戳以 epoch ms 存储（与现有表约定一致）；
+ *              isBaseline 标记用于基线还原（0 | 1）。
+ */
+export interface SandboxOrderEntity extends BaseEntity {
+  /** 所属分支 id */
+  branchId: string;
+  /** 时间线序号 */
+  seqIndex: number;
+  action: 'buy' | 'sell';
+  /** 成交时间戳（epoch ms） */
+  timestamp: number;
+  /** 期望价（抖动前，元） */
+  price: number;
+  /** 数量（股） */
+  quantity: number;
+  /** 规费（推演时计算，元） */
+  fee?: number;
+  /** 做T调整标注（倒T出借/归并） */
+  kind?: 'borrow' | 'merge';
+  /** 溯源做T轮次 */
+  sourceRoundId?: string;
+  note?: string;
+  /** 来自基线（还原用）：0 | 1 */
+  isBaseline?: number;
+}
+
+/**
+ * K 线缓存实体（klineCache 表，三级缓存的第一级持久化层）。
+ *
+ * @description 以 fullCode 为主键，缓存前复权日 K 线数组 + 复权系数表 + 拉取时间戳；
+ *              后续增量请求仅拉取缓存末根之后的 K 线并合并，消除网络等待。
+ *              复权系数表（日期 → qfq收盘/raw收盘）用于把真实成交价（未复权）
+ *              换算到前复权口径，保证推演与图表同一价格基准。
+ */
+export interface KlineCacheEntity {
+  /** 标的完整代码（含市场前缀，如 sh601318），主键 */
+  fullCode: string;
+  /** 前复权日 K 线数组（JSON 序列化） */
+  klinesJson: string;
+  /** 复权系数表（日期 YYYY-MM-DD → qfq收盘/raw收盘，JSON 序列化）；缺省视为无除权差异 */
+  factorsJson?: string;
+  /** 缓存内最后一根 K 线日期（YYYY-MM-DD），用于增量合并 */
+  lastDate: string;
+  /** 拉取时间戳（epoch ms） */
+  fetchedAt: number;
+}
+
+/**
  * 各版本不变的基础表结构（v2）。
  * 后续版本基于此增量叠加或覆盖，不再全量复制。
  */
@@ -476,12 +576,20 @@ const STORES_V10 = {
   plannedOrders: 'id, fullCode, status, expiresAt, [status+expiresAt]',
 } as const;
 
+/** v11：新增沙盘推演三张表 —— sandboxBranches（分支）+ sandboxOrders（用户方案订单）+ klineCache（K 线持久化缓存） */
+const STORES_V11 = {
+  ...STORES_V10,
+  sandboxBranches: 'id, fullCode, branchType, status, updatedAt, isDeleted',
+  sandboxOrders: 'id, branchId, seqIndex, timestamp, updatedAt, isDeleted',
+  klineCache: 'fullCode, lastDate, fetchedAt',
+} as const;
+
 /**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
  * @description 集中管理全部 12 张规范化表，并声明各表的索引字段以支持高效查询。
  * @note 索引字符串格式为 Dexie schema：主键在前（`++` 自增 / 普通字段），逗号分隔的字段均会被建立索引。
- * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V10 常量定义。
+ * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V11 常量定义。
  */
 export class TradingLedgerDB extends Dexie {
   /** 股票基础信息表 */
@@ -515,8 +623,17 @@ export class TradingLedgerDB extends Dexie {
   /** 计划单表 */
   plannedOrders!: Table<PlannedOrderEntity, string>;
 
+  /** 沙盘分支表（三类分支统一存储） */
+  sandboxBranches!: Table<SandboxBranchEntity, string>;
+
+  /** 沙盘订单表（仅 user 分支落库） */
+  sandboxOrders!: Table<SandboxOrderEntity, string>;
+
+  /** K 线缓存表（前复权日 K 线持久化，主键 fullCode） */
+  klineCache!: Table<KlineCacheEntity, string>;
+
   /**
-   * 初始化数据库结构（版本链 v2→v9）。
+   * 初始化数据库结构（版本链 v2→v11）。
    *
    * @description 声明各表的主键与索引；后续结构变更须升级 version 并添加 stores/upgrade 迁移逻辑。
    *              新增版本时在 STORES_Vx 链尾部追加增量定义即可，无需全量复制。
@@ -549,6 +666,7 @@ export class TradingLedgerDB extends Dexie {
     this.version(8).stores(STORES_V8 as Record<string, string | null>);
     this.version(9).stores(STORES_V9 as Record<string, string | null>);
     this.version(10).stores(STORES_V10 as Record<string, string | null>);
+    this.version(11).stores(STORES_V11 as Record<string, string | null>);
   }
 }
 

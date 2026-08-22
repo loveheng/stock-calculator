@@ -2,7 +2,7 @@
  * @file App.tsx
  * @description 应用根组件与主布局：基于 React Router 的 SPA 壳层，
  *              负责装配侧边栏导航、顶部标题栏、移动端抽屉菜单与
- *              七个功能页面（首页/涨跌幅/短线交易/中长期交易/数据统计/费率配置/云端同步）的路由分发；
+ *              八个功能页面（首页/涨跌幅/短线交易/中长期交易/数据统计/费率配置/云端同步/沙盘复盘）的路由分发；
  *              同时挂载 PWA 安装引导组件。
  * @layer UI
  * @storage_impact 本文件不直接读写 IndexedDB；页面数据持久化由各视图组件
@@ -22,6 +22,7 @@ import {
   Cloud,
   Menu,
   X,
+  FlaskConical,
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
 import { useLoadCoreData } from './hooks/useDataLoader';
@@ -35,6 +36,7 @@ import CostAveraging from './views/CostAveraging';
 import Statistics from './views/Statistics';
 import FeeConfig from './views/FeeConfig';
 import WebDAVConfig from './views/WebDAVConfig';
+import SandboxPlayback from './views/SandboxPlayback';
 
 /**
  * 导航菜单配置项。
@@ -49,6 +51,7 @@ const NAV_ITEMS = [
   { path: '/change-rate', label: '涨跌幅计算器', icon: TrendingUp },
   { path: '/t-calculator', label: '短线交易', icon: RefreshCw },
   { path: '/cost-averaging', label: '中长期交易', icon: BarChart3 },
+  { path: '/sandbox', label: '沙盘复盘', icon: FlaskConical },
   { path: '/statistics', label: '数据统计', icon: PieChart },
   { path: '/fee-config', label: '费率配置', icon: Settings },
   { path: '/webdav', label: '云端同步', icon: Cloud },
@@ -184,6 +187,7 @@ function AppLayout() {
             <Route path="/change-rate" element={<ChangeRate />} />
             <Route path="/t-calculator" element={<TCalculator />} />
             <Route path="/cost-averaging" element={<CostAveraging />} />
+            <Route path="/sandbox" element={<SandboxPlayback />} />
             <Route path="/statistics" element={<Statistics />} />
             <Route path="/fee-config" element={<FeeConfig />} />
             <Route path="/webdav" element={<WebDAVConfig />} />

@@ -60,6 +60,7 @@ export default defineConfig({
           /^\/api($|\/)/, // 覆盖 /api/webdav
           /^\/api-gtimg/,
           /^\/api-qt/,
+          /^\/api-kline/,
           /^\/api\/eastmoney/,
           /^\/webdav/, // 客户端 /webdav 路由也不做导航缓存
         ],
@@ -99,6 +100,14 @@ export default defineConfig({
         target: 'https://qt.gtimg.cn',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-qt/, ''),
+        headers: {
+          Referer: 'https://finance.qq.com/',
+        },
+      },
+      '/api-kline': {
+        target: 'https://ifzq.gtimg.cn',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-kline/, ''),
         headers: {
           Referer: 'https://finance.qq.com/',
         },

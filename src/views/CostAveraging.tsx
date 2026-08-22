@@ -386,6 +386,11 @@ function PositionLedger() {
   const [openPrice, setOpenPrice] = useState('');
   const [openAmount, setOpenAmount] = useState('');
   const [openNote, setOpenNote] = useState('');
+  const [openTime, setOpenTime] = useState(() => {
+    const d = new Date();
+    const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  });
   const [noFrictionCost, setNoFrictionCost] = useState(false);
   // 重复建仓提示（同一股票代码已存在进行中持仓）
   const [dupAlert, setDupAlert] = useState<string | null>(null);
@@ -421,7 +426,8 @@ function PositionLedger() {
     const totalFee = noFrictionCost ? 0 : calcTradeFees(price, amount, 'buy', feeConfig, matchSecurityKind(selectedStock?.SecurityType ?? '', selectedStock?.Code ?? '')).total;
     const totalInvested = price * amount + totalFee;
 
-    const now = new Date().toISOString();
+    const buyAt = openTime ? new Date(openTime) : new Date();
+    const now = buyAt.toISOString();
     const batch: PositionBatch = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       timestamp: now,
@@ -453,6 +459,11 @@ function PositionLedger() {
     setOpenPrice('');
     setOpenAmount('');
     setOpenNote('');
+    setOpenTime(() => {
+      const d = new Date();
+      const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+      return local.toISOString().slice(0, 16);
+    });
     setNoFrictionCost(false);
   };
 
@@ -681,6 +692,16 @@ function PositionLedger() {
                 />
               </div>
               <div className="form-group">
+                <label>买入时间</label>
+                <input
+                  type="datetime-local"
+                  value={openTime}
+                  onChange={(e) => setOpenTime(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group col-span-2">
                 <label>交易备注（选填）</label>
                 <input
                   type="text"
@@ -833,13 +854,21 @@ function PositionLedger() {
                   )}
                 </div>
               </div>
-              {/* 折叠箭头（≥44x44 热区） */}
-              <div className="tap-target flex items-center justify-center w-11 h-11 shrink-0 ml-2">
-                <ChevronRight
-                  className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
-                    isExpanded ? 'rotate-90' : ''
-                  }`}
-                />
+              <div className="flex items-center shrink-0 ml-2">
+                <button
+                  onClick={(e) => { e.stopPropagation(); setDeleteTickerConfirm(pos.id); }}
+                  className="tap-target flex items-center justify-center w-10 h-10 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10"
+                  title="删除整个标的"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+                <div className="tap-target flex items-center justify-center w-11 h-11">
+                  <ChevronRight
+                    className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
+                      isExpanded ? 'rotate-90' : ''
+                    }`}
+                  />
+                </div>
               </div>
             </div>
 
@@ -929,15 +958,8 @@ function PositionLedger() {
 
               {/* 操作记录 */}
               <div>
-                <div className="flex items-center justify-between mb-1">
+                <div className="mb-1">
                   <span className="text-xs text-slate-500">操作记录（{pos.batches.length}条）</span>
-                  <button
-                    onClick={() => setDeleteTickerConfirm(pos.id)}
-                    className="tap-target text-xs text-slate-600 hover:text-red-400 px-1.5 py-0.5 rounded hover:bg-slate-800"
-                    title="删除整个标的"
-                  >
-                    <Trash2 className="w-3 h-3 inline-block mr-0.5" />删除标的
-                  </button>
                 </div>
                 <div className="space-y-1">
                   {(() => {

@@ -5,6 +5,7 @@
  * 仅拦截以下【静态上游】路径并转发：
  *   - /api-gtimg/*      → https://smartbox.gtimg.cn/*
  *   - /api-qt/*         → https://qt.gtimg.cn/*
+ *   - /api-kline/*      → https://ifzq.gtimg.cn/*
  *   - /api/eastmoney/*  → https://searchapi.eastmoney.com/*
  *
  * 【重要说明 · WebDAV 已迁出】
@@ -33,6 +34,10 @@ const UPSTREAMS = {
   },
   '/api-qt': {
     base: 'https://qt.gtimg.cn',
+    headers: { Referer: 'https://finance.qq.com/' },
+  },
+  '/api-kline': {
+    base: 'https://ifzq.gtimg.cn',
     headers: { Referer: 'https://finance.qq.com/' },
   },
   '/api/eastmoney': {
@@ -73,6 +78,7 @@ export const config = {
   matcher: [
     '/api-gtimg/:path*',
     '/api-qt/:path*',
+    '/api-kline/:path*',
     '/api/eastmoney/:path*',
   ],
 };

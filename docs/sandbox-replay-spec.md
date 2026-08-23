@@ -23,10 +23,10 @@
 
 | 场景 | 典型问题 | 本功能答案 |
 |---|---|---|
-| 操作习惯复盘 | "我越跌越死扛是不是错了？" | 基线 vs 补全建议对比 |
+| 操作习惯复盘 | "我越跌越死扛是不是错了？" | 基线 vs 预设策略对比 |
 | 交易纪律验证 | "网格/金字塔/止损规则到底有没有用？" | 4 种预设策略自动生成 + 对比 |
 | 资金管理推演 | "如果当初资金多/少一些，配比怎么调整？" | 模拟资金调整 + ⚡ 一键重配 |
-| 持续持仓诊断 | "我现在该加仓还是该等？" | 尾段补全建议 + 统一评估日清算 |
+| 持续持仓诊断 | "我现在该加仓还是该等？" | 统一评估日清算 + 假设推演 |
 | 波段 vs 死拿 | "频繁操作真的跑赢 Buy & Hold 了吗？" | B&H 基准对比 |
 
 ### 0.3 明确的范围边界
@@ -141,7 +141,7 @@ export interface SandboxBranch {
   lastBaselineSignature: string;    // 基线指纹（批次数量|末笔时间|当前股数）→ 🔄 检测
 
   // ---- 预设专属（branchType === 'preset'） ----
-  presetStrategyId?: string;        // 'ma20-bounce' | 'pyramid' | 'grid' | 'stop-profit' | 'gap-fill'
+  presetStrategyId?: string;        // 'ma20-bounce' | 'pyramid' | 'grid' | 'stop-profit'
   presetParams?: Record<string, number>;
 
   // ---- 用户方案专属（branchType === 'user'） ----
@@ -433,7 +433,7 @@ asOfDate = min(
 
 ```typescript
 interface StrategyGenerator {
-  id: string;                       // 'ma20-bounce' | 'pyramid' | 'grid' | 'stop-profit' | 'gap-fill'
+  id: string;                       // 'ma20-bounce' | 'pyramid' | 'grid' | 'stop-profit'
   name: string;
   description: string;
   defaultParams: Record<string, number>;
@@ -443,7 +443,7 @@ interface StrategyGenerator {
 
 interface StrategyContext {
   klineData: KlineItem[];
-  baselineOrders: SandboxOrder[];   // 补全建议需要
+  baselineOrders: SandboxOrder[];   // 历史/兼容保留（当前无生成器使用）
   peakCapitalLock: number;
   simulatedCash: number;
   currentPrice: number;             // 最后一根 K 线收盘
@@ -465,22 +465,7 @@ interface StrategyContext {
 
 **共性约束**：数量向下取整至 100 股整数倍；买入总额 ≤ 可用现金；订单全部落在 K 线日期上。
 
-### 5.2 补全建议生成器（`gap-fill`）
-
-在真实操作基础上"填坑"，直接指出"你当时如果在这里多买/先卖会怎样"：
-
-```
-遍历相邻操作对（间隔 ≥ 5 根 K 线才建议）：
-  买入→买入（中间有下跌）  → 在区间最低点追加一笔买入
-  买入→卖出（中间有上涨）  → 在区间最高点多卖一笔
-  卖出→买入（中间先跌后涨）→ 在最低点提前买回
-尾段（最后一笔操作 → 今日，未平仓）：
-  期间出现显著低点 → 「📌 补全：如果在这里加仓」
-  期间出现显著高点 → 「📌 补全：如果在这里先减仓」
-每条建议附注释：价位、日期、建议原因
-```
-
-### 5.3 生成交互
+### 5.2 生成交互
 
 - 用户点击 **【✨ 一键生成预设方案】** → 弹出对话框（勾选策略 + 全局参数：抖动系数、初始资金）
 - 每个策略独立运行：`generate()` → 推演 → 建 preset 分支 → 卡片展示结果
@@ -570,8 +555,8 @@ B&H     = 首笔金额首笔价买入，持有到评估日清算（同一量纲�
 ### 7.3 K 线数据范围
 
 ```
-起始 = 首笔真实操作日 − 90 自然日缓冲（MA60 前置窗口）
-结束 = 今日（未平仓，可能推演到今天）
+起始 = 首笔建仓日（第一条 type='open' 批次；缺失则退回最早任意批次）
+结束 = 已平仓 → 平仓日 closedAt；仍持仓 → 最新一根 K 线（可能推演到今天）
 长历史按年分页拉取（单次请求上限约 640 根），按日期去重合并
 必须用前复权数据（分红除权会破坏价格连续性）
 ```
@@ -636,7 +621,7 @@ B&H     = 首笔金额首笔价买入，持有到评估日清算（同一量纲�
 │  🆕 金字塔    [预设]      │                                           │
 │  🆕 网格      [预设]      │  ────────────────────────────────────    │
 │  🆕 止损止盈  [预设]      │  底部（选中 2+ 方案 + 点【对比选中方案】后）│
-│  🆕 补全建议  [预设]      │  多方案对比表（可折叠）                    │
+│                          │  多方案对比表（可折叠）                    │
 │                          │                                           │
 │  ── 我的方案 ──           │                                           │
 │  [新建方案]               │                                           │
@@ -762,7 +747,7 @@ getKline(fullCode, { startDate }) → Promise<KlineBundle> // { klines, adjustFa
 | `src/utils/baselineExtractor.ts` | ~120 | 基线提取（含 borrow/merge 纳入 + 指纹 + 自校验） |
 | `src/utils/sandboxEngine.ts` | ~400 | 推演引擎（资金约束 + T+1 锁定 + 统一评估日 + 动态抖动 + 结构化拒绝） |
 | `src/utils/metricsEngine.ts` | ~200 | 回撤/波动率/B&H/四维对比 |
-| `src/utils/strategyGenerators.ts` | ~480 | 4 策略 + 补全建议生成器 + 注册表 |
+| `src/utils/strategyGenerators.ts` | ~480 | 生成器注册表 + 通用策略引擎 |
 | `src/services/klineService.ts` | ~130 | K 线获取 + 三级缓存 + 增量合并 |
 | `src/store/sandboxStore.ts` | ~330 | 三态分支管理 + 非响应式 memo + 过期检测 |
 | `src/components/sandbox/KlineChart.tsx` | ~260 | lightweight-charts 封装（蜡烛+成本线+标记） |
@@ -792,7 +777,7 @@ getKline(fullCode, { startDate }) → Promise<KlineBundle> // { klines, adjustFa
 | 文件 | 覆盖 |
 |---|---|
 | `src/__tests__/sandboxEngine.test.ts` | 资金约束、统一评估日、动态抖动可复现、快照正确性 |
-| `src/__tests__/strategyGenerators.test.ts` | 4 策略 + 补全建议边界、100 股取整、现金约束 |
+| `src/__tests__/strategyGenerators.test.ts` | 策略不变量：100 股取整、现金约束 |
 
 **总量：新增 ~3,720 行 + 修改 ~180 行 + 测试 ~330 行，约 4,230 行。**
 
@@ -845,7 +830,6 @@ getKline(fullCode, { startDate }) → Promise<KlineBundle> // { klines, adjustFa
 ### 13.2 生成器单测
 
 - [ ] 100 股取整；现金约束
-- [ ] 补全建议：<5 根 K 线间隔不触发；尾段补全逻辑
 - [ ] 止损止盈：2R 风险报酬比数值正确
 
 ### 13.3 端到端
@@ -894,12 +878,13 @@ getKline(fullCode, { startDate }) → Promise<KlineBundle> // { klines, adjustFa
 2. **多口径收益**：`SandboxResult` 新增 `totalInjectedCash`、`principalReturnRate`（基准本金收益）、
    `capitalWeightedReturnRate`（资金加权，按日平均占用）、`timeWeightedReturnRate`（时间加权 TWR）、
    `peakRequiredCash`（瞬时最大资金占用峰值，含 DCA 减负语义）。
-3. **两套追加策略**：策略注册表从「4 经典 + gap-fill」扩展为 **7 套**，新增 `max-opportunity`
-   （均线/ATR 趋势追涨）与 `pure-dca`（纯被动定期定额零择时基准线）。
+3. **多套追加策略**：策略注册表从「4 经典」逐步扩展（新增 `max-opportunity` 均线/ATR 趋势追涨、
+   `pure-dca` 纯被动定期定额零择时基准线、`hybrid-regime` 环境自适应混合、`model-recommend` 多因子智能推荐）。
+   > 注：早期设计中的 `gap-fill`（补全建议）已移除（无明确定义来源、不专业，见 implementation 文档）。
 
 ### 16.2 实现与规格书的差异点
 
-- 类型 `SandboxBranch` 新增 `baselinePositionId`（基线关联真实持仓）、DCA 相关、`presetStrategyId` 含 7 个策略 id。
+- 类型 `SandboxBranch` 新增 `baselinePositionId`（基线关联真实持仓）、DCA 相关、`presetStrategyId` 含 9 个策略 id。
 - 基线**不做滑点**（`jitterFactor=0` 锚定真实成交价）；预设才抖动。
 - 生成器在 `simulatedCash` 口径上**以 `generatedAtCash` 作为数量基准**，预算（`simulatedCash`）变化只改预算不改仓位，重配需 `rescalePreset`。
 - K 线起点默认为「首笔真实操作日 − 90 自然日」，三级缓存 + 除权漂移检测（`DRIFT_THRESHOLD=0.005`）。

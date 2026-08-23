@@ -512,7 +512,7 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const txnFee = calcTradeFees(avg, toTransfer, 'buy', feeConfig, kind).total;
     let newPositions = positions; let created = false;
     let pos = positions.find(p => p.fullCode === fullCode && !p.isClosed);
-    if (!pos) { pos = { id: generateId(), stockName: stream.stockName, fullCode, currentCost: 0, currentAmount: 0, batches: [], isClosed: false, createdAt: now, realizedPnL: 0, totalInvested: 0 }; created = true; }
+    if (!pos) { pos = { id: generateId(), stockName: stream.stockName, fullCode, currentCost: 0, currentAmount: 0, batches: [], isClosed: false, createdAt: now, openAt: now, realizedPnL: 0, totalInvested: 0 }; created = true; }
     const posDef = pos; const addQty = toTransfer;
     // 剥离流水驱动的调整批次（出借/归并），以真实底仓基线计算划转
     const cleanBatches = posDef.batches.filter(b => !isStreamAdjustmentBatch(b));

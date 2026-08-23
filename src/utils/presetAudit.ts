@@ -72,7 +72,6 @@ const INACTIVITY_REASONS: Partial<Record<PresetStrategyId, string>> = {
   grid: '前向箱体窗口内价格未跌穿/涨穿任何网格线，或箱体波动区间过窄 → 无成交',
   'stop-profit': '入场参考确立后，价位既未触发止损/止盈，也未达减仓线 → 持有不动（无交易不代表无逻辑）',
   'pure-dca': '定投周期尚未到达首个定投日，或账户可用现金 < 固定规费 → 无法买入',
-  'gap-fill': '基线订单间隙不足，或尾段低点未显著低于现价 → 无补仓机会提示（辅助工具，取决真实流水密度）',
 };
 
 /** 构造最小策略上下文（生成器只用 klineData/simulatedCash/currentPrice/currentCost/baselineOrders） */
@@ -92,7 +91,7 @@ function makeAuditCtx(klineData: KlineItem[], simulatedCash: number, baselineOrd
 
 /**
  * 逐笔重放统一台账：返回步进 + 资金不变量校验。
- * @param baselineOrders 仅 gap-fill 需要（真实/他策略派生基线订单）
+ * @param baselineOrders 历史/兼容保留的基线订单（当前无生成器使用）
  */
 export function auditPresetOrders(strategyId: PresetStrategyId, klineData: KlineItem[], initialCash: number, baselineOrders?: SandboxOrder[]): AuditResult {
   const gen = STRATEGY_GENERATORS[strategyId];

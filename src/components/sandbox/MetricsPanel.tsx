@@ -81,6 +81,9 @@ export default function MetricsPanel({ branch, result, warnings, expertMode }: M
   }
   const budget = branch.simulatedCash > 0 ? branch.simulatedCash : branch.peakCapitalLock;
   const occupyPct = budget > 0 ? Math.min(100, (peakOccupy / budget) * 100) : 0;
+  // 期末总资产 = 现金 + 持仓市值（末根快照，含复利滚存增长）
+  const finalTotalAsset =
+    result && result.snapshots.length > 0 ? result.snapshots[result.snapshots.length - 1].totalAsset : null;
 
   const profitTone = (v: number) => (v > 0 ? 'up' as const : v < 0 ? 'down' as const : 'flat' as const);
 
@@ -147,7 +150,8 @@ export default function MetricsPanel({ branch, result, warnings, expertMode }: M
                 <StatCell label="累计手续费" value={fmtMoney(result.totalFees, 2)} tone="down" hint="净佣金 + 经手费 + 证管费 + 过户费" />
                 <StatCell label="累计印花税" value={fmtMoney(result.totalStampTax, 2)} tone="down" />
                 <StatCell label="资金占用周期" value={`${result.capitalOccupationDays} 天`} tone="down" />
-                <StatCell label="模拟资金" value={`¥${Math.round(branch.simulatedCash).toLocaleString('zh-CN')}`} hint="推演假设资金（非真实资金），默认=历史最高占用资金" />
+                <StatCell label="初始本金" value={`¥${Math.round(branch.simulatedCash).toLocaleString('zh-CN')}`} hint="推演初始假设本金（非真实资金），默认=历史最高占用资金" />
+                <StatCell label="期末总资产" value={`¥${Math.round(finalTotalAsset ?? branch.simulatedCash).toLocaleString('zh-CN')}`} tone={finalTotalAsset != null && finalTotalAsset >= branch.simulatedCash ? 'up' : finalTotalAsset != null ? 'down' : undefined} hint="期末现金 + 持仓市值（含中途盈利再投资后的复利滚存增长）" />
               </div>
 
               {/* 死拿不动对照组 */}

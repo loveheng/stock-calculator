@@ -70,7 +70,7 @@ stock-calculator/
     │   ├── baselineExtractor.ts    #   [沙盘] 基线提取（批次履历 → 订单时间线 + 峰值资金 + 指纹）
     │   ├── sandboxEngine.ts        #   [沙盘] 策略重演引擎（资金约束 + T+1 + 统一评估日 + 抖动）
     │   ├── metricsEngine.ts        #   [沙盘] 回撤/波动率/B&H/四维对比
-    │   └── strategyGenerators.ts   #   [沙盘] 7 套策略生成器注册表
+    │   └── strategyGenerators.ts   #   [沙盘] 9 套策略生成器注册表
     │
     ├── views/             #   █ 页面视图（8 个）
     │   ├── Home.tsx / ChangeRate.tsx
@@ -440,7 +440,7 @@ Position.batches
   +  前复权 K 线（klineService，三级缓存）
   → runSandboxEngine()          # 资金约束 / T+1 / 统一评估日 / 抖动 / DCA
   → enrichResult()               # 回撤 / 波动率 / B&H / 加权收益
-  → StrategyGenerators（7 套）→ 合并基线 → 引擎     # 预设/用户分支
+  → StrategyGenerators（9 套）→ 合并基线 → 引擎     # 预设/用户分支
   → buildComparisonRows()        # 多方案四维对比
 ```
 

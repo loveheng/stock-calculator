@@ -111,6 +111,10 @@ export interface BranchComputed {
    * 供 UI 在空时间线处解释“为何没买卖”（属策略门槛而非引擎/资金拒绝）。
    */
   inactivityReason?: string;
+  /** 策略自身生成的订单数（不计入基线合并订单；baseline/user 分支为 0） */
+  generatedOrdersCount: number;
+  /** 是否为策略可用预算 ≤ 0（baseline 预留后无剩余资金开仓） */
+  strategyBudgetExhausted: boolean;
 }
 
 /** 分支计算上下文（纯函数入参，便于单测） */
@@ -235,6 +239,19 @@ function round2(value: number): number {
 }
 
 /**
+ * 生成预设方案时的默认模拟资金：与基线历史资金峰值占用严格 1:1 对齐，
+ * 保证「模拟资金」与「预算硬上限」数值完全一致，不叠加、不倍数放大。
+ * 预设分支为纯策略独立推演（从 0 股开始），全量预算即归策略自行规划。
+ *
+ * @param {number} peakCapitalLock - 基线历史最高占用资金
+ * @returns {number} 建议的默认模拟资金（= 1 × 峰值，允许清底为 0 时给最低 20000）
+ */
+export function suggestPresetCash(peakCapitalLock: number): number {
+  const base = Math.round(peakCapitalLock * 100) / 100;
+  return base > 0 ? base : 20000;
+}
+
+/**
  * 把基线订单价格从未复权换算到前复权口径（真实成交价 × 当日复权系数）。
  *
  * @param {SandboxOrder[]} orders - 基线订单（extractBaseline 输出，未复权）
@@ -285,6 +302,22 @@ export function computeKlineStartDate(position: Position): string | undefined {
   const d = new Date(anchor.timestamp);
   if (Number.isNaN(d.getTime())) return undefined;
   // 按 UTC 日历日返回（与交易日期口径一致，且测试不随本机时区漂移）
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/**
+ * 计算 K 线终点：仓位已完结（平仓）则以「平仓日」作为末根 K 线；仍持仓（未平仓）返回
+ * undefined 表示取到最新一根 K 线。与 computeKlineStartDate（首笔建仓日）配合，让沙盘
+ * 推演时间线对齐真实持有区间：已平仓就到平仓日，未平仓就到最后交易日。
+ *
+ * @param {Position} position - 真实持仓
+ * @returns {string | undefined} YYYY-MM-DD；未平仓时返回 undefined（最新 K 线）
+ */
+export function computeKlineEndDate(position: Position): string | undefined {
+  if (!position.isClosed || !position.closedAt) return undefined;
+  const d = new Date(position.closedAt);
+  if (Number.isNaN(d.getTime())) return undefined;
+  // 与 computeKlineStartDate 口径一致，按 UTC 日历日返回
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
@@ -388,29 +421,26 @@ export function computeBranchResult(branch: SandboxBranch, ctx: BranchComputeCon
   let orders: SandboxOrder[];
   // 预设策略零成交时的策略自身原因（仅在空时间线处展示）
   let inactivityReason: string | undefined;
+  // 策略自身生成的订单数（baseline/user 分支为 0）
+  let generatedOrdersCount = 0;
+  // 是否为策略可用预算 ≤ 0（baseline 预留后无剩余资金开仓）
+  let strategyBudgetExhausted = false;
   if (branch.branchType === 'baseline') {
     orders = baselineOrders.map((o) => ({ ...o, branchId: branch.id }));
   } else if (branch.branchType === 'preset' && branch.presetStrategyId) {
+    // 纯策略独立推演：不合并基线订单，也不预留基线资金占用；
+    // 从 0 股开始，策略自动全额模拟。生成量基准用 generatedAtCash（全额、未被基线占用），
+    // 保留「调资金→⚡→rescalePreset 才重算股数」的枣后延迟重算语义变量。
+    strategyBudgetExhausted = branch.generatedAtCash <= 0;
     const strategyCtx: StrategyContext = {
       klineData: kline,
-      baselineOrders,
-      peakCapitalLock: branch.peakCapitalLock,
-      // 数量基准用生成时资金：⚡ 重算前仓位保持不变，仅预算（simulatedCash）变化
-      // 方案2·预算口径：预设单会与基线订单并入同一时间线、共用同一模拟资金。
-      // 当基线订单（真实操作）并入时，先为基线预留其峰值资金占用（peakCapitalLock），
-      // 策略只在下绺预算内分仓，避免双方叠加超预算触发 INSUFFICIENT_CASH（见实现文档 §2.3）。
-      simulatedCash: Math.max(
-        0,
-        branch.generatedAtCash - (baselineOrders.length > 0 ? branch.peakCapitalLock : 0),
-      ),
+      baselineOrders: [],
+      peakCapitalLock: 0,
+      simulatedCash: Math.max(0, branch.generatedAtCash), // 全额生成资金，未被基线峰值占用预扣
       currentPrice: last.close,
-      // 当前成本换算到前复权口径（近似：以今日系数折算摊薄成本）
-      currentCost:
-        position && position.currentAmount > 0
-          ? round2(position.currentCost * getAdjustFactor(last.date, factors))
-          : 0,
-      currentQuantity: position?.currentAmount ?? 0,
-      // 时序现金注入（DCA）：策略在资金底座内基于注入事件规划每期预算
+      currentCost: 0, // 独立推演：无初始底仓成本
+      currentQuantity: 0, // 独立推演：从 0 股开始
+      strategyStartDate: position?.openAt ? position.openAt.slice(0, 10) : undefined,
       cashInjections: branch.cashInjections,
       feeConfig,
       securityKind,
@@ -419,8 +449,9 @@ export function computeBranchResult(branch: SandboxBranch, ctx: BranchComputeCon
       ...o,
       branchId: branch.id,
     }));
-    orders = mergeBaselineAndGenerated(baselineOrders, generated);
-    // 预设策略自身零成交原因：仅当无任何基线订单且策略未产出订单时给出（策略门槛，非引擎拒绝）
+    generatedOrdersCount = generated.length;
+    orders = generated;
+    // 预设策略自身零成交原因：策略门槛（而非引擎/资金拒绝）
     if (orders.length === 0) {
       const gen = STRATEGY_GENERATORS[branch.presetStrategyId];
       inactivityReason = gen?.inactivityReason?.(strategyCtx) ?? undefined;
@@ -477,6 +508,8 @@ export function computeBranchResult(branch: SandboxBranch, ctx: BranchComputeCon
     asOfDate: last.date,
     dataAsOfDate: last.date,
     inactivityReason,
+    generatedOrdersCount,
+    strategyBudgetExhausted,
   };
   memoSet(key, computed);
   return computed;
@@ -588,6 +621,10 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
       ]);
       if (token !== loadToken) return;
 
+      // 已平仓仓位：K 线终点取「平仓日」；未平仓则到最新交易日（起点为首笔建仓日，见 startDate）
+      const klineEnd = position ? computeKlineEndDate(position) : undefined;
+      const klines = klineEnd ? bundle.klines.filter((k) => k.date <= klineEnd) : bundle.klines;
+
       // 基线订单换算到前复权口径（真实成交价 × 当日复权系数）
       if (position) {
         const extraction = extractBaseline(position);
@@ -602,10 +639,10 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
             savedOrdersCache.set(b.id, await loadSandboxOrdersByBranchId(b.id));
           }),
       );
-      set({ branches: dbBranches, kline: bundle.klines, adjustFactors: bundle.adjustFactors, klineLoading: false });
+      set({ branches: dbBranches, kline: klines, adjustFactors: bundle.adjustFactors, klineLoading: false });
 
       // 确保基线分支存在并选中
-      const baseline = position ? ensureBaselineBranch(position, bundle.klines) : null;
+      const baseline = position ? ensureBaselineBranch(position, klines) : null;
       const targetId = baseline?.id ?? dbBranches[0]?.id ?? null;
       if (targetId) get().selectBranch(targetId);
       if (!position) {
@@ -721,7 +758,7 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
     if (exists) return;
     const generator = STRATEGY_GENERATORS[strategyId];
     if (!generator) return;
-    const cash = round2(options.simulatedCash ?? baseline.peakCapitalLock);
+    const cash = round2(options.simulatedCash ?? suggestPresetCash(baseline.peakCapitalLock));
     const now = Date.now();
     const branch: SandboxBranch = {
       id: generateId(),
@@ -958,8 +995,11 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
         currentBaselineOrders = adjustBaselineOrdersToQfq(extraction.orders, bundle.adjustFactors);
         currentBaselineSignature = extraction.signature;
       }
+      // 已平仓仓位：K 线终点取「平仓日」；未平仓则到最新交易日（与 selectStock 口径一致）
+      const klineEnd = positionCache ? computeKlineEndDate(positionCache) : undefined;
+      const klines = klineEnd ? bundle.klines.filter((k) => k.date <= klineEnd) : bundle.klines;
       // 全部分支 memo 因 K 线版本变化自动失效（key 含末根日期+收盘）
-      set({ kline: bundle.klines, adjustFactors: bundle.adjustFactors, klineLoading: false });
+      set({ kline: klines, adjustFactors: bundle.adjustFactors, klineLoading: false });
       const selected = get().branches.find((b) => b.id === get().selectedBranchId);
       if (selected) {
         set({ activeComputed: computeBranchResult(selected, buildComputeContext()) });

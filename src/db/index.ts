@@ -199,6 +199,7 @@ function toPositionEntity(position: PositionRow): PositionEntity {
     createdAt: parseTimestamp(position.createdAt),
     updatedAt: parseTimestamp(position.createdAt),
     closedAt: position.closedAt ? parseTimestamp(position.closedAt) : undefined,
+    openAt: position.openAt ? parseTimestamp(position.openAt) : undefined,
     totalInvested: position.totalInvested ?? 0,
     realizedPnL: position.realizedPnL ?? 0,
     isDeleted: 0,
@@ -527,6 +528,7 @@ export async function loadPositionsFromDB(): Promise<PositionRow[]> {
       batches: [],
       isClosed: position.isClosed === 1,
       createdAt: new Date(position.createdAt).toISOString(),
+      openAt: position.openAt ? new Date(position.openAt).toISOString() : undefined,
       closedAt: position.closedAt ? new Date(position.closedAt).toISOString() : undefined,
       realizedPnL: position.realizedPnL,
       totalInvested: position.totalInvested,
@@ -548,6 +550,16 @@ export async function loadPositionsFromDB(): Promise<PositionRow[]> {
         kind: batch.kind,
         costPrice: batch.costPrice,
       });
+    }
+  }
+
+  // 事后记录场景：若无已存 openAt（存量数据/手工录入），回退为最早一笔 open 买入批次的成交时间
+  for (const position of positionMap.values()) {
+    if (!position.openAt) {
+      const firstOpen = [...position.batches]
+        .filter((b) => b.type === 'open')
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())[0];
+      position.openAt = firstOpen ? firstOpen.timestamp : new Date(position.createdAt).toISOString();
     }
   }
 
@@ -716,6 +728,14 @@ export async function fetchAllClosedPositions(): Promise<PositionRow[]> {
       batches,
       isClosed: p.isClosed === 1,
       createdAt: new Date(p.createdAt).toISOString(),
+      openAt: p.openAt
+        ? new Date(p.openAt).toISOString()
+        : (
+            [...batches]
+              .filter((b) => b.type === 'open')
+              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())[0]
+              ?.timestamp ?? new Date(p.createdAt).toISOString()
+          ),
       closedAt: p.closedAt ? new Date(p.closedAt).toISOString() : undefined,
       realizedPnL: p.realizedPnL,
       totalInvested: p.totalInvested,

@@ -17,6 +17,7 @@ import {
   adjustBaselineOrdersToQfq,
   checkBranchStale,
   computeBranchResult,
+  computeKlineEndDate,
   computeKlineStartDate,
   mergeBaselineAndGenerated,
   type BranchComputeContext,
@@ -212,6 +213,24 @@ describe('computeKlineStartDate（K 线起点 = 首笔建仓日，UTC 日历日�
   });
 });
 
+describe('computeKlineEndDate（K 线终点 = 平仓日，UTC 日历日）', () => {
+  it('已平仓且带 closedAt → 终点 = 平仓日', () => {
+    expect(
+      computeKlineEndDate(
+        makePosition({ isClosed: true, closedAt: '2026-06-30T10:00:00+08:00' }),
+      ),
+    ).toBe('2026-06-30');
+  });
+
+  it('未平仓（isClosed=false）→ undefined（取最新 K 线）', () => {
+    expect(computeKlineEndDate(makePosition())).toBeUndefined();
+  });
+
+  it('已平仓但无 closedAt → undefined（取最新 K 线兜底）', () => {
+    expect(computeKlineEndDate(makePosition({ isClosed: true, closedAt: undefined }))).toBeUndefined();
+  });
+});
+
 describe('checkBranchStale（三源过期检测，全部用户点击触发）', () => {
   it('⚠️ K 线已更新：dataAsOfDate 早于当前末根日期', () => {
     const branch = makeBranch({ branchType: 'baseline', dataAsOfDate: '2026-08-19' });
@@ -270,25 +289,66 @@ describe('computeBranchResult（分支结果计算 + memo）', () => {
     expect(computed!.warnings.some((w) => w.includes('基线校验异常'))).toBe(true);
   });
 
-  it('预设（金字塔）：数量基准 = generatedAtCash，预算基准 = simulatedCash（⚡ 重算语义）', () => {
+  it('预设（pure-dca）：纯策略独立推演 —— 全额 simulatedCash、不合并基线、不扣峰值占用', () => {
     const branch = makeBranch({
       branchType: 'preset',
       presetStrategyId: 'pure-dca',
       presetParams: { period: 20 },
       generatedAtCash: 10000,
       simulatedCash: 10000,
+      peakCapitalLock: 8000, // 即便存在历史峰值占用，也不预扣
       jitterFactor: 0,
     });
-    const ctx = makeCtx({ kline: makeKline(Array(40).fill(10)) });
+    // 基线订单 + 真实持仓存在：新语义下不应被合并进 preset 时间线，也不应占用预算
+    const ctx = makeCtx({
+      kline: makeKline(Array(40).fill(10)),
+      baselineOrders: [order({ id: 'b1', timestamp: '2026-01-05T09:30:00+08:00', action: 'buy', price: 10, quantity: 100 })],
+      position: makePosition({ currentAmount: 100 }),
+    });
     const computed = computeBranchResult(branch, ctx);
     expect(computed).not.toBeNull();
     expect(computed!.result!.finalPosition).toBeGreaterThan(0);
     expect(computed!.rejections).toHaveLength(0);
+    expect(computed!.strategyBudgetExhausted).toBe(false);
+    expect(computed!.orders.some((o) => o.id === 'b1')).toBe(false);
+    expect(computed!.orders.every((o) => o.branchId === branch.id)).toBe(true);
+    const totalNotional = computed!.orders.reduce((s, o) => s + o.price * o.quantity, 0);
+    expect(totalNotional).toBeLessThanOrEqual(10000 * 1.001);
 
-    // 资金调高到 20000：预算变、数量不变（价格点位不变，待 ⚡ 点击后重算）
+    // ③ 提高模拟资金（⚡ 延迟重算）：仅抬预算，生成单保持 generatedAtCash 基准不变
     const raised = computeBranchResult({ ...branch, simulatedCash: 20000 }, ctx);
-    expect(raised!.orders).toEqual(computed!.orders); // 订单（数量）不变
-    expect(raised!.result!.finalCash - computed!.result!.finalCash).toBeCloseTo(10000, 2); // 预算差全部留在现金
+    expect(raised!.orders).toEqual(computed!.orders);
+    // 点击 ⚡ 重配（generatedAtCash 盖章为新资金）→ 预案用量随之放大
+    const rescaled = computeBranchResult({ ...branch, simulatedCash: 20000, generatedAtCash: 20000 }, ctx);
+    const rescaledNotional = rescaled!.orders.reduce((s, o) => s + o.price * o.quantity, 0);
+    expect(rescaledNotional).toBeGreaterThan(totalNotional);
+  });
+
+  it('预设（pure-dca）：position.openAt 对齐策略起始点，全部生成单不早于开仓日', () => {
+    const kline = makeKline(Array(40).fill(10), '2026-01-05'); // 40 根：2026-01-05 ~ 2026-03 初
+    const openDate = kline[20].date; // 开仓日取 20 号 K 线
+    const branch = makeBranch({
+      branchType: 'preset',
+      presetStrategyId: 'pure-dca',
+      presetParams: { period: 5 },
+      generatedAtCash: 30000,
+      simulatedCash: 30000,
+      jitterFactor: 0,
+      peakCapitalLock: 0,
+    });
+    const ctx = makeCtx({
+      kline,
+      position: makePosition({ openAt: openDate + 'T09:30:00+08:00' }),
+    });
+    const computed = computeBranchResult(branch, ctx);
+    expect(computed).not.toBeNull();
+    expect(computed!.rejections).toHaveLength(0);
+    const generated = computed!.orders.filter((o) => o.branchId === branch.id);
+    expect(generated.length).toBeGreaterThan(0);
+    const openTs = Date.parse(openDate);
+    for (const o of generated) {
+      expect(Date.parse(o.timestamp.slice(0, 10))).toBeGreaterThanOrEqual(openTs);
+    }
   });
 
   it('memo 命中：相同输入返回同一对象引用（0ms 切换）', () => {

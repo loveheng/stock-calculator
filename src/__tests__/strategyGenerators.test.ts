@@ -1,12 +1,11 @@
 /**
  * @file strategyGenerators.test.ts
- * @description 沙盘预设策略生成器单元测试（对齐 6 大标准策略 + gap-fill 辅助工具）。
+ * @description 沙盘预设策略生成器单元测试（对齐 6 大标准策略）。
  *              以「不变量」为核心断言：
  *              - 统一订单契约：动作合法、100 股取整、seqIndex 连续、按时间升序；
  *              - 资金底座：买入累计成本不超过「模拟资金 + 注入」硬底座（含 1.5% 缓冲）；
- *              - 反未来函数：信号当日收盘判定、次日开盘撮合（价格 = 目标交易日开盘价）；
- *              - stop-profit：止损位/1R/2R 取价关系 + 跌破止损全额清仓；
- *              - gap-fill：区间缺口补全建议只出买入、且取区间最低点成交。
+ *              - 反未来函数：信号当日收盘判定，次日开盘撮合（价格 = 目标交易日开盘价）；
+ *              - stop-profit：止损位/1R/2R 取价关系 + 跌破止损全额清仓。
  * @layer Test
  * @storage_impact 纯函数测试，无任何副作用。
  */
@@ -168,6 +167,50 @@ describe('纯定投（pure-dca）确定性买入', () => {
 });
 
 // ============================================================
+// 1.5 开仓日对齐：strategyStartDate 保证预设首笔不早于真实开仓日
+// ============================================================
+
+describe('开仓日对齐（strategyStartDate）', () => {
+  it('传入开仓日后，全部订单 timestamp 均 ≥ 开仓日 & 首笔 = 开仓日次日开盘', () => {
+    // 90 根缓升行情：首日 2025-01-02
+    const kline = mkRise(90, 10, 13);
+    const openDate = kline[40].date; // 中点作为开仓日
+    const orders = generateStrategyOrders(
+      'pure-dca',
+      makeCtx({ klineData: kline, simulatedCash: 60000, strategyStartDate: openDate }),
+      { period: 10 },
+    );
+    expect(orders.length).toBeGreaterThan(0);
+    // 全部订单不早于开仓日（按 UTC 时间戳比较）
+    const openTs = Date.parse(openDate);
+    for (const o of orders) {
+      expect(Date.parse(o.timestamp.slice(0, 10))).toBeGreaterThanOrEqual(openTs);
+    }
+    // 首笔成交 = kline 中首个 date >= openDate 的次日开盘（信号日不早于开仓，成交在其后）
+    const firstIdx = kline.findIndex((k) => k.date >= openDate);
+    expect(firstIdx).toBeGreaterThanOrEqual(0);
+    const firstOrderDate = orders[0].timestamp.slice(0, 10);
+    expect(kline.some((k, idx) => k.date === firstOrderDate && idx > firstIdx)).toBe(true);
+  });
+
+  it('开仓日晚于所有信号日时策略全程空仓（不早于开仓日生成订单）', () => {
+    const kline = mkRise(30, 10, 12);
+    const klineLast = kline[kline.length - 1].date;
+    const lateOpenTs = Date.parse('2030-01-01');
+    // 开仓日设为行情末尾之后：无合法信号日可撮合
+    const orders = generateStrategyOrders(
+      'pure-dca',
+      makeCtx({ klineData: kline, simulatedCash: 30000, strategyStartDate: '2030-01-01' }),
+      { period: 5 },
+    );
+    expect(Date.parse(klineLast)).toBeLessThan(lateOpenTs);
+    for (const o of orders) {
+      expect(Date.parse(o.timestamp.slice(0, 10))).toBeGreaterThanOrEqual(lateOpenTs);
+    }
+  });
+});
+
+// ============================================================
 // 2. 统一订单契约：全部策略出单合法
 // ============================================================
 
@@ -233,37 +276,96 @@ describe('stop-profit 止损/止盈风控', () => {
   });
 
   it('跌破止损全额清仓：生成止损卖出且全为 100 股取整', () => {
-    const closes = [10, 10, 10, 9.8, 9.6, 9.4, 9.2, 9.0, 9.2];
+    const closes = [...Array(16).fill(10), 9.8, 9.6, 9.4, 9.2, 9.0, 9.2];
     const orders = generateStrategyOrders(
       'stop-profit',
       makeCtx({ klineData: makeKline(closes), simulatedCash: 30000, currentCost: 10 }),
       {},
     );
-    expect(orders.some((o) => o.action === 'sell' && /跌破止损/.test(o.note ?? ''))).toBe(true);
+    expect(orders.some((o) => o.action === 'sell' && /跌破/.test(o.note ?? ''))).toBe(true);
     expect(orders.every((o) => o.quantity % 100 === 0)).toBe(true);
+  });
+
+  it('长期横盘震荡不再死锁：持仓达 maxHoldingDays 触发超时平仓释放资金', () => {
+    // 恒定价格长横盘：既不上破 1R、也不下穿止损，旧逻辑会无限持有；新逻辑靠持仓天数强制出清
+    const orders = generateStrategyOrders(
+      'stop-profit',
+      makeCtx({ klineData: mkFlat(80, 10), simulatedCash: 30000 }),
+      { maxHoldingDays: 10 },
+    );
+    expect(orders.some((o) => o.action === 'sell' && /超时平仓释放资金/.test(o.note ?? ''))).toBe(true);
+  });
+
+  it('动态跟踪止损：上涨后回撤击穿 ATR 抬升的止损线触发全额离场', () => {
+    // 前 30 根横盘筑底后连续拉升抬升 highest/止损，再急跌击穿抬升后的止损线 → 全额离场
+    const closes = [
+      ...Array(20).fill(10),
+      10.6, 11.2, 11.8, 12.4, 13.0, 13.6, 14.2, 14.8, 15.4, 16.0,
+      15.8, 15.2, 14.6, 14.0, 13.4,
+    ];
+    const orders = generateStrategyOrders(
+      'stop-profit',
+      makeCtx({ klineData: makeKline(closes), simulatedCash: 50000 }),
+      { maxHoldingDays: 60 },
+    );
+    expect(orders.some((o) => o.action === 'sell' && /动态跟踪止损线/.test(o.note ?? ''))).toBe(true);
+    expect(orders.every((o) => o.quantity % 100 === 0)).toBe(true);
+  });
+
+  it('注册表：stop-profit 新增 maxHoldingDays / atrMultiplier 默认参数', () => {
+    const g = STRATEGY_GENERATORS['stop-profit'];
+    expect(g!.defaultParams).toEqual({ stopPercent: 5, riskPercent: 2, rewardRatio: 2, maxHoldingDays: 20, atrMultiplier: 2.0 });
   });
 });
 
 // ============================================================
-// 4. 补全建议（gap-fill）
+// 3.5 健壮性重构：开仓过滤 / 出场风控 / 风控熔断
 // ============================================================
 
-describe('gap-fill 区间缺口补全建议', () => {
-  it('相邻操作间隔足够时在缺口内最低点补买一笔（100 股取整）', () => {
-    const closes = [10, 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7, 10.8];
-    const kline = makeKline(closes);
-    const baselineOrders: SandboxOrder[] = [
-      makeOrder({ timestamp: `${kline[0].date}T09:30:00+08:00`, price: 10, quantity: 500 }),
-      makeOrder({ timestamp: `${kline[8].date}T09:30:00+08:00`, price: 10.8, quantity: 500 }),
-    ];
-    const out = generateStrategyOrders(
-      'gap-fill',
-      makeCtx({ klineData: kline, baselineOrders, simulatedCash: 10000, currentPrice: 10.8 }),
-      { minGap: 4, tailWindow: 3, tailDropPct: 20 },
+describe('健壮性重构（开仓过滤/出场风控/风控熔断）', () => {
+  it('stop-profit 开仓过滤：MA5 未定义且波动未企稳时不无脑入场', () => {
+    // 仅 8 根短横盘：MA5 尚在成初期、ATR14 未成熟 → 开仓过滤应拦截，全程空仓
+    const orders = generateStrategyOrders(
+      'stop-profit',
+      makeCtx({ klineData: mkFlat(3, 10), simulatedCash: 30000 }),
+      {},
     );
-    expect(out.length).toBeGreaterThan(0);
-    expect(out.every((o) => o.action === 'buy')).toBe(true);
-    expect(out.every((o) => o.quantity % 100 === 0)).toBe(true);
+    expect(orders.filter((o) => o.action === 'buy')).toHaveLength(0);
+  });
+
+  it('stop-profit 开仓过滤：ATR 企稳（窄幅震荡）后允许入场', () => {
+    // 长窄幅横盘：ATR14 成熟且日内振幅 ≤ 1.5×ATR → 视为波动企稳，应能建仓
+    const orders = generateStrategyOrders(
+      'stop-profit',
+      makeCtx({ klineData: mkFlat(30, 10), simulatedCash: 30000 }),
+      { maxHoldingDays: 40 },
+    );
+    expect(orders.some((o) => o.action === 'buy')).toBe(true);
+  });
+
+  it('pyramid 风控熔断：综合浮亏超 12% 强制全额止损并重置波段', () => {
+    // 建第一档后持续阴跌破均价 12% → 熔断卖出，reason 含 "熔断"
+    const closes = [...Array(15).fill(10), 9.8, 9.6, 9.4, 9.2, 9.0, 8.8, 8.6, 8.4, 8.2, 8.0, 7.9, 7.8, 7.7];
+    const orders = generateStrategyOrders(
+      'pyramid',
+      makeCtx({ klineData: makeKline(closes), simulatedCash: 100000 }),
+      {},
+    );
+    expect(orders.some((o) => o.action === 'sell' && /熔断/.test(o.note ?? ''))).toBe(true);
+  });
+
+  it('ma20-bounce 出场风控：跌破 MA60 下方 4% 触发清仓止损', () => {
+    // 先回踩低吸建仓，随后单边跌穿 MA60 下方 4% → 触发清仓止损，reason 含 "风控止损"
+    const closes = [
+      ...Array(70).fill(10),
+      9.9, 9.6, 9.3, 9.0, 8.7, 8.4,
+    ];
+    const orders = generateStrategyOrders(
+      'ma20-bounce',
+      makeCtx({ klineData: makeKline(closes), simulatedCash: 100000 }),
+      {},
+    );
+    expect(orders.some((o) => o.action === 'sell' && /风控止损/.test(o.note ?? ''))).toBe(true);
   });
 });
 

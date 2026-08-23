@@ -18,8 +18,7 @@
  *     触 2R 或破止损全清。
  *  3. ma20-bounce：PoolA/PoolB 槽位状态 + 减仓 50% 释放 Pool A 槽位，允许下次回踩继续低吸做 T。
  *  4. grid：箱体统计仅用「前向历史窗口」（前 boxSize 根），杜绝未来函数。
- *  5. gap-fill：补全信号当日收盘确认、次日开盘撮合，不直接以当日盘中低价强行成交。
- *  6. 全策略可用预算基于当日及历史注入；修正 budgetQty 缓冲公式，避免双重 ÷(1+Buff)。
+ *  5. 全策略可用的预算是基于当日及历史注入；修正 budgetQty 缓冲公式，避免双重 ÷(1+Buff)。
  *
  * 【六大技法】
  *  1. ma20-bounce   均线回踩低吸：Pool A(50%) MA20 回踩低吸 + Pool B(50%) MA60 深度回踩加仓；
@@ -34,7 +33,6 @@
  *                   距近期大底止损 ≤4%）时动用 ≤80% 一键打满，绑定硬止损 + 1.5 ATR 移动止盈。
  *  6. pure-dca      纯被动定期定额定投：固定周期开盘，仅用当日已入账资金按单期预算买入，
  *                   不主动卖出，持有至评估日清算。
- *  （gap-fill 补全建议生成器从真实流水派生，保留作为补充工具。）
  * @layer Logic
  * @storage_impact 纯函数，不读写任何存储。
  * @author 开发团队
@@ -51,7 +49,7 @@ import type { FeeConfig, SecurityKind } from './mathUtils';
 export interface StrategyContext {
   /** 前复权日 K 线（时间升序） */
   klineData: KlineItem[];
-  /** 基线订单（gap-fill 需要） */
+  /** 基线订单（历史/兼容保留；当前无生成器使用） */
   baselineOrders?: SandboxOrder[];
   /** 历史资金占用峰值（预算上限） */
   peakCapitalLock: number;
@@ -69,6 +67,9 @@ export interface StrategyContext {
   feeConfig: FeeConfig;
   /** 证券类型 */
   securityKind: SecurityKind;
+  /** 预设策略推演起始日（YYYY-MM-DD，来源于选中仓位的开仓日 positions.openAt）：
+   *  传入后策略出单起始点对齐到该日，确保第一笔买入信号不早于真实开仓日 */
+  strategyStartDate?: string;
 }
 
 /** 策略生成器统一接口 */
@@ -154,6 +155,23 @@ function execAtNext(i: number, kline: KlineItem[]): { date: string; price: numbe
   return { date: next.date, price: next.open };
 }
 
+/** 二分定位 kline 中 date >= 目标日期的第一根 K 线索引；全部早于目标则返回 -1 */
+function firstBarOnOrAfter(kline: KlineItem[], date: string): number {
+  let lo = 0;
+  let hi = kline.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (kline[mid].date >= date) {
+      ans = mid;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return ans;
+}
+
 // ============================================================
 // 通用执行引擎与策略意图协议（Strategy Reducer + Engine）
 // ============================================================
@@ -226,6 +244,8 @@ export interface StrategyReducer<TState> {
 export interface StrategyEngineOptions {
   /** 信号日循环起始索引（默认 0）；如 pyramid 需从 1 开始以对齐参考位） */
   startIndex?: number;
+  /** 开仓日（YYYY-MM-DD）：若提供，信号日起始索引对齐到 kline 中 date >= 该日的第一根 */
+  strategyStartDate?: string;
 }
 
 /** 按 100 股向下取整个买卖目标股数 */
@@ -266,7 +286,18 @@ export function runStrategyEngine<TState>(
   options: StrategyEngineOptions = {},
 ): SandboxOrder[] {
   if (klineData.length < 2) return [];
-  const startIndex = options.startIndex ?? 0;
+  // 起始信号日索引：策略自身温启动位（startIndex）与开仓日对齐位取较大者，
+  // 保证不早于真实开仓日（firstBarOnOrAfter 在按日升序的日线上二分定位）。
+  // 若开仓日晚于全部 K 线（无任何合法信号日），直接把起点推到 end 之后 → 本轮空仓。
+  let startIndex = options.startIndex ?? 0;
+  if (options.strategyStartDate) {
+    const alignIdx = firstBarOnOrAfter(klineData, options.strategyStartDate);
+    if (alignIdx < 0) {
+      startIndex = klineData.length; // 无合法信号日，令 for(i<end) 空转
+    } else {
+      startIndex = Math.max(startIndex, alignIdx);
+    }
+  }
   const end = klineData.length - 1;
 
   let cash = initialCash;
@@ -368,9 +399,10 @@ const ma20BounceGenerator: StrategyGenerator = {
       poolBUsed: boolean;
       poolABasis: number; // Pool A 已占用的实际成本（元）
       poolAShares: number; // 当前归属 Pool A 的持股份额（减仓时只减持这部分，绝不误伤 Pool B）
+      lastBuyPrice: number; // 最近一个买入成交价（风控止损参考）
     }
     const reducer: StrategyReducer<MbState> = {
-      initialState: () => ({ poolAUsed: false, poolBUsed: false, poolABasis: 0, poolAShares: 0 }),
+      initialState: () => ({ poolAUsed: false, poolBUsed: false, poolABasis: 0, poolAShares: 0, lastBuyPrice: 0 }),
       step: (sctx, state) => {
         const { bar, position } = sctx;
         const f = fast[sctx.i];
@@ -378,6 +410,15 @@ const ma20BounceGenerator: StrategyGenerator = {
         if (f == null || s == null) return { state, intents: [] };
         let ns = state;
         const intents: StrategyIntent[] = [];
+        // 出场风控：跌破最近买入价 8% 或跌破 MA60 下方 4% → 清仓止损（杜绝单边死扛）
+        if (position > 0 && ns.lastBuyPrice > 0) {
+          const hitBuyStop = bar.close <= ns.lastBuyPrice * 0.92;
+          const hitMa60Stop = s > 0 && bar.close <= s * 0.96;
+          if (hitBuyStop || hitMa60Stop) {
+            intents.push({ action: 'sell', shares: position, tag: 'ma-stop', reason: `出场风控止损：`+`${hitBuyStop ? '跌破买入价 8%' : '跌破 MA60 下方 4%'}` });
+            return { state: { poolAUsed: false, poolBUsed: false, poolABasis: 0, poolAShares: 0, lastBuyPrice: 0 }, intents };
+          }
+        }
         // 减仓：偏离 MA20 ≥ deviation% → 仅当存在 Pool A 仓位时，减持“Pool A”的 50%（绝不切 Pool B）
         if (state.poolAUsed && position > 0 && state.poolAShares > 0 && bar.close >= f * (1 + deviation / 100)) {
           const qty = roundTo100(state.poolAShares * 0.5); // 只减持 Pool A 份额的一半
@@ -401,6 +442,7 @@ const ma20BounceGenerator: StrategyGenerator = {
       commit: (sctx, stepState, fills) => {
         let ns = stepState;
         for (const fill of fills) {
+          if (fill.action === 'buy') ns = { ...ns, lastBuyPrice: fill.price };
           if (fill.tag === 'ma-poola' && fill.action === 'buy') ns = { ...ns, poolAUsed: true, poolABasis: fill.notionalUsed, poolAShares: fill.qty };
           else if (fill.tag === 'ma-poolb' && fill.action === 'buy') ns = { ...ns, poolBUsed: true };
           else if (fill.tag === 'ma-sell' && fill.action === 'sell') ns = { ...ns, poolAUsed: false };
@@ -408,7 +450,7 @@ const ma20BounceGenerator: StrategyGenerator = {
         return ns;
       },
     };
-    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { startIndex: maSlow });
+    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { startIndex: maSlow, strategyStartDate: ctx.strategyStartDate });
   },
   inactivityReason: (ctx) => {
     if (ctx.klineData.length === 0 || ctx.klineData.length < 10) return 'K 线不足（缺少慢线均线），无法判断回踩';
@@ -459,6 +501,15 @@ const pyramidGenerator: StrategyGenerator = {
             ],
           };
         }
+        // 风控熔断：综合持仓浮亏超 12% → 强制全额止损离场，重置波段
+        if (position > 0 && avgCost > 0 && bar.close <= avgCost * 0.88) {
+          return {
+            state: { ref: bar.close, levelBought: new Array(levels).fill(false) },
+            intents: [
+              { action: 'sell', shares: position, reason: `风控熔断：综合浮亏超 12% 强制止损离场（均价 ¥${avgCost.toFixed(2)}，现价 ¥${bar.close.toFixed(2)}）` },
+            ],
+          };
+        }
         // 解套减持：反弹突破综合持仓均价 +5% → 全额卖出并重置本轮（现金/持仓/档位全复位）
         if (position > 0 && avgCost > 0 && bar.close >= avgCost * 1.05) {
           return {
@@ -492,7 +543,7 @@ const pyramidGenerator: StrategyGenerator = {
       },
     };
 
-    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { startIndex: 1 });
+    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { startIndex: 1, strategyStartDate: ctx.strategyStartDate });
   },
   inactivityReason: (ctx) => {
     if (ctx.klineData.length === 0) return '无 K 线数据';
@@ -570,7 +621,7 @@ const gridGenerator: StrategyGenerator = {
       },
     };
 
-    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { startIndex: windowSize });
+    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { startIndex: windowSize, strategyStartDate: ctx.strategyStartDate });
   },
   inactivityReason: (ctx) => {
     const { klineData } = ctx;
@@ -631,9 +682,9 @@ export function computeStopProfitLevels(ctx: StrategyContext, params: Record<str
 const stopProfitGenerator: StrategyGenerator = {
   id: 'stop-profit',
   name: '止损止盈风控',
-  description: '严格风控：账户 2% 风险反推仓位；跌破止损全额清仓、达 1R 减半并止损上移至保本线、达 2R 全部清仓。',
-  defaultParams: { stopPercent: 5, riskPercent: 2, rewardRatio: 2 },
-  paramLabels: { stopPercent: '止损跌幅(%)', riskPercent: '账户风险(%)', rewardRatio: '盈亏比(R)' },
+  description: '严格风控：账户 2% 风险反推仓位；动态 ATR 跟踪止损 + 1R 减半保本 + 2R 清仓 + 持仓超时离场，杜绝死锁。',
+  defaultParams: { stopPercent: 5, riskPercent: 2, rewardRatio: 2, maxHoldingDays: 20, atrMultiplier: 2.0 },
+  paramLabels: { stopPercent: '止损跌幅(%)', riskPercent: '账户风险(%)', rewardRatio: '盈亏比(R)', maxHoldingDays: '最大持仓天数', atrMultiplier: 'ATR跟踪倍数' },
   generate: (ctx, params) => {
     const { klineData } = ctx;
     // 入场与止盈/止损水平均在入场时按实际入场价动态计算（见下方 reducer），
@@ -644,6 +695,11 @@ const stopProfitGenerator: StrategyGenerator = {
     const riskPercent = Math.max(0.5, params.riskPercent ?? 2);
     const rewardRatio = Math.max(1, params.rewardRatio ?? 2);
 
+    const maxHoldingDays = Math.max(3, Math.round(params.maxHoldingDays ?? 20));
+    const atrMultiplier = Math.max(0.5, params.atrMultiplier ?? 2.0);
+    const atr14 = calcATR(klineData, 14);
+    const ma5 = calcMA(klineData, 5);
+
     interface StopProfitState {
       entered: boolean;
       tp1Triggered: boolean; // 首次触 1R 已减半并止损上移保本
@@ -651,16 +707,23 @@ const stopProfitGenerator: StrategyGenerator = {
       stop: number; // 动态止损价（初始=近20日低与 −stopPercent% 之小者；1R 后上移至 entry）
       tp1: number; // 1R 减半价 = entry + R
       tp2: number; // 2R 清仓价 = entry + rewardRatio·R（恒 > entry）
+      highestPriceSinceEntry: number; // 入场后最高价（累计 bar.high 取大）
+      holdingDays: number; // 持仓天数计数器
     }
 
     const reducer: StrategyReducer<StopProfitState> = {
-      initialState: () => ({ entered: false, tp1Triggered: false, entry: 0, stop: 0, tp1: 0, tp2: 0 }),
+      initialState: () => ({ entered: false, tp1Triggered: false, entry: 0, stop: 0, tp1: 0, tp2: 0, highestPriceSinceEntry: 0, holdingDays: 0 }),
       step: (sctx, state) => {
         const { bar, position, cash, i } = sctx;
         const nextOpen = sctx.next?.price;
         // 未入场：首个收盘 > 0 日建仓（风控入场），用当日已入账 cash 与 R 反推风险仓位
         if (!state.entered) {
           if (bar.close <= 0 || !nextOpen || nextOpen <= 0) return { state, intents: [] };
+          const ma5v = ma5[i];
+          const atrV = atr14[i];
+          const aboveMA5 = ma5v != null && bar.close >= ma5v;
+          const atrCalmed = atrV != null && !Number.isNaN(atrV) && atrV > 0 && (bar.high - bar.low) <= atrV * 1.5;
+          if (!aboveMA5 && !atrCalmed) return { state, intents: [] }; // 开仓过滤：无强动能/波动未企稳则空仓等待
           const entryPrice = nextOpen;
           // 只用当日及以前数据定义止损（不含未来）：近20日低 与 −stopPercent% 之小者
           const low20 = recentLowHigh(klineData.slice(0, i + 1), 20).low;
@@ -677,38 +740,48 @@ const stopProfitGenerator: StrategyGenerator = {
           // 反推预算：使引擎 budgetQty 精确还原目标建仓量（含费缓冲）；入场当日不重复做退出判定
           const notional = entryQty * nextOpen * (1 + BUY_BUFFER_RATE) + FIXED_FEE;
           return {
-            state: { entered: true, tp1Triggered: false, entry: entryPrice, stop: stopPrice, tp1: tp1Price, tp2: tp2Price },
+            state: { entered: true, tp1Triggered: false, entry: entryPrice, stop: stopPrice, tp1: tp1Price, tp2: tp2Price, highestPriceSinceEntry: Math.max(entryPrice, bar.high), holdingDays: 1 },
             intents: [{ action: 'buy', notional, reason: '风控入场' }],
           };
         }
-        // 已入场：止盈/止损判定（信号日收盘/最低确认，次日开盘撮合）；2R 恒高于入场价
+        // 已入场：每日先更新最高价与动态 ATR 跟踪止损，再做 2R/止损/1R/超时判定
+        const highest = Math.max(state.highestPriceSinceEntry, bar.high);
+        const holdingDays = state.holdingDays + 1;
+        const atrNow = atr14[i];
+        let stop = state.stop;
+        if (atrNow && !Number.isNaN(atrNow)) {
+          stop = Math.max(stop, Math.round((highest - atrMultiplier * atrNow) * 100) / 100);
+        }
+        const persist = { ...state, highestPriceSinceEntry: highest, stop, holdingDays };
+        const reset = { entered: false, tp1Triggered: false, entry: 0, stop: 0, tp1: 0, tp2: 0, highestPriceSinceEntry: 0, holdingDays: 0 };
+        // 2R 全额止盈
         if (state.tp2 > 0 && position > 0 && bar.close >= state.tp2) {
-          return {
-            state: { entered: false, tp1Triggered: false, entry: 0, stop: 0, tp1: 0, tp2: 0 },
-            intents: [{ action: 'sell', shares: position, reason: '达 2R 全部清仓落袋' }],
-          };
+          return { state: reset, intents: [{ action: 'sell', shares: position, reason: '达 2R 全部清仓落袋' }] };
         }
-        if (state.stop > 0 && position > 0 && bar.low <= state.stop) {
-          return {
-            state: { entered: false, tp1Triggered: false, entry: 0, stop: 0, tp1: 0, tp2: 0 },
-            intents: [{ action: 'sell', shares: position, reason: '跌破止损，全额清仓' }],
-          };
+        // 动态跟踪止损
+        if (stop > 0 && position > 0 && bar.low <= stop) {
+          return { state: reset, intents: [{ action: 'sell', shares: position, reason: `跌破动态跟踪止损线（¥${stop.toFixed(2)}）全额离场` }] };
         }
+        // 1R 减半：找一个不限、保本
         if (!state.tp1Triggered && position > 0 && state.tp1 > 0 && bar.close >= state.tp1) {
           const sellQty = roundTo100(position * 0.5);
-          const ns = { ...state, tp1Triggered: true, stop: state.entry };
+          const ns = { ...persist, tp1Triggered: true, stop: Math.max(stop, state.entry) };
           if (sellQty <= 0) return { state: ns, intents: [] };
           return { state: ns, intents: [{ action: 'sell', shares: sellQty, reason: '达 1R 减半，止损上移保本线' }] };
         }
-        return { state, intents: [] };
+        // 时间超时：持有满周期且未达 1R → 出清释放资金
+        if (!state.tp1Triggered && holdingDays >= maxHoldingDays) {
+          return { state: reset, intents: [{ action: 'sell', shares: position, reason: `持仓达 ${maxHoldingDays} 日动能衰竭，超时平仓释放资金` }] };
+        }
+        return { state: persist, intents: [] };
       },
     };
 
-    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], {});
+    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { strategyStartDate: ctx.strategyStartDate });
   },
   inactivityReason: (ctx) => {
     if (ctx.klineData.length === 0) return '无 K 线数据';
-    return '入场参考确立后价位既未触发止损/止盈，也未达 1R 减仓线 → 保持持有无交易（无交易不代表无逻辑，属风控等待）';
+    return '入场后价位既未触发动态止损/1R/2R，也未达持仓超时线 → 保持持有无交易（无交易不代表无逻辑，属风控等待或超时离场间隙）';
   },
 };
 
@@ -754,10 +827,10 @@ function genMaxOpportunity(ctx: StrategyContext, params: Record<string, number>)
   const slow = calcMA(klineData, maSlow);
   const atr = calcATR(klineData, atrPeriod);
 
-  return maxLoop(klineData, fast, slow, atr, simulatedCash, cashInjections ?? [], maxUse);
+  return maxLoop(klineData, fast, slow, atr, simulatedCash, cashInjections ?? [], maxUse, ctx.strategyStartDate);
 }
 
-function maxLoop(klineData: KlineItem[], fast: (number | null)[], slow: (number | null)[], atr: number[], simulatedCash: number, cashInjections: CashInjection[], maxUse: number): SandboxOrder[] {
+function maxLoop(klineData: KlineItem[], fast: (number | null)[], slow: (number | null)[], atr: number[], simulatedCash: number, cashInjections: CashInjection[], maxUse: number, strategyStartDate?: string): SandboxOrder[] {
   interface MaxState { stopLoss: number; trail: number; }
   const reducer: StrategyReducer<MaxState> = {
     initialState: () => ({ stopLoss: 0, trail: 0 }),
@@ -781,7 +854,7 @@ function maxLoop(klineData: KlineItem[], fast: (number | null)[], slow: (number 
       return { state: { stopLoss: Number((low60 * 0.98).toFixed(2)), trail: bar.close }, intents: [{ action: 'buy', notional, reason: '多维共振满仓' }] };
     },
   };
-  return runStrategyEngine(reducer, klineData, simulatedCash, cashInjections, {});
+  return runStrategyEngine(reducer, klineData, simulatedCash, cashInjections, { strategyStartDate });
 }
 
 // ============================================================
@@ -825,75 +898,11 @@ const pureDcaGenerator: StrategyGenerator = {
       },
     };
 
-    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? []);
+    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { strategyStartDate: ctx.strategyStartDate });
   },
   inactivityReason: (ctx) => {
     if (ctx.klineData.length === 0) return '无 K 线数据';
     return '首枚定投日尚未到达，或账户可用现金 < 固定规费，未产生买入（纯被动定期定额，需足一个定投周期与最小可买额）';
-  },
-};
-
-// ============================================================
-// 7. 补全建议（gap-fill，辅助工具，非 6 大标准策略）
-// ============================================================
-
-const gapFillGenerator: StrategyGenerator = {
-  id: 'gap-fill',
-  name: '补全建议',
-  description: '辅助工具（理想化事后复盘）：基于基线订单，示「若当时在区间最低点买入」的补仓点位与次日开盘撮合建议——只做机会提示，不代表可持续执行。',
-  defaultParams: { minGap: 5, tailWindow: 10, tailDropPct: 5 },
-  paramLabels: { minGap: '最小间隔(交易日)', tailWindow: '尾段回看(交易日)', tailDropPct: '尾段低点阈值(%)' },
-  generate: (ctx, params) => {
-    const { klineData, baselineOrders = [] } = ctx;
-    if (klineData.length === 0) return [];
-    const minGap = Math.max(2, Math.round(params.minGap ?? 5));
-    const tailWindow = Math.max(3, Math.round(params.tailWindow ?? 10));
-    const tailDropPct = Math.max(2, params.tailDropPct ?? 5);
-    const klineByDate = new Map(klineData.map((k, i) => [k.date, i]));
-    const nx = (i: number) => execAtNext(i, klineData);
-    const remaining = Math.max(FIXED_FEE, computeRemainingCash(ctx));
-    const notional = remaining * 0.2;
-    const plan = new Map<number, StrategyIntent>();
-    const idealIdx = [...baselineOrders]
-      .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-      .map((o) => klineByDate.get(o.timestamp.slice(0, 10)) ?? -1)
-      .filter((i) => i >= 0);
-
-    // 段间隙：相邻操作间 >= minGap 根，在缺口内找到最抵低点（信号日）→ 次日开盘挂单补买
-    for (let idx = 1; idx < idealIdx.length; idx++) {
-      const prev = idealIdx[idx - 1];
-      const next = idealIdx[idx];
-      const gaps = next - prev - 1;
-      if (gaps < minGap) continue;
-      let lowI = -1;
-      let lowV = Infinity;
-      for (let i = prev + 1; i < next; i++) if (klineData[i].low < lowV) { lowV = klineData[i].low; lowI = i; }
-      if (lowI < 0 || !nx(lowI)) continue;
-      plan.set(lowI, { action: 'buy', notional, reason: `区间补全（间隔 ${gaps} 根，低点信号→次日开盘撮合）` });
-    }
-
-    // 尾段：末笔操作后显著低点（信号日）→ 次日开盘挂单加仓
-    const lastIdx = idealIdx.length ? idealIdx[idealIdx.length - 1] : 0;
-    const tailStart = Math.max(lastIdx, klineData.length - tailWindow);
-    let tailI = -1;
-    let tailLow = Infinity;
-    for (let i = tailStart; i < klineData.length - 1; i++) if (klineData[i].low < tailLow) { tailLow = klineData[i].low; tailI = i; }
-    if (tailI >= 0 && ctx.currentPrice > 0 && tailLow <= ctx.currentPrice * (1 - tailDropPct / 100) && nx(tailI)) {
-      plan.set(tailI, { action: 'buy', notional, reason: '尾段显著低点补仓（次日开盘撮合）' });
-    }
-
-    const reducer: StrategyReducer<null> = {
-      initialState: () => null,
-      step: (sctx) => {
-        const intent = plan.get(sctx.i);
-        return intent ? { state: null, intents: [intent] } : { state: null, intents: [] };
-      },
-    };
-    return runStrategyEngine(reducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], {});
-  },
-  inactivityReason: (ctx) => {
-    if (ctx.klineData.length === 0) return '无 K 线数据';
-    return '基线订单间隙不足（< minGap 根），或尾段低点未显著低于现价 → 无补仓机会提示（辅助工具，取决真实流水密度）';
   },
 };
 
@@ -1167,7 +1176,7 @@ const hybridRegimeGenerator: StrategyGenerator = {
         return stepState;
       },
     };
-    return runStrategyEngine(hybridReducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { startIndex: 62 });
+    return runStrategyEngine(hybridReducer, klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { startIndex: 62, strategyStartDate: ctx.strategyStartDate });
   },
   inactivityReason: (ctx) =>
     ctx.klineData.length < 62 ? 'K 线不足 62 根，无法稳定计算 MA20/MA60 与 ATR' : undefined,
@@ -1329,7 +1338,7 @@ const modelRecommendGenerator: StrategyGenerator = {
         return { state: ns, intents };
       },
     };
-    return runStrategyEngine(reducer, ctx.klineData, ctx.simulatedCash, ctx.cashInjections ?? []);
+    return runStrategyEngine(reducer, ctx.klineData, ctx.simulatedCash, ctx.cashInjections ?? [], { strategyStartDate: ctx.strategyStartDate });
   },
   inactivityReason: (ctx) =>
     ctx.klineData.length < 21 ? 'K 线不足 21 根，无法稳定计算 MA20 / ATR14 因子' : undefined,
@@ -1343,12 +1352,11 @@ export const STRATEGY_GENERATORS: Record<PresetStrategyId, StrategyGenerator> = 
   'stop-profit': stopProfitGenerator,
   'max-opportunity': maxOpportunityGenerator,
   'pure-dca': pureDcaGenerator,
-  'gap-fill': gapFillGenerator,
   'hybrid-regime': hybridRegimeGenerator,
   'model-recommend': modelRecommendGenerator,
 };
 
-export const STRATEGY_IDS: PresetStrategyId[] = ['ma20-bounce', 'pyramid', 'grid', 'stop-profit', 'max-opportunity', 'pure-dca', 'gap-fill', 'hybrid-regime', 'model-recommend'];
+export const STRATEGY_IDS: PresetStrategyId[] = ['ma20-bounce', 'pyramid', 'grid', 'stop-profit', 'max-opportunity', 'pure-dca', 'hybrid-regime', 'model-recommend'];
 
 /**
  * 按策略 id 生成订单。

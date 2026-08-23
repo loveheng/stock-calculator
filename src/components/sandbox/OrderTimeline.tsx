@@ -19,8 +19,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ArrowRight, Plus, RotateCcw, Trash2, TrendingUp, TrendingDown } from 'lucide-react';
 import type { EngineRejection } from '../../utils/sandboxEngine';
-import type { KlineItem, SandboxOrder } from '../../types/sandbox';
+import type { KlineItem, SandboxOrder, SandboxResult, SandboxSnapshot } from '../../types/sandbox';
 import { useSandboxStore } from '../../store/sandboxStore';
+import StrategyOverviewCard, { type StrategyOverviewData } from './StrategyOverviewCard';
 
 /** 长按连加 Hook：按住按钮持续触发（120ms 间隔），松手/移出停止 */
 function useHoldRepeat(callback: () => void, disabled: boolean) {
@@ -72,6 +73,11 @@ export function roundPrice(p: number): number {
   return Math.round(p * 100) / 100;
 }
 
+/** 金额千分位展示（四舍五入到元） */
+function fmtMoney(v: number): string {
+  return Math.round(v).toLocaleString('zh-CN');
+}
+
 // ============================================================
 // 单行组件（独立组件保证 Hook 稳定）
 // ============================================================
@@ -90,9 +96,11 @@ interface OrderRowProps {
   onRemove: (id: string) => void;
   /** 恢复为基线值（由父级按日期+方向查基线订单） */
   onRestore: (order: SandboxOrder) => void;
+  /** 该订单交易日结算快照（引擎日级快照，用于展示当期资金/占用/总资产） */
+  daySnapshot?: SandboxSnapshot;
 }
 
-function OrderRow({ order, index, readonly, changed, kline, asOfDate, cashWarning, onPatch, onRemove, onRestore }: OrderRowProps) {
+function OrderRow({ order, index, readonly, changed, kline, asOfDate, cashWarning, daySnapshot, onPatch, onRemove, onRestore }: OrderRowProps) {
   const day = order.timestamp.slice(0, 10);
 
   const moveDate = (delta: number) => {
@@ -129,7 +137,11 @@ function OrderRow({ order, index, readonly, changed, kline, asOfDate, cashWarnin
       )}
       {order.kind === 'borrow' && <span className="text-[9px] px-1 py-0.5 rounded bg-sky-500/15 text-sky-400">倒T出借</span>}
       {order.kind === 'merge' && <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/15 text-purple-400">归并</span>}
-      {order.isBaseline && <span className="text-[9px] px-1 py-0.5 rounded bg-slate-500/15 text-slate-400">真实操作</span>}
+      {order.isBaseline ? (
+        <span className="text-[9px] px-1 py-0.5 rounded bg-slate-500/15 text-slate-400 border border-slate-500/30">[真实操作]</span>
+      ) : (
+        <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30">[策略信号]</span>
+      )}
 
       {/* 资金不足行内警告（非阻断）：点击行外上方横幅可一键解决 */}
       {cashWarning && (
@@ -241,11 +253,40 @@ function OrderRow({ order, index, readonly, changed, kline, asOfDate, cashWarnin
         ≈¥{(order.price * order.quantity).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
       </span>
 
-      {/* 触发原因（预设生成器携带的 note，如策略信号说明） */}
+      {/* 触发原因（note 归因）：只读方案以高亮 Badge 标签展示；user 方案保留原 reason 供查看 */}
       {order.note && (
-        <span className="basis-full flex items-start gap-1 text-[10px] leading-snug text-slate-400 border-t border-slate-700/50 pt-1 mt-0.5">
-          <span className="shrink-0 mt-0.5 text-slate-600 select-none">↳</span>
-          <span className="min-w-0">{order.note}</span>
+        <span className="basis-full flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-slate-700/50 pt-1 mt-0.5">
+          <span className="text-[10px] text-slate-500">本笔流向</span>
+          {order.action === 'buy' ? (
+            <span className="font-mono text-[10px] font-medium text-red-400">-¥{fmtMoney(order.price * order.quantity + (order.fee ?? 0))}</span>
+          ) : (
+            <span className="font-mono text-[10px] font-medium text-green-400">+¥{fmtMoney(order.price * order.quantity - (order.fee ?? 0))}</span>
+          )}
+          <span className="text-slate-600">·</span>
+          <span className="text-[10px] text-slate-500">变动后</span>
+          {daySnapshot ? (
+            <>
+            <span className="text-[10px] text-slate-400">结余现金 <b className="font-mono text-slate-200">¥{fmtMoney(daySnapshot.cash)}</b></span>
+            <span className="text-[10px] text-slate-400">持仓 <b className="font-mono text-slate-200">{daySnapshot.position.toLocaleString('zh-CN')} 股</b></span>
+            <span className="text-[10px] text-slate-400">持仓市值 <b className="font-mono text-slate-200">¥{fmtMoney(daySnapshot.position * daySnapshot.marketPrice)}</b></span>
+            </>
+          ) : (
+            <span className="text-[10px] text-slate-600">暂无结算快照</span>
+          )}
+          <span
+            className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border ${
+              order.action === 'buy'
+                ? 'bg-red-500/15 text-red-400 border-red-500/30'
+                : 'bg-green-500/15 text-green-400 border-green-500/30'
+            }`}
+          >
+            {order.action === 'buy' ? '买入' : '卖出'}
+            <span className="font-normal text-slate-500">（{readonly ? '策略触发' : '原始归因'}）</span>
+          </span>
+          <span className="text-[11px] leading-snug text-amber-300">【{order.note}】</span>
+          <span className="font-mono text-[10px] text-slate-400">
+            {day} {order.action === 'buy' ? '买入' : '卖出'} {order.quantity} 股 @ ¥{order.price.toFixed(2)}
+          </span>
         </span>
       )}
 
@@ -290,9 +331,19 @@ interface OrderTimelineProps {
   rejections?: EngineRejection[];
   /** 预设策略零成交时的策略自身原因（空时间线处展示，解释为何无买卖） */
   inactivityReason?: string;
+  /** 策略运行总体概览（空时间线处展示策略画像） */
+  strategyOverview?: StrategyOverviewData;
+  /** 策略自身生成的订单数（与基线合并订单解耦；出单为 0 时置顶展示策略状态横幅） */
+  generatedOrdersCount: number;
+  /** 策略可用预算是否 ≤ 0（出单为 0 的预算遮蔽归因） */
+  strategyBudgetExhausted?: boolean;
   /** 添加订单入口（user 分支显示，父级弹出下单面板） */
   onAddOrder?: () => void;
   onChange: (orders: SandboxOrder[]) => void;
+  /** 引擎日级快照（result.snapshots）：用于在每个操作行展示当期资金/占用/总资产 */
+  snapshots?: SandboxSnapshot[];
+  /** 推演结果（末态结算栏：最终现金/持仓/期末市值/已实现盈亏/总笔数） */
+  result?: SandboxResult;
 }
 
 /**
@@ -311,9 +362,25 @@ export default function OrderTimeline({
   onAddOrder,
   onChange,
   inactivityReason,
+  strategyOverview,
+  generatedOrdersCount,
+  strategyBudgetExhausted = false,
+  snapshots = [],
+  result,
 }: OrderTimelineProps) {
   const readonly = branchType !== 'user';
   const [shiftDays, setShiftDays] = useState('1');
+
+  // 策略自身出单为 0：与基线合并订单解耦，置顶展示策略状态横幅（常驻）
+  const strategyInactive = branchType === 'preset' && generatedOrdersCount === 0;
+  const strategyBannerText = strategyBudgetExhausted
+    ? '历史操作已占满初始预算，该策略无剩余资金开仓，可调高顶部模拟资金'
+    : (inactivityReason ?? '所选区间内未触发该策略的买卖信号，执行风控空仓');
+
+  // 按来源分层：真实操作（基线）vs 策略信号（生成/用户新增），拆为两个可折叠区块
+  const baselineRows = orders.filter((o) => o.isBaseline);
+  const strategyRows = orders.filter((o) => !o.isBaseline);
+  const showStrategyBlock = branchType === 'preset' || strategyRows.length > 0;
 
   // 快捷修复（非阻断警示条）：直连 store 取当前分支、资金峰值与修复 action
   const branchId = useSandboxStore((s) => s.selectedBranchId);
@@ -342,6 +409,14 @@ export default function OrderTimeline({
     }
     return map;
   }, [rejections]);
+
+  // 日级快照索引：交易日 → 当日结算后的资金/持仓/总资产，供每个订单行展示
+  const snapshotList = (result?.snapshots?.length ? result.snapshots : snapshots) ?? [];
+  const snapshotByDay = useMemo(() => {
+    const map: Record<string, SandboxSnapshot> = {};
+    for (const s of snapshotList) if (!map[s.timestamp]) map[s.timestamp] = s;
+    return map;
+  }, [snapshotList]);
 
   // ---- 行级编辑 ----
   const patchOrder = (id: string, patch: Partial<SandboxOrder>) => {
@@ -399,14 +474,36 @@ export default function OrderTimeline({
   };
 
   if (orders.length === 0) {
-    return (
-      <div className="text-center text-xs text-slate-500 py-6 space-y-2">
-        <div>暂无操作记录</div>
-        {inactivityReason && (
-          <div className="mx-auto max-w-md text-[11px] leading-snug text-slate-400 bg-slate-800/40 border border-slate-700/40 rounded-lg px-3 py-2 text-left">
-            <span className="text-slate-500">策略自身原因：</span>
-            {inactivityReason}
+    if (strategyInactive && strategyOverview) {
+      return (
+        <div className="space-y-3 py-1">
+          <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
+            <span className="shrink-0 mt-0.5">ℹ️</span>
+            <span className="min-w-0 leading-snug">{strategyBannerText}</span>
           </div>
+          <StrategyOverviewCard overview={strategyOverview} inactivityReason={inactivityReason} />
+          {onAddOrder && (
+            <div className="text-center">
+              <button onClick={onAddOrder} className="text-blue-400 hover:text-blue-300 inline-flex items-center gap-0.5 text-xs">
+                <Plus className="w-3 h-3" />添加第一笔
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+    return (
+      <div className="text-center text-xs text-slate-500 py-6 space-y-3">
+        <div>暂无买卖记录（0 笔交易）</div>
+        {inactivityReason ? (
+          <div className="mx-auto flex max-w-md flex-col items-center gap-2 rounded-xl border border-slate-700/50 bg-slate-800/40 px-4 py-3 text-center">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-400">
+              策略决策说明
+            </span>
+            <p className="text-[11px] leading-relaxed text-slate-400">{inactivityReason}</p>
+          </div>
+        ) : (
+          <div className="text-[11px] text-slate-600">所选区间内无符合策略门槛的买卖点</div>
         )}
         {onAddOrder && (
           <button onClick={onAddOrder} className="ml-2 text-blue-400 hover:text-blue-300 inline-flex items-center gap-0.5">
@@ -479,23 +576,42 @@ export default function OrderTimeline({
         </div>
       )}
 
-      <div className="space-y-1.5">
-        {orders.map((o, idx) => (
-          <OrderRow
-            key={o.id}
-            order={o}
-            index={idx}
-            readonly={readonly}
-            changed={isChanged(o)}
-            kline={kline}
-            asOfDate={asOfDate}
-            cashWarning={cashWarnings[o.id]}
-            onPatch={patchOrder}
-            onRemove={removeOrder}
-            onRestore={restoreOrder}
-          />
-        ))}
-      </div>
+      {/* 预设为纯策略独立推演：不展示基线底仓行（无基线数据，且显式屏蔽） */}
+      {branchType !== 'preset' && baselineRows.length > 0 && (
+        <details open>
+          <summary className="flex cursor-pointer select-none items-center justify-between px-3 py-1.5 text-xs font-medium text-slate-300">
+            <span className="flex items-center gap-1.5"><span className="text-[9px] px-1 py-0.5 rounded bg-slate-500/15 text-slate-400">[真实操作]</span>真实操作批次</span>
+            <span className="text-[10px] text-slate-500">{baselineRows.length} 笔 ▾</span>
+          </summary>
+          <div className="space-y-1.5 p-2 pt-1">
+            {baselineRows.map((o, idx) => (
+              <OrderRow key={o.id} order={o} index={idx} readonly={readonly} changed={isChanged(o)} kline={kline} asOfDate={asOfDate} cashWarning={cashWarnings[o.id]} daySnapshot={snapshotByDay[o.timestamp.slice(0, 10)]} onPatch={patchOrder} onRemove={removeOrder} onRestore={restoreOrder} />
+            ))}
+          </div>
+        </details>
+      )}
+      {showStrategyBlock && (
+        <details open>
+          <summary className="flex cursor-pointer select-none items-center justify-between px-3 py-1.5 text-xs font-medium text-blue-200">
+            <span className="flex items-center gap-1.5"><span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/15 text-blue-400">[策略信号]</span>策略操作（{strategyRows.length} 笔）</span>
+            <span className="text-[10px] text-slate-400">▾</span>
+          </summary>
+          <div className="p-2 pt-1">
+            {strategyRows.length > 0 ? (
+              <div className="space-y-1.5">
+                {strategyRows.map((o, idx) => (
+                  <OrderRow key={o.id} order={o} index={idx} readonly={readonly} changed={isChanged(o)} kline={kline} asOfDate={asOfDate} cashWarning={cashWarnings[o.id]} daySnapshot={snapshotByDay[o.timestamp.slice(0, 10)]} onPatch={patchOrder} onRemove={removeOrder} onRestore={restoreOrder} />
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span className="min-w-0 leading-snug">{strategyBannerText}</span>
+              </div>
+            )}
+          </div>
+        </details>
+      )}
 
       {!readonly && onAddOrder && (
         <button
@@ -506,6 +622,22 @@ export default function OrderTimeline({
           点击 K 线或此处添加一笔操作
         </button>
       )}
+
+      {/* 末态结算栏：最终现金 / 持仓 / 期末市值 / 已实现盈亏 / 总笔数 */}
+      {result && (() => {
+        const lastSnap = snapshotList[snapshotList.length - 1];
+        const endValue = lastSnap ? result.finalPosition * lastSnap.marketPrice : null;
+        return (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] text-slate-300">
+            <span className="text-[10px] font-medium text-emerald-400">末态结算</span>
+            <span>最终现金 <b className="font-mono text-slate-100">¥{fmtMoney(result.finalCash)}</b></span>
+            <span>持仓股数 <b className="font-mono text-slate-100">{result.finalPosition.toLocaleString('zh-CN')} 股</b></span>
+            <span>期末市值 <b className="font-mono text-slate-100">¥{endValue != null ? fmtMoney(endValue) : '—'}</b></span>
+            <span>已实现盈亏 <b className="font-mono text-slate-100">¥{fmtMoney(result.realizedProfit)}</b></span>
+            <span>总笔数 <b className="font-mono text-slate-100">{result.tradeCount} 笔</b></span>
+          </div>
+        );
+      })()}
 
       {readonly && branchType === 'preset' && (
         <p className="text-[10px] text-slate-500 px-1">

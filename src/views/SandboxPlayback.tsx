@@ -46,10 +46,12 @@ import type { StockSearchItem } from '../types/stock';
 import ScenarioList from '../components/sandbox/ScenarioList';
 import KlineChart, { type BarClickInfo } from '../components/sandbox/KlineChart';
 import OrderTimeline from '../components/sandbox/OrderTimeline';
+import StrategyOverviewCard from '../components/sandbox/StrategyOverviewCard';
 import MetricsPanel from '../components/sandbox/MetricsPanel';
 import ComparisonTable from '../components/sandbox/ComparisonTable';
 import PresetDialog from '../components/sandbox/PresetDialog';
 import EmptyStateGuide, { TERMS } from '../components/sandbox/EmptyStateGuide';
+import { STRATEGY_GENERATORS } from '../utils/strategyGenerators';
 import { roundPrice, toLot } from '../components/sandbox/OrderTimeline';
 
 /** 金额缩写（千分位整数） */
@@ -436,6 +438,27 @@ export default function SandboxPlayback() {
   const stale = selectedBranch ? staleFlagsFor(selectedBranch.id) : null;
   const rejections = activeComputed?.rejections ?? [];
 
+  // 策略运行总体概览（仅 preset 且有候选标识时组装；空时间线处展示画像）
+  const strategyOverview = useMemo(() => {
+    if (!selectedBranch) return null;
+    const sid = selectedBranch.presetStrategyId;
+    if (!sid) return null;
+    const g = STRATEGY_GENERATORS[sid];
+    if (!g) return null;
+    const params = g.paramLabels && selectedBranch.presetParams
+      ? Object.entries(g.paramLabels)
+          .filter(([k]) => selectedBranch.presetParams?.[k] != null)
+          .map(([k, label]) => ({ label, value: String(selectedBranch.presetParams?.[k]) }))
+      : [];
+    return {
+      name: g.name,
+      description: g.description,
+      params,
+      simulatedCash: selectedBranch.simulatedCash,
+      peakCapitalLock: selectedBranch.peakCapitalLock,
+    };
+  }, [selectedBranch]);
+
   // ---- 挂载时加载账本持仓（快捷选择） ----
   useEffect(() => {
     (async () => {
@@ -737,6 +760,16 @@ export default function SandboxPlayback() {
             onBarClick={selectedBranch.branchType === 'user' ? handleBarClick : undefined}
           />
         </div>
+        {selectedBranch.branchType === 'preset' && strategyOverview && (
+          <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-slate-300 mb-3">策略操作概览</h3>
+            <StrategyOverviewCard
+              overview={strategyOverview}
+              inactivityReason={activeComputed?.inactivityReason}
+              tradeCount={activeComputed?.generatedOrdersCount ?? 0}
+            />
+          </div>
+        )}
         <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4">
           <h3 className="text-sm font-semibold text-slate-300 mb-3">操作时间线（{orders.length} 笔）</h3>
           <OrderTimeline
@@ -746,11 +779,14 @@ export default function SandboxPlayback() {
             kline={kline}
             asOfDate={activeComputed?.asOfDate}
             inactivityReason={activeComputed?.inactivityReason}
+            generatedOrdersCount={activeComputed?.generatedOrdersCount ?? 0}
+            strategyBudgetExhausted={activeComputed?.strategyBudgetExhausted ?? false}
             onAddOrder={selectedBranch.branchType === 'user' ? () => {
               const last = kline[kline.length - 1];
               if (last) setOrderPanel({ barIndex: kline.length - 1, item: last });
             } : undefined}
             onChange={handleOrdersChange}
+            result={activeComputed?.result ?? undefined}
           />
         </div>
         <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4">

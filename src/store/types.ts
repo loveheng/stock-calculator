@@ -42,6 +42,8 @@ export interface Position {
   batches: PositionBatch[];
   isClosed: boolean;
   createdAt: string;
+  /** 开仓时间：第一笔买入（open 批次）的成交时间，ISO 字符串 */
+  openAt?: string;
   closedAt?: string;
   realizedPnL?: number;
   totalInvested?: number;

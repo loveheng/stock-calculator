@@ -102,6 +102,11 @@ export default function ScenarioCard({
   // 策略名（preset）
   const strategyName = branch.presetStrategyId ? STRATEGY_GENERATORS[branch.presetStrategyId]?.name ?? '预设策略' : null;
 
+  // 初始本金 = simulatedCash（默认对齐 peakCapitalLock）；期末总资产 = 现金 + 持仓市值（末根快照，含复利滚存增长）
+  const initialCash = branch.simulatedCash;
+  const finalTotalAsset =
+    result && result.snapshots.length > 0 ? result.snapshots[result.snapshots.length - 1].totalAsset : null;
+
   // 关键数字
   let headline: React.ReactNode = null;
   if (isBaseline) {
@@ -121,20 +126,18 @@ export default function ScenarioCard({
         </div>
       </div>
     ) : null;
-  } else if (result) {
+  } else if (result && finalTotalAsset != null) {
     headline = (
       <div className="grid grid-cols-2 gap-1 text-[11px] mt-2">
         <div className="bg-slate-900/60 rounded-lg px-2 py-1">
-          <div className="text-slate-500">最终收益</div>
-          <div className={`font-mono font-semibold ${result.finalProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-            {fmtMoney(result.finalProfit)}
-          </div>
+          <div className="text-slate-500">初始本金</div>
+          <div className="font-mono font-semibold text-slate-200">¥{Math.round(initialCash).toLocaleString('zh-CN')}</div>
+          <div className="text-slate-600 mt-0.5">收益率 {fmtPct(result.returnRate)}</div>
         </div>
         <div className="bg-slate-900/60 rounded-lg px-2 py-1">
-          <div className="text-slate-500">累计收益率</div>
-          <div className={`font-mono font-semibold ${result.returnRate >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-            {fmtPct(result.returnRate)}
-          </div>
+          <div className="text-slate-500">期末总资产</div>
+          <div className={`font-mono font-semibold ${finalTotalAsset >= initialCash ? 'text-red-400' : 'text-green-400'}`}>¥{Math.round(finalTotalAsset).toLocaleString('zh-CN')}</div>
+          <div className="text-slate-600 mt-0.5">现金+持仓市值</div>
         </div>
       </div>
     );

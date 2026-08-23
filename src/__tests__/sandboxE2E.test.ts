@@ -120,8 +120,8 @@ it('6 大标准策略全部可一键生成并跑通引擎（不变量校验）',
     const user = s.branches.find((b) => b.branchType === 'user')!;
     expect(user.parentPresetId).toBe(presetId);
     expect(s.selectedBranchId).toBe(user.id);
-    expect(s.activeComputed!.orders).toHaveLength(7); // 4 基线 + 3 金字塔
-    expect(s.activeComputed!.orders.filter((o) => o.isBaseline)).toHaveLength(4);
+    expect(s.activeComputed!.orders).toHaveLength(3); // 纯策略独立推演：仅 3 笔生成买入（无基线）
+    expect(s.activeComputed!.orders.filter((o) => o.isBaseline)).toHaveLength(0);
     expect(s.dirtyBranchIds).toHaveLength(0); // 复制即落库，非草稿
 
     // 编辑：删除第一笔派生买入（非基线）→ 草稿态（未保存标记）
@@ -131,13 +131,13 @@ it('6 大标准策略全部可一键生成并跑通引擎（不变量校验）',
     useSandboxStore.getState().updateUserOrders(user.id, edited);
     s = useSandboxStore.getState();
     expect(s.dirtyBranchIds).toContain(user.id);
-    expect(s.activeComputed!.orders).toHaveLength(6);
+    expect(s.activeComputed!.orders).toHaveLength(2);
 
-    // 撤销修改 → 从 DB 还原复制时的 7 笔
+    // 撤销修改 → 从 DB 还原复制时的 3 笔
     await useSandboxStore.getState().discardChanges(user.id);
     s = useSandboxStore.getState();
     expect(s.dirtyBranchIds).not.toContain(user.id);
-    expect(s.activeComputed!.orders).toHaveLength(7);
+    expect(s.activeComputed!.orders).toHaveLength(3);
 
     // 再次编辑 → ▶ 运行并保存（落库 + 盖章评估日 + 清未保存标记）
     useSandboxStore.getState().updateUserOrders(user.id, edited);
@@ -152,7 +152,7 @@ it('6 大标准策略全部可一键生成并跑通引擎（不变量校验）',
     await useSandboxStore.getState().loadBranches(FULL_CODE);
     s = useSandboxStore.getState();
     expect(s.branches).toHaveLength(3); // baseline + preset + user
-    expect(s.getComputed(user.id)!.orders).toHaveLength(6);
+    expect(s.getComputed(user.id)!.orders).toHaveLength(2);
   });
 
   it('勾选对比分支 / 切换选中 / 删除分支', async () => {
@@ -255,24 +255,26 @@ describe('Step5 E2E：过期检测（⚠️ K线更新 / ⚡ 资金变动）', (
 
   it('资金变动 → ⚡ 出现（订单数量保持原生成基准）→ rescalePreset 重算股数 → ⚡ 清除', async () => {
     await useSandboxStore.getState().selectStock(FULL_CODE);
-    await useSandboxStore.getState().generatePreset('stop-profit', {}, { simulatedCash: 5000 });
+    await useSandboxStore.getState().generatePreset('stop-profit', {}, { simulatedCash: 20000 });
     const s = () => useSandboxStore.getState();
     const presetId = s().selectedBranchId!;
     expect(s().staleFlagsFor(presetId).cash).toBe(false);
 
-    // 默认资金 16000：剩余可用资金小 → 各档数量取整为 0 → 仅 4 笔基线
-    expect(s().activeComputed!.orders).toHaveLength(4);
-    expect(s().activeComputed!.orders.filter((o) => !o.isBaseline)).toHaveLength(0);
+    // 全额独立预算：纯策略自建仓（无基线）→ 至少一笔入场（资金足够勿 5000 触到 20% 手数取整为 0）
+    const baseCount = s().activeComputed!.orders.length;
+    expect(baseCount).toBeGreaterThanOrEqual(2);
+    expect(s().activeComputed!.orders.filter((o) => !o.isBaseline)).toHaveLength(baseCount);
 
-    // 调高模拟资金 → ⚡ 出现；但 ⚡ 重算前订单（数量）不变，仅预算提高
-    s().setSimulatedCash(presetId, 30000);
+    // 调高模拟资金 → ⚡ 出现；但 ⚡ 重算前订单（数量）保持原生成基准不变（延迟重算）
+    s().setSimulatedCash(presetId, 60000);
     expect(s().staleFlagsFor(presetId).cash).toBe(true);
-    expect(s().activeComputed!.orders).toHaveLength(4);
+    expect(s().activeComputed!.orders).toHaveLength(baseCount);
 
-    // 点击 ⚡ 重配：按新资金重算股数 → 3 档金字塔出现，⚡ 清除
+    // 点击 ⚡ 重配：按新资金重算股数 → 预案单数增长/用量放大，⚡ 清除
     await s().rescalePreset(presetId);
     expect(s().staleFlagsFor(presetId).cash).toBe(false);
-    expect(s().activeComputed!.orders.filter((o) => !o.isBaseline).length).toBeGreaterThan(0); // 4 基线 + 3 金字塔
+    expect(s().activeComputed!.orders.length).toBeGreaterThanOrEqual(baseCount);
+    // 点击 ⚡ 重配完成后结果生效
     expect(s().activeComputed!.result).not.toBeNull();
     expect(s().activeComputed!.rejections).toHaveLength(0);
   });

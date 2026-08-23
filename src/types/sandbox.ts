@@ -37,7 +37,6 @@ export type PresetStrategyId =
   | 'pyramid'
   | 'grid'
   | 'stop-profit'
-  | 'gap-fill'
   | 'max-opportunity'
   | 'hybrid-regime'
   /** 多因子智能推荐：因子提取 + 评分 + 动态资金分配（model-recommend） */

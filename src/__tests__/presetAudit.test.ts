@@ -11,31 +11,14 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { auditPresetOrders, renderAudit, type AuditResult } from '../utils/presetAudit';
-import { generateStrategyOrders, type StrategyContext } from '../utils/strategyGenerators';
-import { DEFAULT_FEE_CONFIG } from '../store/feePresets';
-import type { KlineItem, PresetStrategyId, SandboxOrder } from '../types/sandbox';
+import type { KlineItem, PresetStrategyId } from '../types/sandbox';
 
 const KLINE_PATH = new URL('../../data/audit-wt/wt-kline.json', import.meta.url);
 const INITIAL_CASH = 200000;
 // 闻泰科技 600745，2025-12-01 → 2026-08-20（前复权日线）
 
 const klines = JSON.parse(readFileSync(fileURLToPath(KLINE_PATH), 'utf-8')) as KlineItem[];
-const STRATEGIES: PresetStrategyId[] = ['pyramid', 'ma20-bounce', 'grid', 'stop-profit', 'max-opportunity', 'pure-dca', 'gap-fill', 'hybrid-regime'];
-
-/** 把某一策略产出的订单复用为另一策略（gap-fill）的基线订单 */
-function ordersOf(strategyId: PresetStrategyId): SandboxOrder[] {
-  const ctx: StrategyContext = {
-    klineData: klines,
-    simulatedCash: INITIAL_CASH,
-    peakCapitalLock: INITIAL_CASH,
-    currentPrice: klines[klines.length - 1]?.close ?? 0,
-    currentCost: 0,
-    currentQuantity: 0,
-    feeConfig: DEFAULT_FEE_CONFIG,
-    securityKind: 'stock',
-  };
-  return generateStrategyOrders(strategyId, ctx, {});
-}
+const STRATEGIES: PresetStrategyId[] = ['pyramid', 'ma20-bounce', 'grid', 'stop-profit', 'max-opportunity', 'pure-dca', 'hybrid-regime'];
 
 describe('预设策略静态审计（真实行情 闻泰科技 600745 · 20 万）', () => {
   it('导出真实 K 线（175 根，2025-12-01 → 2026-08-20）', () => {
@@ -48,9 +31,7 @@ describe('预设策略静态审计（真实行情 闻泰科技 600745 · 20 万�
   it('逐策略重放并核对资金不变量（打印完整 trace）', () => {
     const results: AuditResult[] = [];
     for (const id of STRATEGIES) {
-      // gap-fill 需要基线订单：用 pyramid 产出作为「若当时有持仓/操作」的基线参考
-      const baseline = id === 'gap-fill' ? ordersOf('pyramid') : undefined;
-      const audit = auditPresetOrders(id, klines, INITIAL_CASH, baseline);
+      const audit = auditPresetOrders(id, klines, INITIAL_CASH);
       results.push(audit);
       // eslint-disable-next-line no-console
       console.log('\n' + renderAudit(audit) + '\n' + '='.repeat(88));

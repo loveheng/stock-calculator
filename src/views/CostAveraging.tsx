@@ -449,6 +449,7 @@ function PositionLedger() {
       batches: [batch],
       isClosed: false,
       createdAt: now,
+      openAt: now,
       realizedPnL: 0,
       totalInvested,
     };
@@ -930,6 +931,12 @@ function PositionLedger() {
                 <div>
                   <span className="text-slate-500">实际净投入现金</span>
                   <p className="text-slate-200 font-medium">¥{snap.totalInvested.toFixed(2)}</p>
+                </div>
+                <div>
+                  <span className="text-slate-500">开仓时间</span>
+                  <p className="text-slate-200 font-medium">
+                    {new Date(pos.openAt ?? pos.createdAt).toLocaleDateString('zh-CN')}
+                  </p>
                 </div>
               </div>
 

@@ -66,6 +66,8 @@ export interface PositionEntity extends BaseEntity {
   isClosed: 0 | 1;
   /** 平仓时间戳（毫秒），未平仓时缺省 */
   closedAt?: number;
+  /** 开仓时间戳（毫秒）：第一笔买入（open 批次）的成交时间，存量数据可能默认，缺省时回退 createdAt */
+  openAt?: number;
   /** 累计投入金额（元） */
   totalInvested: number;
   /** 已实现盈亏（元） */
@@ -436,7 +438,7 @@ export interface SandboxBranchEntity extends BaseEntity {
   generatedAtCash: number;
   /** 基线指纹（批次数量|末笔时间|当前股数）→ 🔄 持仓变动检测 */
   lastBaselineSignature: string;
-  /** 预设策略标识：ma20-bounce | pyramid | grid | stop-profit | gap-fill | max-opportunity */
+  /** 预设策略标识：ma20-bounce | pyramid | grid | stop-profit | max-opportunity */
   presetStrategyId?: string;
   /** 预设参数（Record<string, number> 序列化） */
   presetParamsJson?: string;

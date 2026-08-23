@@ -13,8 +13,9 @@
 import React, { useState, useMemo } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
-import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
+import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind, evaluateDynamicPyramid, computePositionLifecycleSummary } from '../utils/mathUtils';
 import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults, generateId, calcBatchExecution } from '../store';
+import { recordAudit } from '../risk/auditLogger';
 import { recalculatePosition } from '../utils/calculator';
 import type { Position, PositionBatch } from '../store';
 import type { PositionBatchEntity } from '../db/schema';
@@ -151,6 +152,7 @@ function ClearPositionModal({
   stockName,
   realizedPnL,
   totalInvested,
+  lifecycle,
   onConfirm,
   onCancel,
 }: {
@@ -158,6 +160,7 @@ function ClearPositionModal({
   stockName: string;
   realizedPnL: number;
   totalInvested: number;
+  lifecycle?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -178,6 +181,11 @@ function ClearPositionModal({
         <p className={`text-sm mb-4 ${realizedPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
           {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%
         </p>
+        {lifecycle && (
+          <p className="text-[10px] text-slate-500 mb-4 leading-relaxed border-t border-slate-700/50 pt-2">
+            {lifecycle}
+          </p>
+        )}
         <p className="text-xs text-slate-500 mb-4">
           是否将其标记为【已结仓】归档？
         </p>
@@ -296,6 +304,15 @@ function PositionLedger() {
     if (!a || a <= 0) return;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + planValidity * 24 * 60 * 60 * 1000);
+    // 建单时对中长期买入计划单做动态金字塔健康度试算（供执行履约审计对比）
+    let planPyramidHealth: PlannedOrder['planPyramidHealth'];
+    if (planDirection === 'buy') {
+      const pos = positions.find((p) => p.fullCode === planStock.fullCode && !p.isClosed);
+      const buyBatches = pos ? pos.batches.filter((b) => (b.type === 'open' || b.type === 'add') && b.amount > 0 && b.price > 0) : [];
+      if (buyBatches.length > 0) {
+        planPyramidHealth = evaluateDynamicPyramid(buyBatches, { price: p, amount: a });
+      }
+    }
     const order: PlannedOrder = {
       id: generateId(),
       fullCode: planStock.fullCode,
@@ -308,6 +325,7 @@ function PositionLedger() {
       expiresAt: expiresAt.toISOString(),
       validityDays: planValidity,
       status: 'active',
+      ...(planPyramidHealth ? { planPyramidHealth } : {}),
     };
     setPlannedOrder(order);
     setPlanFormOpen(false);
@@ -357,6 +375,33 @@ function PositionLedger() {
       newTotalInvested: calc.newTotalInvested,
       totalFee: calc.totalFee,
     });
+    // 【执行履约审计】量化执行滑点与纪律偏离（计划 vs 实际成交）
+    const slippagePct = order.plannedPrice > 0 ? ((actualPrice - order.plannedPrice) / order.plannedPrice) * 100 : 0;
+    // 加权均价冲击：执行前底仓 WAC vs 执行后 WAC（由 calcBatchExecution 给出新成本）
+    const priorBuys = pos.batches.filter((b) => (b.type === 'open' || b.type === 'add') && b.amount > 0 && b.price > 0);
+    const priorTotalAmt = priorBuys.reduce((s, b) => s + b.amount, 0);
+    const priorTotalCost = priorBuys.reduce((s, b) => s + b.price * b.amount, 0);
+    const priorWac = priorTotalAmt > 0 ? priorTotalCost / priorTotalAmt : 0;
+    const wacImpactPct = priorWac > 0 && type === 'add' ? ((calc.newCost - priorWac) / priorWac) * 100 : 0;
+    recordAudit('planned_order_executed', 'planned_order', order.id, 'success', {
+      before: {
+        plannedPrice: order.plannedPrice,
+        plannedAmount: order.plannedAmount,
+        planPyramidScore: order.planPyramidHealth?.score,
+        planPyramidLevel: order.planPyramidHealth?.level,
+      },
+      after: { actualPrice, actualAmount, newCost: calc.newCost, newAmount: calc.newAmount },
+      tags: {
+        fullCode: order.fullCode,
+        direction: order.direction,
+        planPrice: String(order.plannedPrice),
+        actualPrice: String(actualPrice),
+        slippagePct: slippagePct.toFixed(2),
+        wacShockPct: wacImpactPct.toFixed(2),
+        planPyramidScore: order.planPyramidHealth ? String(order.planPyramidHealth.score) : 'n/a',
+        planPyramidLevel: order.planPyramidHealth?.level ?? 'n/a',
+      },
+    });
     window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 计划单已执行 · ${order.stockName}` }));
   };
 
@@ -404,7 +449,7 @@ function PositionLedger() {
   const [batchForm, setBatchForm] = useState<{ positionId: string; type: 'add' | 'reduce' } | null>(null);
 
   // 清仓自动结仓弹窗
-  const [clearPosition, setClearPosition] = useState<{ positionId: string; realizedPnL: number; totalInvested: number } | null>(null);
+  const [clearPosition, setClearPosition] = useState<{ positionId: string; realizedPnL: number; totalInvested: number; lifecycle?: string } | null>(null);
 
   // 新建建仓
   const handleOpenPosition = () => {
@@ -551,10 +596,13 @@ function PositionLedger() {
       if (!getCloseBlockReason(pos, streamResults, tRounds, newAmount)) {
         closePosition(positionId);
       } else {
+        // 结仓生命周期履历：历次加仓轮数 / 最终加仓健康分 / 膨胀倍数（信息性元数据）
+        const lc = computePositionLifecycleSummary(pos.batches);
         setClearPosition({
           positionId,
           realizedPnL: finalPnL,
           totalInvested: finalInvested,
+          lifecycle: `本次投资周期共经历 ${lc.totalAddRounds} 次加仓，综合加仓健康度 ${lc.finalPyramidScore} 分（${lc.strategyType}），仓位膨胀 ${lc.expansionRatio.toFixed(2)} 倍`,
         });
       }
     }
@@ -1203,6 +1251,7 @@ function PositionLedger() {
           stockName={positions.find((p) => p.id === clearPosition.positionId)?.stockName || ''}
           realizedPnL={clearPosition.realizedPnL}
           totalInvested={clearPosition.totalInvested}
+          lifecycle={clearPosition.lifecycle}
           onConfirm={handleClearConfirm}
           onCancel={() => setClearPosition(null)}
         />

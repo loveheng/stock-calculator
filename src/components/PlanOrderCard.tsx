@@ -10,7 +10,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Edit3, CheckCircle, XCircle, Clock, TrendingUp, TrendingDown, AlertTriangle, ArrowRight, ChevronDown, ChevronUp } from 'lucide-react';
 import type { PlannedOrder, Position } from '../store/types';
-import type { FeeConfig } from '../utils/mathUtils';
+import { evaluateDynamicPyramid, type DynamicPyramidResult, type FeeConfig } from '../utils/mathUtils';
 import type { StockQuoteSummary } from '../types/stock';
 import { calcBatchExecution } from '../store/utils';
 import {
@@ -166,7 +166,22 @@ export default function PlanOrderCard({
     }
   }, [position, feeConfig, order.context, order.direction, order.status, order.plannedPrice, order.plannedAmount]);
 
-  // 短线试算：匹配该标的最新进行中的短期项目（按 openedAt 倒序）
+  // 动态金字塔/加仓健康度（仅中长期买入计划单事前试算）
+  // 【短线/中长期强隔离】短线计划单不参与，仅在中长期加仓且已有买入批次时评估
+  const pyramidHealth = useMemo<DynamicPyramidResult | null>(() => {
+    if (!position || position.isClosed || isShortTerm || order.status !== 'active' || order.direction !== 'buy') return null;
+    if (order.plannedPrice <= 0 || order.plannedAmount <= 0) return null;
+    const buyBatches = position.batches.filter((b) => (b.type === 'open' || b.type === 'add') && b.amount > 0 && b.price > 0);
+    if (!buyBatches.length) return null;
+    try {
+      return evaluateDynamicPyramid(buyBatches, { price: order.plannedPrice, amount: order.plannedAmount });
+    } catch (e) {
+      console.warn('[PlanOrderCard] evaluateDynamicPyramid error:', e);
+      return null;
+    }
+  }, [position, isShortTerm, order.status, order.direction, order.plannedPrice, order.plannedAmount]);
+
+  // 短线试算：匹配已匹配的最新进行中的短期项目（按 openedAt 倒序）
   // 【短线/中长期强隔离】仅依赖短线项目池，绝不读取中长期底仓
   const matchedProject = useMemo(
     () => (shortProjects ? findLatestShortProject(order.fullCode, shortProjects) : null),
@@ -426,7 +441,41 @@ export default function PlanOrderCard({
             </div>
           )}
 
-          {/* 短线试算预览 */}
+          {/* 动态金字塔健康度（仅中长期买入计划单事前试算） */}
+          {/* 【短线/中长期强隔离】短线计划单不参与，仅在中长期加仓且已有买入批次时展示 */}
+          {pyramidHealth && (
+            <div className={`mx-3 mb-2 p-2 rounded-lg border ${
+              pyramidHealth.level === 'HEALTHY' ? 'bg-emerald-900/20 border-emerald-700/30' :
+              pyramidHealth.level === 'NEUTRAL' ? 'bg-amber-900/20 border-amber-700/30' :
+              'bg-red-900/20 border-red-700/30'
+            }`}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider">金字塔健康度</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                    pyramidHealth.level === 'HEALTHY' ? 'bg-emerald-500/20 text-emerald-400' :
+                    pyramidHealth.level === 'NEUTRAL' ? 'bg-amber-500/20 text-amber-400' :
+                    'bg-red-500/20 text-red-400'
+                  }`}>
+                    {pyramidHealth.level === 'HEALTHY' ? '健康' : pyramidHealth.level === 'NEUTRAL' ? '中性' : '风险'}
+                  </span>
+                  <span className="text-[11px] font-mono text-slate-300">{pyramidHealth.score}分</span>
+                </div>
+                {pyramidHealth.centerDeviation !== 0 && (
+                  <span className={`text-[10px] font-mono ${
+                    pyramidHealth.centerDeviation <= 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}>
+                    {pyramidHealth.centerDeviation > 0 ? '+' : ''}{(pyramidHealth.centerDeviation * 100).toFixed(1)}%
+                  </span>
+                )}
+              </div>
+              <div className="text-[10px] text-slate-400 leading-relaxed">
+                {pyramidHealth.suggestion}
+              </div>
+            </div>
+          )}
+
+          {/* 试算预览 */}
           {order.status === 'active' && isShortTerm && trialResult && (
             <div className="mx-3 mb-2 p-2 rounded-lg bg-sky-900/20 border border-sky-700/30">
               <div className="text-[10px] text-sky-400 mb-1.5 flex items-center gap-1">

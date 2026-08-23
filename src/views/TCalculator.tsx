@@ -41,7 +41,7 @@ import {
   type TStreamRecord,
   type StockStreamResult,
 } from '../utils/tStreamEngine';
-import { validateSellWithStreamResult } from '../utils/validation';
+import { RiskController, type SellValidationResult } from '../risk';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import PlanOrderCard from '../components/PlanOrderCard';
@@ -1207,12 +1207,23 @@ export default function TCalculator() {
   const validation = useMemo(() => {
     const p = parseFloat(price);
     const a = parseFloat(amount);
-    // 倒T（先卖后买）：两级阶梯式校验
     if (direction === 'sell') {
-      return validateSellWithStreamResult(selectedResult, basePosition, a || 0);
+      // 统一走 RiskController 做T交易评估（含 R1/R2 + tBorrowRule）
+      const pendingBuyAmount = Math.max(0, selectedResult?.netPendingAmount ?? 0);
+      const currentAmount = basePosition?.currentAmount ?? 0;
+      const availableForT = Math.max(0, currentAmount);
+      const result = RiskController.evaluateTTrade({
+        sellAmount: a || 0,
+        pendingBuyAmount,
+        availableForT,
+        price: p || 0,
+        fullCode: stock?.fullCode ?? '',
+        direction: 'sell',
+      });
+      return RiskController.toSellValidationResult(result, pendingBuyAmount, availableForT);
     }
     return validateStreamTrade(selectedResult, basePosition?.currentAmount ?? 0, 'buy', p || 0, a || 0);
-  }, [selectedResult, basePosition, direction, price, amount]);
+  }, [selectedResult, basePosition, direction, price, amount, stock?.fullCode]);
 
   // ---- 费用预览 ----
   const feePreview = useMemo(() => {
@@ -1420,10 +1431,23 @@ export default function TCalculator() {
   const apValidation = useMemo(() => {
     const p = parseFloat(apPrice);
     const a = parseFloat(apAmount);
-    // 倒T（先卖后买）：两级阶梯式校验；正T买入：数量校验
-    if (apDir === 'sell') return validateSellWithStreamResult(apResult, apPosition, a || 0);
+    if (apDir === 'sell') {
+      // 统一走 RiskController 做T交易评估
+      const pendingBuyAmount = Math.max(0, apResult?.netPendingAmount ?? 0);
+      const currentAmount = apPosition?.currentAmount ?? 0;
+      const availableForT = Math.max(0, currentAmount);
+      const result = RiskController.evaluateTTrade({
+        sellAmount: a || 0,
+        pendingBuyAmount,
+        availableForT,
+        price: p || 0,
+        fullCode: sheetFullCode ?? '',
+        direction: 'sell',
+      });
+      return RiskController.toSellValidationResult(result, pendingBuyAmount, availableForT);
+    }
     return validateStreamTrade(apResult, apBaseHolding, 'buy', p || 0, a || 0);
-  }, [apResult, apPosition, apDir, apPrice, apAmount, apBaseHolding]);
+  }, [apResult, apPosition, apDir, apPrice, apAmount, apBaseHolding, sheetFullCode]);
 
   const apFee = useMemo(() => {
     const p = parseFloat(apPrice);

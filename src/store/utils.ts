@@ -13,6 +13,7 @@ import { useAppStore } from './index';
 import type { Position, PositionBatch, TRoundArchive, RoundTxn, PlannedOrder } from './types';
 import type { FeeConfig } from '../utils/mathUtils';
 import { calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
+import { RiskController } from '../risk';
 
 /**
  * 生成全局唯一 ID。
@@ -139,10 +140,6 @@ export function getCloseBlockReason(
   remainingAmountOverride?: number,
 ): string | null {
   const remaining = remainingAmountOverride ?? recomputePositionSnapshot(pos.batches).currentAmount;
-  if (remaining > 0) {
-    return `该持仓还有 ${remaining} 股未卖出，需全部卖出后才能结仓。`;
-  }
-
   const hasOpenTRound =
     streamResults.some((r) => r.fullCode === pos.fullCode && r.status !== 'CLEARED') ||
     tRounds.some(
@@ -150,11 +147,11 @@ export function getCloseBlockReason(
         r.fullCode === pos.fullCode &&
         (r.status === 'OPENED' || (r.status === undefined && !r.closedAt)),
     );
-  if (hasOpenTRound) {
-    return '该标的仍有进行中的做T轮次，请先结算或归档后再结仓。';
-  }
-
-  return null;
+  // 代理调用统一风控门面（保持对外签名 string | null 兼容）
+  const { report } = RiskController.evaluateClosePosition({ remaining, hasOpenTRound, positionId: pos.id });
+  if (!report.blocked) return null;
+  const firstError = report.checks.find((c) => !c.passed && c.severity === 'error');
+  return firstError?.message ?? report.summary;
 }
 
 /**

@@ -678,3 +678,230 @@ export function calcFeeBreakdown(
 export function isValidLotSize(value: number): boolean {
   return value > 0 && value % 100 === 0;
 }
+
+// ============================================================
+// 动态金字塔/加仓健康度模型
+// ============================================================
+
+/** 加仓健康度评分等级 */
+export type PyramidLevel = 'HEALTHY' | 'NEUTRAL' | 'RISKY';
+
+/** 动态金字塔评估结果 */
+export interface DynamicPyramidResult {
+  /** 健康度评分（0-100），越高越健康 */
+  score: number;
+  /** 健康度等级 */
+  level: PyramidLevel;
+  /** 新批次价格偏离现有加权均价的百分比（正数 = 重心上移，负数 = 重心下移） */
+  centerDeviation: number;
+  /** 现有持仓加权均价 */
+  existingWac: number;
+  /** 人话建议 */
+  suggestion: string;
+}
+
+/**
+ * 动态金字塔/加仓健康度评估模型（纯函数）。
+ *
+ * @description 评估一笔新加仓对现有持仓的「金字塔健康度」影响。
+ * 核心逻辑：健康的金字塔结构 = 低价买得多、高价买得少。
+ * 新加仓价格偏离现有加权均价越远、数量越大，健康度越低。
+ *
+ * @param existingBatches 现有持仓的买入批次列表（仅 open/add 类型，amount 为正数）
+ * @param newBatch 拟加仓批次（price: 价格, amount: 数量）
+ * @returns 健康度评估结果
+ */
+export function evaluateDynamicPyramid(
+  existingBatches: { amount: number; price: number }[],
+  newBatch: { amount: number; price: number },
+): DynamicPyramidResult {
+  const { price: newPrice, amount: newAmount } = newBatch;
+
+  // 边缘情况：无现有批次（首笔建仓）→ 始终健康
+  if (!existingBatches.length || existingBatches.every((b) => b.amount <= 0)) {
+    return {
+      score: 100,
+      level: 'HEALTHY' as PyramidLevel,
+      centerDeviation: 0,
+      existingWac: 0,
+      suggestion: '首笔建仓，无现有持仓对比，评分 100 分',
+    };
+  }
+
+  // 筛选有效买入批次（amount > 0）
+  const buys = existingBatches.filter((b) => b.amount > 0 && b.price > 0);
+  if (!buys.length) {
+    return {
+      score: 100,
+      level: 'HEALTHY' as PyramidLevel,
+      centerDeviation: 0,
+      existingWac: 0,
+      suggestion: '无有效买入记录，评分 100 分',
+    };
+  }
+
+  // 计算现有加权均价（WAC）
+  const totalAmount = buys.reduce((s, b) => s + b.amount, 0);
+  const totalCost = buys.reduce((s, b) => s + b.price * b.amount, 0);
+  const existingWac = totalCost / totalAmount;
+
+  // 新批次价格相对于 WAC 的偏离百分比
+  const centerDeviation = existingWac > 0 ? (newPrice - existingWac) / existingWac : 0;
+
+  // 计算原始评分（基于偏离幅度）
+  let score = calcPyramidBaseScore(centerDeviation);
+
+  // 数量比例调整：若新加仓数量过大且价格偏高，额外扣分
+  const amountRatio = newAmount / (totalAmount + newAmount);
+  if (centerDeviation > 0 && amountRatio > 0.3) {
+    score -= 15;
+  }
+  if (centerDeviation > 0 && amountRatio > 0.5) {
+    score -= 25;
+  }
+
+  // 评分边界钳制
+  score = Math.max(0, Math.min(100, score));
+
+  // 确定等级
+  const level = scoreToLevel(score);
+
+  // 构建人话建议
+  const suggestion = buildPyramidSuggestion(level, centerDeviation, score);
+
+  return { score, level, centerDeviation, existingWac, suggestion };
+}
+
+/**
+ * 根据偏离百分比计算原始评分（0-100）。
+ * 偏离为负（低于均价）→ 健康；偏离为正（高于均价）→ 风险。
+ */
+function calcPyramidBaseScore(deviation: number): number {
+  if (deviation < -0.15) return 60;   // 深跌，可能价值也可能接飞刀
+  if (deviation < -0.05) return 85;   // 良性回调
+  if (deviation < 0) return 95;       // 轻微回调
+  if (deviation < 0.03) return 75;    // 轻微溢价
+  if (deviation < 0.08) return 45;    // 明显溢价
+  if (deviation < 0.15) return 25;    // 显著溢价
+  return 10;                           // 追高
+}
+
+/** 评分转等级 */
+function scoreToLevel(score: number): PyramidLevel {
+  if (score >= 75) return 'HEALTHY';
+  if (score >= 40) return 'NEUTRAL';
+  return 'RISKY';
+}
+
+/** 构建人话建议 */
+function buildPyramidSuggestion(level: PyramidLevel, deviation: number, score: number): string {
+  const devPct = (deviation * 100).toFixed(1);
+  switch (level) {
+    case 'HEALTHY':
+      if (deviation < 0) {
+        return `加仓价低于均价 ${Math.abs(deviation * 100).toFixed(1)}%，低吸布局评分 ${score} 分`;
+      }
+      return `加仓价接近均价，波动风险可控，评分 ${score} 分`;
+    case 'NEUTRAL':
+      if (deviation > 0) {
+        return `加仓价高于均价 ${devPct}%，重心略有上移，评分 ${score} 分，建议控制单笔仓位`;
+      }
+      return `加仓价接近均价，评分 ${score} 分，波动风险可控`;
+    case 'RISKY':
+      return `加仓价高于均价 ${devPct}%，重心上移风险较大，评分 ${score} 分，建议降低加仓数量或等待回调`;
+  }
+}
+
+/** 建仓批次（仅需生命周期统计所需字段） */
+export interface LifecycleBatch {
+  type: string;
+  amount: number;
+  price: number;
+  timestamp?: string;
+}
+
+/** 结仓生命周期履历摘要（Ex-Post Position Lifecycle Summary） */
+export interface PositionLifecycleSummary {
+  /** 历次加仓轮数 */
+  totalAddRounds: number;
+  /** 最终加仓健康分（0-100，无加仓时为建仓基线 100） */
+  finalPyramidScore: number;
+  /** 最终加仓健康度等级 */
+  finalPyramidLevel: PyramidLevel;
+  /** 策略分类（由最终加仓健康度驱动） */
+  strategyType: string;
+  /** 最终仓位相比首仓的膨胀倍数（= 累计买入量 / 首仓买入量） */
+  expansionRatio: number;
+}
+
+/**
+ * 计算持仓全生命周期的加仓履历摘要（纯函数）。
+ *
+ * @description 结仓时用于输出信息性元数据（软风控），供结仓确认弹窗展示与审计留痕。
+ *  - totalAddRounds：type === 'add' 的加仓轮数
+ *  - finalPyramidScore：以最后一笔买入批次为「新加仓」、之前批次为底仓，评估金字塔健康度；
+ *    仅一笔建仓无加仓时按 100 / HEALTHY 计。
+ *  - expansionRatio：总买入量 / 首仓买入量（首仓为 0 时不膨胀，为 1）
+ *
+ * @param batches 持仓的历史批次列表（含建仓/加仓/减仓/结仓）
+ * @returns 生命周期履历摘要
+ */
+export function computePositionLifecycleSummary(
+  batches: LifecycleBatch[],
+): PositionLifecycleSummary {
+  // 仅统计真实买入批次（建仓 + 加仓，数量为正、价格有效）
+  const buys = (batches ?? [])
+    .filter((b) => (b.type === 'open' || b.type === 'add') && b.amount > 0 && b.price > 0)
+    // 按时间稳定排序（缺少 timestamp 的排到最后）
+    .sort((a, b) => {
+      const at = a.timestamp ? new Date(a.timestamp).getTime() : Number.MAX_SAFE_INTEGER;
+      const bt = b.timestamp ? new Date(b.timestamp).getTime() : Number.MAX_SAFE_INTEGER;
+      return at - bt;
+    });
+
+  const totalAddRounds = buys.filter((b) => b.type === 'add').length;
+
+  // 无任何有效买入记录 → 返回安全基线
+  if (!buys.length) {
+    return {
+      totalAddRounds,
+      finalPyramidScore: 100,
+      finalPyramidLevel: 'HEALTHY' as PyramidLevel,
+      strategyType: '首仓建仓',
+      expansionRatio: 1,
+    };
+  }
+
+  const firstAmount = buys[0].amount;
+  const totalAmount = buys.reduce((s, b) => s + b.amount, 0);
+  const expansionRatio = firstAmount > 0 ? totalAmount / firstAmount : 1;
+
+  // 仅一次建仓（无加仓）→ 100 / HEALTHY
+  if (buys.length === 1) {
+    return {
+      totalAddRounds,
+      finalPyramidScore: 100,
+      finalPyramidLevel: 'HEALTHY' as PyramidLevel,
+      strategyType: '首仓建仓',
+      expansionRatio,
+    };
+  }
+
+  // 以最后一笔买入为新仓，之前全部买入为底仓，评估最终金字塔健康度
+  const last = buys[buys.length - 1];
+  const prior = buys.slice(0, -1).map((b) => ({ price: b.price, amount: b.amount }));
+  const finalResult = evaluateDynamicPyramid(prior, { price: last.price, amount: last.amount });
+
+  const strategyType =
+    finalResult.level === 'HEALTHY' ? '低吸金字塔' :
+    finalResult.level === 'NEUTRAL' ? '均衡加仓' :
+    '追高风险'; // RISKY
+
+  return {
+    totalAddRounds,
+    finalPyramidScore: finalResult.score,
+    finalPyramidLevel: finalResult.level,
+    strategyType,
+    expansionRatio,
+  };
+}

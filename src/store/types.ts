@@ -137,6 +137,8 @@ export interface PlannedOrder {
   expiresAt: string;
   validityDays: number;
   status: 'active' | 'expired' | 'cancelled' | 'executed';
+  /** 计划创建时评估的动态金字塔健康度（仅中长期买入计划单） */
+  planPyramidHealth?: { score: number; level: 'HEALTHY' | 'NEUTRAL' | 'RISKY'; centerDeviation: number };
   actual?: {
     executedAt: string;
     actualPrice: number;

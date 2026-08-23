@@ -13,6 +13,7 @@ import type {
   RiskSeverity,
   RiskValidationContext,
   RiskValidationReport,
+  DynamicPyramidResult,
 } from './types';
 
 // ============================================================
@@ -175,6 +176,148 @@ export function positionConsistencyRule(
           suggestion: '建议执行数据一致性修复',
         };
       }
+      return null;
+    },
+  };
+}
+
+/**
+ * R5: 做T两级阶梯借仓校验 —— 先检查做T池（pendingBuyAmount），不足时检查底仓可用（availableForT）。
+ *
+ * - 若 sellAmount <= pendingBuyAmount：纯做T内平仓，通过
+ * - 若 neededBase <= availableForT：需借仓对冲，通过（warning 提示）
+ * - 若 neededBase > availableForT：总数不足，拦截
+ */
+export function tBorrowRule(
+  sellAmount: number,
+  pendingBuyAmount: number,
+  availableForT: number,
+): RiskRule {
+  return {
+    name: 't_borrow',
+    severity: 'error',
+    validate: () => {
+      if (sellAmount <= 0) {
+        return {
+          ruleName: 't_borrow',
+          severity: 'error',
+          passed: false,
+          message: '请输入有效的卖出数量',
+        };
+      }
+
+      const totalAvailable = pendingBuyAmount + availableForT;
+
+      // 第一级：纯做T内平仓（无需占用底仓）
+      if (sellAmount <= pendingBuyAmount) {
+        return null; // 通过
+      }
+
+      // 第二级：需要借仓对冲
+      const neededBase = sellAmount - pendingBuyAmount;
+
+      if (neededBase <= availableForT) {
+        return {
+          ruleName: 't_borrow',
+          severity: 'warning',
+          passed: true,
+          message: `本次卖出将占用底仓 ${neededBase} 股进行借仓对冲`,
+          suggestion: '确认借仓对冲后可继续',
+        };
+      }
+
+      // 总数不足
+      return {
+        ruleName: 't_borrow',
+        severity: 'error',
+        passed: false,
+        message: `卖出失败：做T池可用 ${pendingBuyAmount} 股，中长期底仓可用 ${availableForT} 股，合计 ${totalAvailable} 股，不满足卖出需求 ${sellAmount} 股`,
+      };
+    },
+  };
+}
+
+/**
+ * R6: 持仓上限校验 —— 减仓数量不能超过当前持仓，防止负持仓。
+ * 计算层（calculator.ts）仍有兜底，本规则作为前置拦截层。
+ */
+export function positionLimitRule(
+  sellAmount: number,
+  currentAmount: number,
+): RiskRule {
+  return {
+    name: 'position_limit',
+    severity: 'error',
+    validate: () => {
+      if (sellAmount > currentAmount) {
+        return {
+          ruleName: 'position_limit',
+          severity: 'error',
+          passed: false,
+          message: `减仓数量(${sellAmount}股)超出当前持仓(${currentAmount}股)`,
+        };
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * R7: 结仓资格校验 —— 仍有未卖出持仓 或 存在进行中的做T轮次时阻止结仓。
+ */
+export function closeBlockRule(
+  remaining: number,
+  hasOpenTRound: boolean,
+): RiskRule {
+  return {
+    name: 'close_block',
+    severity: 'error',
+    validate: () => {
+      if (remaining > 0) {
+        return {
+          ruleName: 'close_block',
+          severity: 'error',
+          passed: false,
+          message: `该持仓还有 ${remaining} 股未卖出，需全部卖出后才能结仓。`,
+        };
+      }
+      if (hasOpenTRound) {
+        return {
+          ruleName: 'close_block',
+          severity: 'error',
+          passed: false,
+          message: '该标的仍有进行中的做T轮次，请先结算或归档后再结仓。',
+        };
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * R8: 动态金字塔健康度 —— 软风控（Warning），仅做风险提示，不作硬拦截。
+ *
+ * 当加仓方向导致金字塔结构不健康（评分 < 40 即 RISKY 级别）时，
+ * 返回 `severity: 'warning', passed: true` 的校验结果，附带诊断建议。
+ * 评分 >= 40 时不产生校验项（无提示）。
+ */
+export function dynamicPyramidRule(
+  result: DynamicPyramidResult,
+): RiskRule {
+  return {
+    name: 'dynamic_pyramid',
+    severity: 'warning',
+    validate: () => {
+      if (result.level === 'RISKY') {
+        return {
+          ruleName: 'dynamic_pyramid',
+          severity: 'warning',
+          passed: true,
+          message: result.suggestion,
+          suggestion: '建议降低加仓数量或等待回调后再买入',
+        };
+      }
+      // HEALTHY 或 NEUTRAL：不产生校验项，无干扰
       return null;
     },
   };

@@ -9,3 +9,4 @@ export * from './types';
 export * from './validator';
 export * from './auditLogger';
 export { getMarketPrice, setMarketPrice, setMarketPrices, clearMarketPrices } from './priceCache';
+export { RiskController } from './riskController';

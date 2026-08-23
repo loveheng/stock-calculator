@@ -24,7 +24,7 @@ import {
   type TStreamRecord,
   type StockStreamResult,
 } from '../utils/tStreamEngine';
-import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
+import { calcTradeFees, roundTo, matchSecurityKind, computePositionLifecycleSummary, type FeeConfig } from '../utils/mathUtils';
 import {
   putFeeConfig,
   putPosition,
@@ -55,6 +55,7 @@ import { getMarketPrice } from '../risk/priceCache';
 import type { RiskValidationContext } from '../risk/types';
 import { recordAudit } from '../risk/auditLogger';
 import type { RiskValidationReport } from '../risk/types';
+import { RiskController } from '../risk/riskController';
 import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
 import { DEFAULT_FEE_CONFIG } from './feePresets';
 import { positionAdjustmentPort } from '../services/positionAdjustmentPort';
@@ -369,31 +370,35 @@ export const useAppStore = create<AppStore>()((set, get) => ({
 
   addStreamRecord: (record) => {
     if (!get().coreDataLoaded) return { cleared: false, rejected: true, rejectedReason: '系统数据加载中，请稍后重试' };
-    // 【风控 R1/R2】前置校验：数量与价格合理性。阻止 error，放行 warning。
-    const riskReport = runRiskValidation(
-      [amountSanityRule(record.amount, record.direction === 'buy' ? '买入数量' : '卖出数量'), priceDeviationRule(record.price, record.fullCode, record.direction === 'buy' ? '买入价格' : '卖出价格')],
-      record,
-    );
-    if (riskReport.blocked) {
-      return { cleared: false, rejected: true, rejectedReason: riskReport.summary };
-    }
     if (record.direction === 'sell') {
-      const existing = activeStreamsFromRounds(get().tRounds).filter(s => s.fullCode === record.fullCode);
+      // 【风控】卖出方向：统一走 RiskController 做T交易评估（含 R1/R2 + tBorrowRule）
       const pos = get().positions.find(p => p.fullCode === record.fullCode && !p.isClosed);
-      // 可卖上限 = 底仓数量 + 短线自持量。
-      // ① 底仓：currentAmount 已含 normalizeShortTDeductionsViaPort 写入的 borrow batch 扣减，
-      //    reconcile 每次从基线「剥离→重算」，因此这里的 currentAmount 是上一轮 reconcile 后的权威值（中长期底仓）。
-      // ② 短线自持：该标的那项 OPENED 短线流水池中「先买后卖（正T）」未对冲的净买入持有。
-      //    ——【短线/中长期强隔离】使用户无需先在中长期建仓，即可用流水完成正T（买→卖）。
-      //    上限只计净买入（min 0），不会出现「卖出超过短线自持 + 底仓之和」导致放空。
-      const baseAmount = Math.max(0, pos?.currentAmount ?? 0);
-      const selfHeld = Math.max(0, existing.reduce(
-        (sum, r) => sum + (r.direction === 'buy' ? r.amount : -r.amount),
-        0,
-      ));
-      const maxSellable = baseAmount + selfHeld;
-      if (record.amount > maxSellable) {
-        return { cleared: false, rejected: true, rejectedReason: `卖出数量(${record.amount}股)超出可卖上限(${maxSellable}股)：短线自持 ${selfHeld} 股 + 中长期底仓 ${baseAmount} 股` };
+      const pendingBuyAmount = Math.max(0, (() => {
+        const existing = activeStreamsFromRounds(get().tRounds).filter(s => s.fullCode === record.fullCode);
+        return existing.reduce((sum, r) => sum + (r.direction === 'buy' ? r.amount : -r.amount), 0);
+      })());
+      const currentAmount = pos?.currentAmount ?? 0;
+      const availableForT = Math.max(0, currentAmount);
+      const { report } = RiskController.evaluateTTrade({
+        sellAmount: record.amount,
+        pendingBuyAmount,
+        availableForT,
+        price: record.price,
+        fullCode: record.fullCode,
+        direction: 'sell',
+      });
+      if (report.blocked) {
+        const firstError = report.checks.find(c => !c.passed && c.severity === 'error');
+        return { cleared: false, rejected: true, rejectedReason: firstError?.message ?? report.summary };
+      }
+    } else {
+      // 【风控 R1/R2】买入方向：数量与价格合理性校验
+      const riskReport = runRiskValidation(
+        [amountSanityRule(record.amount, '买入数量'), priceDeviationRule(record.price, record.fullCode, '买入价格')],
+        record,
+      );
+      if (riskReport.blocked) {
+        return { cleared: false, rejected: true, rejectedReason: riskReport.summary };
       }
     }
     const { feeConfig, tRounds, positions } = get();
@@ -711,7 +716,25 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     });
   },
   updatePosition: (id, updates) => { set(s => ({ positions: s.positions.map(p => p.id === id ? { ...p, ...updates } : p) })); const u = get().positions.find(p => p.id === id); if (u) safePersist(() => putPosition(u)); },
-  closePosition: (id) => { set(s => ({ positions: s.positions.map(p => p.id === id ? { ...p, isClosed: true, closedAt: new Date().toISOString() } : p) })); const u = get().positions.find(p => p.id === id); if (u) safePersist(() => putPosition(u)); recordAudit('close_position', 'position', id, 'success'); },
+  closePosition: (id) => {
+    set(s => ({ positions: s.positions.map(p => p.id === id ? { ...p, isClosed: true, closedAt: new Date().toISOString() } : p) }));
+    const u = get().positions.find(p => p.id === id);
+    if (u) safePersist(() => putPosition(u));
+    // 【结仓生命周期履历】审计留痕：历次加仓轮数 / 最终加仓健康分 / 膨胀倍数
+    const lifecycle = u ? computePositionLifecycleSummary(u.batches) : undefined;
+    recordAudit('close_position', 'position', id, 'success', {
+      after: lifecycle ? { lifecycleSummary: lifecycle } : undefined,
+      tags: lifecycle
+        ? {
+            totalAddRounds: String(lifecycle.totalAddRounds),
+            finalPyramidScore: String(lifecycle.finalPyramidScore),
+            finalPyramidLevel: lifecycle.finalPyramidLevel,
+            strategyType: lifecycle.strategyType,
+            expansionRatio: String(lifecycle.expansionRatio),
+          }
+        : undefined,
+    });
+  },
   addBatch: (pid, batch, updates) => {
     const base = get().positions.find(p => p.id === pid);
     if (!base) return;
@@ -721,9 +744,16 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     // updatePosition 的新值先落库，随后 addBatchToPosition 的旧快照显式事务必然覆盖新值 → 总是旧值。
     // 合并为单次写库后不存在该问题。
     const updated: Position = { ...base, ...updates, batches: [...base.batches, batch] };
-    // 【风控 R1】批次数量合理性校验
-    const riskReport = runRiskValidation([amountSanityRule(batch.amount, batch.type === 'reduce' ? '减仓数量' : '加减数量')], batch, undefined);
-    if (riskReport.blocked) return;
+    // 【风控】批次操作评估（含数量合理性 + 防负持仓 + 加仓健康度）
+    const { report } = RiskController.evaluateBatch({
+      amount: batch.amount,
+      type: batch.type,
+      currentAmount: base.currentAmount,
+      price: batch.type === 'add' ? batch.price : undefined,
+      existingBatches: batch.type === 'add' ? base.batches : undefined,
+      batchId: batch.id,
+    });
+    if (report.blocked) return;
     set(s => ({ positions: s.positions.map(p => (p.id === pid ? updated : p)) }));
     safePersist(() => addBatchToPosition(updated, batch));
     // 【风控审计】记录批次追加

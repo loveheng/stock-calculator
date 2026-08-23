@@ -6,6 +6,12 @@
  * @author 开发团队
  */
 
+import type { DynamicPyramidResult } from '../utils/mathUtils';
+import type { PositionLifecycleSummary } from '../utils/mathUtils';
+
+export type { DynamicPyramidResult };
+export type { PositionLifecycleSummary };
+
 // ---- 校验层 ----
 
 /** 校验严重级别 */
@@ -59,6 +65,7 @@ export type AuditActionType =
   | 'import_data'
   | 'export_data'
   | 'set_planned_order'
+  | 'planned_order_executed'
   | 'cancel_planned_order'
   | 'mark_plan_executed'
   | 'sandbox_select_stock'
@@ -104,4 +111,76 @@ export interface RiskEvent {
   message: string;
   detail?: string;
   recoverable: boolean;
+}
+
+// ---- 兼容层（旧 SellValidationResult 形态，供 TCalculator 适配过渡）----
+
+/** @deprecated 迁移至 RiskController 后保留 UI 兼容 */
+export interface SellValidationResult {
+  valid: boolean;
+  maxSellable: number;
+  error?: string;
+  /** 借仓对冲提示（仅在需要占用底仓时设置） */
+  warning?: string;
+  /** 是否需要占用底仓（sellAmount > pendingBuyAmount 时） */
+  needsBasePosition?: boolean;
+  /** 需要占用的底仓数量 */
+  neededBaseAmount?: number;
+}
+
+/** 借仓对冲元数据 */
+export interface BorrowInfo {
+  /** 需要占用的底仓数量 */
+  neededBase: number;
+}
+
+/** 做T交易评估输入 */
+export interface TTradeEvalInput {
+  sellAmount: number;
+  pendingBuyAmount: number;
+  availableForT: number;
+  price: number;
+  fullCode: string;
+  direction: 'buy' | 'sell';
+}
+
+/** 批次操作评估输入 */
+export interface BatchEvalInput {
+  amount: number;
+  type: string;
+  currentAmount?: number;
+  /** 新批次价格（用于金字塔健康度评估） */
+  price?: number;
+  /** 现有买入批次列表（用于动态金字塔健康度评估，仅加仓方向需要） */
+  existingBatches?: { amount: number; price: number }[];
+  /** 目标批次 id（可选）：用于审计日志 targetId，未传入时回退到时间戳生成 */
+  batchId?: string;
+}
+
+/** 结仓评估输入 */
+export interface ClosePositionEvalInput {
+  remaining: number;
+  hasOpenTRound: boolean;
+  /** 该持仓的历史批次（可选）：用于结仓时补充生命周期履历元数据 */
+  batches?: { type: string; amount: number; price: number; timestamp?: string }[];
+  /** 目标持仓 id（可选）：用于审计日志 targetId，未传入时回退到 'unknown' */
+  positionId?: string;
+}
+
+/** 计划单评估输入 */
+export interface PlanEvalInput {
+  price: number;
+  fullCode: string;
+  amount: number;
+  direction?: 'buy' | 'sell';
+  /** 现有买入批次列表（用于动态金字塔健康度评估，仅加仓方向需要） */
+  existingBatches?: { amount: number; price: number }[];
+}
+
+/** 风控评估结果 */
+export interface RiskEvalResult {
+  report: RiskValidationReport;
+  borrowInfo?: BorrowInfo;
+  /** 动态金字塔健康度评估（仅加仓方向可能包含） */
+  pyramidHealth?: DynamicPyramidResult;
 }

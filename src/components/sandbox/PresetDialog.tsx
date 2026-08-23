@@ -38,11 +38,17 @@ export default function PresetDialog({ open, baseline, preset, onClose }: Preset
   const branches = useSandboxStore((s) => s.branches);
   const isUpdate = !!preset; // 更新模式
   const lockedStrategyId = preset?.presetStrategyId;
-  // 已被生成的预设策略（新建模式时置灰不可再次生成；更新模式时针对锁定策略不限制）
-  const existingGenerated = branches
-    .filter((b) => b.branchType === 'preset' && (isUpdate ? b.id !== preset!.id : true))
-    .map((b) => b.presetStrategyId)
-    .filter((id): id is PresetStrategyId => !!id);
+  // 已被生成的预设策略（新建设模式时置空不可再次生成；更新模式时针对锁定策略不限制）
+  // 用 useMemo 稳定引用：其值仅随 branches/isUpdate/preset 变化，避免因每次渲染生成新数组
+  // 而反复触发下方重置效果的依赖比对，造成 setState → 重渲染 → 新引用 → 循环的无限重渲染。
+  const existingGenerated = useMemo(
+    () =>
+      branches
+        .filter((b) => b.branchType === 'preset' && (isUpdate ? b.id !== preset!.id : true))
+        .map((b) => b.presetStrategyId)
+        .filter((id): id is PresetStrategyId => !!id),
+    [branches, isUpdate, preset],
+  );
   const [selected, setSelected] = useState<PresetStrategyId[]>(['ma20-bounce', 'pyramid', 'grid', 'stop-profit']);
   const [simulatedCash, setSimulatedCash] = useState('');
   const [jitterFactor, setJitterFactor] = useState('0.25');

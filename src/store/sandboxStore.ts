@@ -534,11 +534,16 @@ function buildComputeContext(): BranchComputeContext {
   };
 }
 
+/** 每个标的下真实操作基线（baseline）的固定唯一 ID：同一标的永远只有一份 */
+function baselineIdFor(fullCode: string): string {
+  return `baseline-${fullCode}`;
+}
+
 /** 确保基线分支存在（不存在则创建并落库） */
 function ensureBaselineBranch(position: Position, kline: KlineItem[]): SandboxBranch | null {
   if (!position) return null;
   const existing = useSandboxStore.getState().branches.find(
-    (b) => b.branchType === 'baseline' && b.baselinePositionId === position.id,
+    (b) => b.branchType === 'baseline' && (b.id === baselineIdFor(b.fullCode) || b.fullCode === position.fullCode),
   );
   if (existing) return existing;
 
@@ -546,7 +551,7 @@ function ensureBaselineBranch(position: Position, kline: KlineItem[]): SandboxBr
   const lastDate = kline.length > 0 ? kline[kline.length - 1].date : '';
   const now = Date.now();
   const branch: SandboxBranch = {
-    id: generateId(),
+    id: baselineIdFor(position.fullCode),
     fullCode: position.fullCode,
     stockName: position.stockName,
     branchType: 'baseline',
@@ -570,6 +575,30 @@ function ensureBaselineBranch(position: Position, kline: KlineItem[]): SandboxBr
   return branch;
 }
 
+/** 加载分支基线去重：同标的 fullCode 只保留一份 baseline，多余的历史重复基线软删除 */
+async function dedupeBaselineBranches(branches: SandboxBranch[]): Promise<SandboxBranch[]> {
+  const seen = new Set<string>();
+  const result: SandboxBranch[] = [];
+  const dup: SandboxBranch[] = [];
+  // 规范 id 的基线优先保留
+  const sorted = [...branches].sort((a, b) => {
+    const pa = a.branchType === 'baseline' && a.id === baselineIdFor(a.fullCode) ? 0 : 1;
+    const pb = b.branchType === 'baseline' && b.id === baselineIdFor(b.fullCode) ? 0 : 1;
+    return pa - pb;
+  });
+  for (const b of sorted) {
+    if (b.branchType === 'baseline') {
+      if (seen.has(b.fullCode)) dup.push(b);
+      else {
+        seen.add(b.fullCode);
+        result.push(b);
+      }
+    } else result.push(b);
+  }
+  if (dup.length > 0) await Promise.allSettled(dup.map((d) => deleteSandboxBranch(d.id)));
+  return result;
+}
+
 // ============================================================
 // Store 实例
 // ============================================================
@@ -587,7 +616,8 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
   klineError: null,
 
   loadBranches: async (fullCode) => {
-    const branches = await loadSandboxBranchesFromDB(fullCode);
+    const raw = await loadSandboxBranchesFromDB(fullCode);
+    const branches = await dedupeBaselineBranches(raw);
     // 预载 user 分支订单到内存（对比/编辑零等待）
     await Promise.all(
       branches
@@ -639,7 +669,8 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
             savedOrdersCache.set(b.id, await loadSandboxOrdersByBranchId(b.id));
           }),
       );
-      set({ branches: dbBranches, kline: klines, adjustFactors: bundle.adjustFactors, klineLoading: false });
+      const dedupedBranches = await dedupeBaselineBranches(dbBranches);
+      set({ branches: dedupedBranches, kline: klines, adjustFactors: bundle.adjustFactors, klineLoading: false });
 
       // 确保基线分支存在并选中
       const baseline = position ? ensureBaselineBranch(position, klines) : null;

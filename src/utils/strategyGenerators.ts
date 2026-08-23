@@ -38,7 +38,7 @@
  * @author 开发团队
  */
 
-import type { CashInjection, KlineItem, PresetStrategyId, SandboxOrder } from '../types/sandbox';
+import type { BlankStrategyState, CashInjection, KlineItem, PresetStrategyId, SandboxOrder, TradeIntent } from '../types/sandbox';
 import type { FeeConfig, SecurityKind } from './mathUtils';
 
 // ============================================================
@@ -861,6 +861,103 @@ function maxLoop(klineData: KlineItem[], fast: (number | null)[], slow: (number 
 // 6. 纯被动定期定额定投（pure-dca → zero-skill 基准线）
 // ============================================================
 
+/**
+ * 空白策略单步结果
+ */
+export interface StrategyResult<TState> {
+  intents: StrategyIntent[];
+  state: TState;
+}
+
+/**
+ * 空白策略单步纯函数：默认持币观望，按 state.pendingIntents 执行手动挂单。
+ *
+ * @param sc 策略步进上下文（含账户快照）
+ * @param state 空白策略私有状态（pendingIntents / customStopLossPrice）
+ * @returns 转换后的交易意图与更新后的状态
+ */
+export function blankStrategyStep(
+  sc: StrategyStepContext,
+  state: BlankStrategyState,
+): StrategyResult<BlankStrategyState> {
+  // 默认：无 pendingIntents → 纯粹持币/锁仓观望，不自动触发任何交易
+  if (!state.pendingIntents || state.pendingIntents.length === 0) {
+    return { intents: [], state: { ...state, pendingIntents: undefined } };
+  }
+
+  // 存在 pendingIntents：逐条校验资金/持仓后转换为正式 intents
+  const intents: StrategyIntent[] = [];
+  const remaining: TradeIntent[] = [];
+
+  for (const intent of state.pendingIntents) {
+    if (intent.action === 'buy') {
+      // 买入校验：整百手 且 总额（含费缓冲） <= 可用现金
+      const qty = Math.floor(intent.shares / 100) * 100;
+      if (qty <= 0) {
+        remaining.push(intent);
+        continue;
+      }
+      const totalCost = qty * intent.price * (1 + BUY_BUFFER_RATE);
+      if (totalCost > sc.cash) {
+        remaining.push(intent);
+        continue;
+      }
+      intents.push({
+        action: 'buy',
+        shares: qty,
+        reason: intent.reason,
+      });
+    } else {
+      // 卖出校验：<= 可用持仓
+      const qty = Math.min(intent.shares, sc.position);
+      if (qty <= 0) {
+        remaining.push(intent);
+        continue;
+      }
+      intents.push({
+        action: 'sell',
+        shares: qty,
+        reason: intent.reason,
+      });
+    }
+  }
+
+  return {
+    intents,
+    state: {
+      ...state,
+      pendingIntents: remaining.length > 0 ? remaining : undefined,
+    },
+  };
+}
+
+/**
+ * 创建空白方案初始配置。
+ *
+ * @param stockCode 含市场前缀的标的代码，如 'sh601318'
+ * @param initialCash 初始模拟资金
+ * @returns 空白方案初始配置
+ */
+export function createBlankScenario(
+  stockCode: string,
+  initialCash: number,
+): { fullCode: string; simulatedCash: number } {
+  return {
+    fullCode: stockCode,
+    simulatedCash: Math.max(0, initialCash),
+  };
+}
+
+const manualBlankGenerator: StrategyGenerator = {
+  id: 'manual-blank',
+  name: '空白手动操盘',
+  description: '纯粹持币/锁仓观望，不自动触发任何交易。你可以在时间线上手动添加买卖订单，进行步进式演练。',
+  defaultParams: {},
+  paramLabels: {},
+  generate: () => [],
+  inactivityReason: () => '空白方案：无自动交易信号，请在时间线上手动添加订单。',
+};
+
 const pureDcaGenerator: StrategyGenerator = {
   id: 'pure-dca',
   name: '纯被动定投',
@@ -1312,29 +1409,70 @@ const modelRecommendGenerator: StrategyGenerator = {
   generate: (ctx) => {
     const factors = extractFactors(ctx.klineData);
     const allScores = evaluateSignals(factors);
+    // MA20 斜率：用于极端崩盘（单边暴跌绞肉）陡峭破位的识别
+    const ma20 = calcMA(ctx.klineData, 20);
     const allocator = new CapitalAllocator();
 
-    interface MRState { inPosition: boolean; stopPrice: number }
+    interface MRState {
+      inPosition: boolean;
+      stopPrice: number;
+      /** 连续止损次数：默认 0，止损离场且为负收益 +1，正收益/止盈归零 */
+      consecutiveLosses: number;
+      /** 熔断冷却截止索引：= 触发熔断信号日 + 4（暂停买入 4 个交易日） */
+      cooldownUntil: number;
+    }
     const reducer: StrategyReducer<MRState> = {
-      initialState: () => ({ inPosition: false, stopPrice: 0 }),
+      initialState: () => ({ inPosition: false, stopPrice: 0, consecutiveLosses: 0, cooldownUntil: 0 }),
       step: (sc, state) => {
         const s = allScores[sc.i] ?? { breakoutScore: 0, pullbackScore: 0, riskScore: 0 };
         const atr = factors[sc.i]?.atr14 ?? 0;
         const intents: StrategyIntent[] = [];
-        let ns = state;
-        if (!state.inPosition) {
+        let inPosition = state.inPosition;
+        let stopPrice = state.stopPrice;
+        let consecutiveLosses = state.consecutiveLosses;
+        let cooldownUntil = state.cooldownUntil;
+
+        if (!inPosition) {
           const buyScore = Math.max(s.breakoutScore, s.pullbackScore);
-          if (buyScore >= 75 && sc.next) {
+          // 极端崩盘熔断：深水区破位 + 均线陡峭向下 + 当日无量阳/下影企稳 → 静默拦截抄底/做T
+          const f = factors[sc.i];
+          const mCur = sc.i >= 0 ? ma20[sc.i] : null;
+          const mPrev = sc.i >= 3 ? ma20[sc.i - 3] : null;
+          const range = sc.bar.high - sc.bar.low;
+          const lowerShadow = range > 0 ? (Math.min(sc.bar.open, sc.bar.close) - sc.bar.low) / range : 0;
+          const isSevereCrash = !!(
+            f && f.biasMa20 < -0.08 &&
+            mCur != null && mPrev != null && mPrev > 0 &&
+            (mCur - mPrev) / mPrev < -0.01 &&
+            // 未出现放量阳线（量比≥1.5 且收阳）或下影企稳（下影≥50%）则仍处崩盘绞肉状态
+            !(f.volumeRatio20 >= 1.5 && sc.bar.close >= sc.bar.open) &&
+            lowerShadow < 0.5
+          );
+          const inCooldown = sc.i < state.cooldownUntil;
+          if (buyScore >= 75 && !isSevereCrash && !inCooldown && sc.next) {
             const budget = allocator.allocateBudget(buyScore, sc.cash);
             if (budget > 0 && sc.next.price > 0) {
               intents.push({ action: 'buy', notional: budget, reason: `多因子买入 breakout=${Math.round(s.breakoutScore)} / pullback=${Math.round(s.pullbackScore)}` });
+              inPosition = true;
+              stopPrice = allocator.stopPrice(sc.next.price, atr);
             }
-            ns = { inPosition: true, stopPrice: allocator.stopPrice(sc.next.price, atr) };
           }
         } else if (s.riskScore >= 70 || (state.stopPrice > 0 && sc.bar.low <= state.stopPrice)) {
-          intents.push({ action: 'sell', shares: sc.position, reason: `高危清仓 risk=${Math.round(s.riskScore)} / 跌破止损 ${state.stopPrice.toFixed(2)}` });
-          ns = { inPosition: false, stopPrice: 0 };
+          // 离场判定：按卖出实现盈亏维护连亏/熔断状态（正收益/不做T利润归零，负收益累加）
+          const exitPrice = sc.next ? sc.next.price : sc.bar.close;
+          const sellProceeds = sc.position * exitPrice * (1 - SELL_BUFFER_RATE);
+          const profitable = sellProceeds >= sc.costBasis;
+          if (!profitable) {
+            consecutiveLosses += 1;
+            if (consecutiveLosses >= 2) cooldownUntil = sc.i + 4; // 连续两次被止损 → 熔断暂停买入 4 个交易日
+          } else {
+            consecutiveLosses = 0; // 止盈/正收益离场即重置连亏
+          }
+          intents.push({ action: 'sell', shares: sc.position, reason: `高危清仓 risk=${Math.round(s.riskScore)} / 跌破止损 ${state.stopPrice.toFixed(2)}（连亏${consecutiveLosses}${sc.i < cooldownUntil ? `，熔断至#${cooldownUntil}` : ''}）` });
+          inPosition = false;
+          stopPrice = 0;
         }
+        const ns: MRState = { inPosition, stopPrice, consecutiveLosses, cooldownUntil };
         return { state: ns, intents };
       },
     };
@@ -1354,9 +1492,10 @@ export const STRATEGY_GENERATORS: Record<PresetStrategyId, StrategyGenerator> = 
   'pure-dca': pureDcaGenerator,
   'hybrid-regime': hybridRegimeGenerator,
   'model-recommend': modelRecommendGenerator,
+  'manual-blank': manualBlankGenerator,
 };
 
-export const STRATEGY_IDS: PresetStrategyId[] = ['ma20-bounce', 'pyramid', 'grid', 'stop-profit', 'max-opportunity', 'pure-dca', 'hybrid-regime', 'model-recommend'];
+export const STRATEGY_IDS: PresetStrategyId[] = ['ma20-bounce', 'pyramid', 'grid', 'stop-profit', 'max-opportunity', 'pure-dca', 'hybrid-regime', 'model-recommend', 'manual-blank'];
 
 /**
  * 按策略 id 生成订单。

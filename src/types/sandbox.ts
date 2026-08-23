@@ -42,7 +42,34 @@ export type PresetStrategyId =
   /** 多因子智能推荐：因子提取 + 评分 + 动态资金分配（model-recommend） */
   | 'model-recommend'
   /** 纯被动定期定额定投：零择优基准线（不主动卖出，持有至评估日清算） */
-  | 'pure-dca';
+  | 'pure-dca'
+  /** 空白手动操盘：无自动交易信号，纯持币/锁仓观望，供手动步进演练 */
+  | 'manual-blank';
+
+/**
+ * 空白策略私有状态（供手动步进引擎使用）
+ * @description 当用户载入空白方案进行手动步进演练时，引擎持有此状态以跟踪
+ *              待执行的手动挂单队列与用户自定义止损价。
+ */
+export interface BlankStrategyState {
+  /** 待执行的手动挂单队列（pendingIntents 存在指令时，引擎校验后执行并清空） */
+  pendingIntents?: TradeIntent[];
+  /** 用户自定义止损价（null 表示不设止损） */
+  customStopLossPrice?: number | null;
+}
+
+/**
+ * 手动交易意图（用户手动挂单，由空白策略引擎消费）
+ */
+export interface TradeIntent {
+  action: 'buy' | 'sell';
+  /** 目标股数（买入时向下取整到 100 股） */
+  shares: number;
+  /** 目标价（限价单） */
+  price: number;
+  /** 必填：买卖原因 */
+  reason: string;
+}
 
 /**
  * 沙盘分支（一张表统一三种类型）。

@@ -23,6 +23,7 @@ import {
   Menu,
   X,
   FlaskConical,
+  ClipboardList,
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
 import { useLoadCoreData } from './hooks/useDataLoader';
@@ -37,6 +38,7 @@ import Statistics from './views/Statistics';
 import FeeConfig from './views/FeeConfig';
 import WebDAVConfig from './views/WebDAVConfig';
 import SandboxPlayback from './views/SandboxPlayback';
+import BatchImport from './views/BatchImport';
 
 /**
  * 导航菜单配置项。
@@ -55,6 +57,7 @@ const NAV_ITEMS = [
   { path: '/statistics', label: '数据统计', icon: PieChart },
   { path: '/fee-config', label: '费率配置', icon: Settings },
   { path: '/webdav', label: '云端同步', icon: Cloud },
+  { path: '/batch-import', label: '批量导入', icon: ClipboardList },
 ];
 
 /**
@@ -191,6 +194,7 @@ function AppLayout() {
             <Route path="/statistics" element={<Statistics />} />
             <Route path="/fee-config" element={<FeeConfig />} />
             <Route path="/webdav" element={<WebDAVConfig />} />
+            <Route path="/batch-import" element={<BatchImport />} />
           </Routes>
         </div>
       </main>

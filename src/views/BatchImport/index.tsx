@@ -1,0 +1,340 @@
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useAppStore } from '../../store';
+import { generateId, calcBatchExecution, recomputePositionSnapshot } from '../../store/utils';
+import { calcTradeFees, matchSecurityKind } from '../../utils/mathUtils';
+import { RiskController } from '../../risk/riskController';
+import { parseClipboardText, enrichDraftRow, completeDedupCheck, buildHistoryFromStore, groupRowsByStock, inferPlanBind } from '../../services/importAdapter';
+import { normalizeCode } from '../../utils/dedup';
+import { parseOcrFile, extractImageFromClipboard, revokeObjectUrl } from '../../services/ocrService';
+import { generateTxFingerprint } from '../../utils/dedup';
+import type { ImportDraftRow, GroupRiskLevel } from '../../types/import';
+import type { StockSearchItem } from '../../types/stock';
+import type { PositionBatch } from '../../store/types';
+import ImportToolbar from './ImportToolbar';
+import StockImportCard from './StockImportCard';
+
+export default function BatchImportPage() {
+  const positions = useAppStore((s) => s.positions);
+  const plannedOrders = useAppStore((s) => s.plannedOrders);
+  const longTermRecords = useAppStore((s) => s.longTermRecords);
+  const feeConfig = useAppStore((s) => s.feeConfig);
+  const addBatch = useAppStore((s) => s.addBatch);
+  const addStreamRecord = useAppStore((s) => s.addStreamRecord);
+  const addPosition = useAppStore((s) => s.addPosition);
+  const markPlanExecuted = useAppStore((s) => s.markPlanExecuted);
+
+  const [rows, setRows] = useState<ImportDraftRow[]>([]);
+  const [committing, setCommitting] = useState(false);
+  const [allExpanded, setAllExpanded] = useState(true);
+  const [riskFilterOn, setRiskFilterOn] = useState(false);
+  const [ocrImageUrl, setOcrImageUrl] = useState<string | null>(null);
+
+  // 历史库指纹
+  const history = useMemo(() => buildHistoryFromStore(positions, longTermRecords), [positions, longTermRecords]);
+
+  // 按标的聚合
+  const groups = useMemo(() => {
+    const raw = groupRowsByStock(rows);
+    return raw.map((g) => {
+      const items = g.items;
+      const first = items[0];
+      const totalAmount = items.reduce((s, r) => s + r.price * r.amount, 0);
+      const hasError = items.some((r) => r.validationStatus === 'ERROR' || (r.duplicateStatus === 'EXACT_DUPLICATE' && r.skipImport));
+      const hasWarning = items.some((r) => r.validationStatus === 'WARNING' || r.duplicateStatus === 'POTENTIAL');
+      const riskLevel: GroupRiskLevel = hasError ? 'ERROR' : hasWarning ? 'WARNING' : 'PASSED';
+      return { key: g.key, items, name: first?.stockName || '', totalAmount, riskLevel };
+    }).filter((g) => !riskFilterOn || g.riskLevel !== 'PASSED');
+  }, [rows, riskFilterOn]);
+
+  // 全局粘贴监听
+  useEffect(() => {
+    const handler = async (e: ClipboardEvent) => {
+      // 文本粘贴
+      const text = e.clipboardData?.getData('text/plain');
+      if (text?.trim()) {
+        e.preventDefault();
+        await handlePasteText(text);
+        return;
+      }
+      // 图片粘贴
+      const imgFile = extractImageFromClipboard(e);
+      if (imgFile) {
+        e.preventDefault();
+        await handleFileDrop(imgFile);
+      }
+    };
+    document.addEventListener('paste', handler);
+    return () => document.removeEventListener('paste', handler);
+  }, [positions, plannedOrders, history]);
+
+  // 键盘快捷键
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'BODY') {
+        // 全局 Enter 不做特殊处理，避免干扰
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  // ---- 行操作 ----
+  const addRow = useCallback((fullCode?: string, stockName?: string) => {
+    const now = Date.now();
+    const row: ImportDraftRow = {
+      id: generateId(), fingerprint: '',
+      timestamp: now, fullCode: fullCode || '', stockName: stockName || '',
+      direction: 'buy', price: 0, amount: 0,
+      targetCategory: 'LONG_TERM_BATCH',
+      targetPositionId: undefined, targetPlannedOrderId: undefined,
+      isNewPosition: true,
+      duplicateStatus: 'UNIQUE', matchedRecordId: undefined, skipImport: false,
+      validationStatus: 'PENDING', validationMessage: undefined, source: 'manual',
+    };
+    setRows((prev) => [...prev, row]);
+  }, []);
+
+  const updateRow = useCallback((id: string, patch: Partial<ImportDraftRow>) => {
+    setRows((prev) => prev.map((r) => {
+      if (r.id !== id) return r;
+      const updated = { ...r, ...patch };
+      if (patch.fullCode !== undefined || patch.direction !== undefined || patch.price !== undefined || patch.amount !== undefined || patch.timestamp !== undefined) {
+        updated.fingerprint = '';
+        updated.duplicateStatus = 'UNIQUE';
+        updated.matchedRecordId = undefined;
+        updated.skipImport = false;
+        updated.validationStatus = 'PENDING';
+        updated.validationMessage = undefined;
+        if (updated.fullCode && updated.price && updated.amount) {
+          updated.fingerprint = generateTxFingerprint({ fullCode: updated.fullCode, direction: updated.direction, price: updated.price, amount: updated.amount, timestamp: updated.timestamp });
+        }
+      }
+      return updated;
+    }));
+  }, []);
+
+  const deleteRow = useCallback((id: string) => {
+    setRows((prev) => prev.filter((r) => r.id !== id));
+  }, []);
+
+  // ---- 粘贴/文件 ----
+  const handlePasteText = useCallback(async (text?: string) => {
+    const txt = text ?? (await navigator.clipboard.readText().catch(() => ''));
+    if (!txt) {
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: '⚠️ 剪贴板为空' }));
+      return;
+    }
+    const raw = parseClipboardText(txt);
+    if (raw.length === 0) {
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: '⚠️ 剪贴板数据格式无法解析' }));
+      return;
+    }
+    const newRows = raw.map((r) => {
+      const ts = r.timestamp ? new Date(r.timestamp).getTime() : undefined;
+      return enrichDraftRow({ fullCode: r.fullCode, direction: r.direction ?? 'buy', price: r.price ?? 0, amount: r.amount ?? 0, timestamp: ts, stockName: r.stockName }, positions, plannedOrders);
+    });
+    const deduped = completeDedupCheck(newRows, history);
+    setRows((prev) => [...prev, ...deduped]);
+    window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 已导入 ${newRows.length} 条交易` }));
+  }, [positions, plannedOrders, history]);
+
+  const handleFileDrop = useCallback(async (file: File) => {
+    try {
+      const result = await parseOcrFile(file, parseClipboardText);
+      if (result.previewUrl) setOcrImageUrl(result.previewUrl);
+      const newRows = result.records.map((r) => {
+        const ts = r.timestamp ? new Date(r.timestamp).getTime() : undefined;
+        return enrichDraftRow({ fullCode: r.fullCode, direction: r.direction ?? 'buy', price: r.price ?? 0, amount: r.amount ?? 0, timestamp: ts, stockName: r.stockName }, positions, plannedOrders);
+      });
+      const deduped = completeDedupCheck(newRows, history);
+      setRows((prev) => [...prev, ...deduped]);
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ OCR 解析完成，已导入 ${newRows.length} 条交易` }));
+    } catch (e: any) {
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${e.message}` }));
+    }
+  }, [positions, plannedOrders, history]);
+
+  // ---- 批处理 ----
+  const handleDedupAll = useCallback(() => {
+    setRows((prev) => completeDedupCheck(prev, history));
+  }, [history]);
+
+  const handleValidateAll = useCallback(() => {
+    setRows((prev) => prev.map((row) => {
+      if (row.skipImport || !row.fullCode || !row.price || !row.amount) return row;
+      if (row.targetCategory === 'SHORT_TERM_T') {
+        const pos = positions.find((p) => p.id === row.targetPositionId);
+        const { report } = RiskController.evaluateTTrade({
+          sellAmount: row.direction === 'sell' ? row.amount : 0, pendingBuyAmount: row.direction === 'buy' ? row.amount : 0,
+          availableForT: pos?.currentAmount ?? 0, price: row.price, fullCode: row.fullCode, direction: row.direction,
+        });
+        return { ...row, validationStatus: report.blocked ? 'ERROR' : report.ok ? 'PASSED' : 'WARNING' as const, validationMessage: report.summary };
+      }
+      if ((row.targetCategory === 'LONG_TERM_BATCH' || row.targetCategory === 'NEW_POSITION') && row.targetPositionId) {
+        const pos = positions.find((p) => p.id === row.targetPositionId);
+        const { report } = RiskController.evaluateBatch({
+          amount: row.amount, type: row.direction === 'buy' ? 'add' : 'reduce',
+          currentAmount: pos?.currentAmount, price: row.price, existingBatches: row.direction === 'buy' ? pos?.batches : undefined,
+        });
+        return { ...row, validationStatus: report.blocked ? 'ERROR' : report.ok ? 'PASSED' : 'WARNING' as const, validationMessage: report.summary };
+      }
+      return { ...row, validationStatus: 'PASSED' as const, validationMessage: '无需风控校验' };
+    }));
+  }, [positions]);
+
+  const handleCommitRows = useCallback(async (targetRows: ImportDraftRow[]) => {
+    const valid = targetRows.filter((r) => !r.skipImport && r.validationStatus !== 'ERROR' && r.fullCode && r.price > 0 && r.amount > 0);
+    if (valid.length === 0) {
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: '⚠️ 没有可过账的数据' }));
+      return;
+    }
+    setCommitting(true);
+    let success = 0;
+    const errors: string[] = [];
+    const successIds: string[] = [];
+    for (const row of valid) {
+      try {
+        await commitRow(row, { positions, feeConfig, addBatch, addStreamRecord, addPosition, markPlanExecuted, plannedOrders });
+        success++; successIds.push(row.id);
+      } catch (e: any) {
+        errors.push(`${row.fullCode}: ${e.message}`);
+      }
+    }
+    if (successIds.length > 0) setRows((prev) => prev.filter((r) => !successIds.includes(r.id)));
+    setCommitting(false);
+    window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 成功过账 ${success} 条${errors.length ? `，${errors.length} 条失败` : ''}` }));
+  }, [positions, feeConfig, addBatch, addStreamRecord, addPosition, markPlanExecuted, plannedOrders]);
+
+  const handleCommitAll = useCallback(() => handleCommitRows(rows), [handleCommitRows, rows]);
+  const handleCommitGroup = useCallback((groupRows: ImportDraftRow[]) => handleCommitRows(groupRows), [handleCommitRows]);
+  const handleDiscardGroup = useCallback((groupRows: ImportDraftRow[]) => {
+    const ids = new Set(groupRows.map((r) => r.id));
+    setRows((prev) => prev.filter((r) => !ids.has(r.id)));
+  }, []);
+
+  const handleBindPosition = useCallback((groupRows: ImportDraftRow[], positionId: string | undefined, isNew: boolean) => {
+    const ids = new Set(groupRows.map((r) => r.id));
+    setRows((prev) => prev.map((r) => {
+      if (!ids.has(r.id)) return r;
+      if (isNew) return { ...r, targetCategory: 'NEW_POSITION' as const, targetPositionId: undefined, isNewPosition: true };
+      return { ...r, targetPositionId: positionId, isNewPosition: false, targetCategory: 'LONG_TERM_BATCH' as const };
+    }));
+  }, []);
+
+  const handleClear = useCallback(() => {
+    if (rows.length > 0 && confirm('确认清空所有暂存数据？')) { setRows([]); if (ocrImageUrl) { revokeObjectUrl(ocrImageUrl); setOcrImageUrl(null); } }
+  }, [rows, ocrImageUrl]);
+
+  const skipCount = rows.filter((r) => r.skipImport).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-semibold text-slate-200">批量导入工作台</h3>
+        <span className="text-xs text-slate-500">{rows.length} 条暂存 | {skipCount} 条跳过</span>
+      </div>
+
+      <ImportToolbar
+        onFileDrop={handleFileDrop}
+        onPasteText={() => handlePasteText()}
+        onToggleExpand={() => setAllExpanded((v) => !v)}
+        onToggleRiskFilter={() => setRiskFilterOn((v) => !v)}
+        riskFilterOn={riskFilterOn}
+        allExpanded={allExpanded}
+        onClear={handleClear}
+        onCommitAll={handleCommitAll}
+        committing={committing}
+        rowCount={rows.length}
+        skipCount={skipCount}
+        ocrImageUrl={ocrImageUrl ?? undefined}
+        onDismissOcrImage={() => { revokeObjectUrl(ocrImageUrl ?? ''); setOcrImageUrl(null); }}
+      />
+
+      {/* 批量校验/去重快捷按钮 */}
+      <div className="flex gap-2">
+        <button onClick={handleDedupAll} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs rounded-lg transition-colors">🔄 去重扫描</button>
+        <button onClick={handleValidateAll} className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs rounded-lg transition-colors">🛡️ 批量风控校验</button>
+      </div>
+
+      {/* 卡片流 */}
+      {groups.length === 0 ? (
+        <div className="text-center py-16 text-slate-500">
+          <p className="text-sm">暂无数据，使用上方上传区上传图片/CSV 或按 Ctrl+V 粘贴</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {groups.map((g) => (
+            <StockImportCard
+              key={g.key}
+              group={g}
+              positions={positions}
+              plannedOrders={plannedOrders}
+              onUpdateRow={updateRow}
+              onDeleteRow={deleteRow}
+              onAddRow={(code, name) => addRow(code, name)}
+              onCommitGroup={handleCommitGroup}
+              onDiscardGroup={handleDiscardGroup}
+              onBindPosition={handleBindPosition}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- 单行过账逻辑（与之前保持不变） ----
+async function commitRow(
+  row: ImportDraftRow,
+  deps: { positions: any[]; feeConfig: any; addBatch: any; addStreamRecord: any; addPosition: any; markPlanExecuted: any; plannedOrders: any[] },
+) {
+  const { positions, feeConfig, addBatch, addStreamRecord, addPosition, markPlanExecuted, plannedOrders } = deps;
+  const now = new Date().toISOString();
+
+  if (row.targetCategory === 'LONG_TERM_BATCH' || row.targetCategory === 'NEW_POSITION') {
+    if (row.isNewPosition || !row.targetPositionId || row.targetCategory === 'NEW_POSITION') {
+      const totalFee = calcTradeFees(row.price, row.amount, 'buy', feeConfig, matchSecurityKind('', row.fullCode.replace(/^(sh|sz|bj)/, ''))).total;
+      const totalInvested = row.price * row.amount + totalFee;
+      const pos = {
+        id: generateId(), stockName: row.stockName || row.fullCode, fullCode: row.fullCode,
+        currentCost: totalInvested / row.amount, currentAmount: row.amount,
+        batches: [{ id: generateId(), timestamp: new Date(row.timestamp).toISOString(), type: 'open' as const, price: row.price, amount: row.amount, costAfter: totalInvested / row.amount, amountAfter: row.amount, fee: totalFee }],
+        isClosed: false, createdAt: now, realizedPnL: 0, totalInvested,
+      };
+      addPosition(pos);
+    } else {
+      const pos = positions.find((p: any) => p.id === row.targetPositionId);
+      if (!pos) throw new Error('持仓不存在');
+      const type = row.direction === 'buy' ? 'add' : 'reduce';
+      const tradeDir = type === 'add' ? 'buy' : 'sell';
+      const totalFee = calcTradeFees(row.price, row.amount, tradeDir, feeConfig, matchSecurityKind('', row.fullCode.replace(/^(sh|sz|bj)/, ''))).total;
+      const snap = recomputePositionSnapshot(pos.batches);
+      let newCost = snap.currentCost, newAmount = snap.currentAmount, newRealizedPnL = snap.realizedPnL, newTotalInvested = snap.totalInvested;
+      if (type === 'add') {
+        newAmount += row.amount; newTotalInvested += row.price * row.amount + totalFee; newCost = newTotalInvested / newAmount;
+      } else {
+        const costBasisPerShare = newTotalInvested / newAmount;
+        const netProceeds = row.price * row.amount - totalFee;
+        newRealizedPnL += netProceeds - costBasisPerShare * row.amount;
+        newTotalInvested -= costBasisPerShare * row.amount; newAmount -= row.amount;
+        newCost = newAmount > 0 ? newTotalInvested / newAmount : 0;
+      }
+      const batch: PositionBatch = { id: generateId(), timestamp: new Date(row.timestamp).toISOString(), type, price: row.price, amount: type === 'add' ? row.amount : -row.amount, costAfter: newCost, amountAfter: newAmount, fee: totalFee };
+      addBatch(pos.id, batch, { currentCost: newCost, currentAmount: newAmount, realizedPnL: newRealizedPnL, totalInvested: newTotalInvested });
+    }
+  } else if (row.targetCategory === 'SHORT_TERM_T') {
+    const totalFee = calcTradeFees(row.price, row.amount, row.direction, feeConfig, matchSecurityKind('', row.fullCode.replace(/^(sh|sz|bj)/, ''))).total;
+    addStreamRecord({ id: generateId(), timestamp: new Date(row.timestamp).toISOString(), fullCode: row.fullCode, stockName: row.stockName || row.fullCode, direction: row.direction, price: row.price, amount: row.amount, fee: totalFee });
+  } else if (row.targetCategory === 'BIND_PLANNED_ORDER') {
+    if (!row.targetPlannedOrderId) throw new Error('未选择计划单');
+    const order = plannedOrders.find((p: any) => p.id === row.targetPlannedOrderId);
+    if (!order) throw new Error('计划单不存在');
+    const pos = positions.find((p: any) => p.fullCode === row.fullCode && !p.isClosed);
+    if (!pos) throw new Error('未找到对应持仓，请先建仓');
+    const type = order.direction === 'buy' ? 'add' : 'reduce';
+    const calc = calcBatchExecution(pos, type, row.price, row.amount, feeConfig);
+    const batch: PositionBatch = { id: generateId(), timestamp: new Date(row.timestamp).toISOString(), type, price: row.price, amount: type === 'add' ? row.amount : -row.amount, costAfter: calc.newCost, amountAfter: calc.newAmount, fee: calc.totalFee };
+    addBatch(pos.id, batch, { currentCost: calc.newCost, currentAmount: calc.newAmount, realizedPnL: calc.newRealizedPnL, totalInvested: calc.newTotalInvested });
+    markPlanExecuted(order.id, { executedAt: now, actualPrice: row.price, actualAmount: row.amount, isAchieved: order.direction === 'buy' ? row.price <= order.plannedPrice : row.price >= order.plannedPrice, newCost: calc.newCost, newAmount: calc.newAmount, newTotalInvested: calc.newTotalInvested, totalFee: calc.totalFee });
+  }
+}

@@ -354,11 +354,20 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     if (record.direction === 'sell') {
       const existing = activeStreamsFromRounds(get().tRounds).filter(s => s.fullCode === record.fullCode);
       const pos = get().positions.find(p => p.fullCode === record.fullCode && !p.isClosed);
-      // 可卖上限 = 底仓当前数量（currentAmount 已含 normalizeShortTDeductionsViaPort 写入的 borrow batch 扣减，
-      // reconcile 每次从基线「剥离→重算」，因此这里的 currentAmount 是上一轮 reconcile 后的权威值）
-      const maxSellable = Math.max(0, pos?.currentAmount ?? 0);
+      // 可卖上限 = 底仓数量 + 短线自持量。
+      // ① 底仓：currentAmount 已含 normalizeShortTDeductionsViaPort 写入的 borrow batch 扣减，
+      //    reconcile 每次从基线「剥离→重算」，因此这里的 currentAmount 是上一轮 reconcile 后的权威值（中长期底仓）。
+      // ② 短线自持：该标的那项 OPENED 短线流水池中「先买后卖（正T）」未对冲的净买入持有。
+      //    ——【短线/中长期强隔离】使用户无需先在中长期建仓，即可用流水完成正T（买→卖）。
+      //    上限只计净买入（min 0），不会出现「卖出超过短线自持 + 底仓之和」导致放空。
+      const baseAmount = Math.max(0, pos?.currentAmount ?? 0);
+      const selfHeld = Math.max(0, existing.reduce(
+        (sum, r) => sum + (r.direction === 'buy' ? r.amount : -r.amount),
+        0,
+      ));
+      const maxSellable = baseAmount + selfHeld;
       if (record.amount > maxSellable) {
-        return { cleared: false, rejected: true, rejectedReason: `卖出数量(${record.amount}股)超出可卖上限(${maxSellable}股)：当前底仓 ${maxSellable} 股` };
+        return { cleared: false, rejected: true, rejectedReason: `卖出数量(${record.amount}股)超出可卖上限(${maxSellable}股)：短线自持 ${selfHeld} 股 + 中长期底仓 ${baseAmount} 股` };
       }
     }
     const { feeConfig, tRounds, positions } = get();

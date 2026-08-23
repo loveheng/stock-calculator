@@ -23,6 +23,7 @@ import { ledgerService } from '../services/ledgerService';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
+import { toShortTrialProject } from '../utils/shortTermTrial';
 import {
   validateStreamTrade,
   createInitialState,
@@ -1115,6 +1116,9 @@ export default function TCalculator() {
   // 仅展示进行中的短线项目（CLEARED = 池内流水已全部配对并自动归档为战报，不再属于当前项目）
   const activeResults = useMemo(() => results.filter((r) => r.status !== 'CLEARED'), [results]);
 
+  // 【短线/中长期强隔离】短线试算项目池：由进行中的短线项目派生，供计划单卡片短线试算匹配（绝不包含中长期底仓）
+  const shortTrialProjects = useMemo(() => activeResults.map(toShortTrialProject), [activeResults]);
+
   // 表单状态
   const [stock, setStock] = useState<StockSearchItem | null>(null);
 
@@ -1270,12 +1274,14 @@ export default function TCalculator() {
   };
 
   // ---- 计划单（短线上下文） ----
+  // 【短线/中长期强隔离】短线页只展示/管理 context === 'short-term' 的计划单，
+  // 严禁穿透到 both/long-term；短线侧永不向 CostAveraging 的 Position 写计划结果。
   const shortTermPlans = useMemo(() => {
     const now = Date.now();
     const displayWindow = 3 * 24 * 60 * 60 * 1000;
     return plannedOrders.filter((p) => {
       if (p.status === 'cancelled') return false;
-      if (p.context !== 'short-term' && p.context !== 'both') return false;
+      if (p.context !== 'short-term') return false;
       if (p.status === 'expired' || p.status === 'executed') {
         const expiresAt = new Date(p.expiresAt).getTime();
         return (now - expiresAt) <= displayWindow;
@@ -1897,6 +1903,7 @@ export default function TCalculator() {
                 quote={planQuotes[p.fullCode] ?? null}
                 position={positions.find((pos) => pos.fullCode === p.fullCode && !pos.isClosed) ?? null}
                 feeConfig={feeConfig}
+                shortProjects={shortTrialProjects}
                 onEdit={(order) => {
                   setPlanStock({ fullCode: order.fullCode, Name: order.stockName, ShortName: '', Code: order.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' });
                   setPlanDirection(order.direction);

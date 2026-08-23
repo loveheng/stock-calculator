@@ -13,7 +13,12 @@ import type { PlannedOrder, Position } from '../store/types';
 import type { FeeConfig } from '../utils/mathUtils';
 import type { StockQuoteSummary } from '../types/stock';
 import { calcBatchExecution } from '../store/utils';
-import { calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
+import {
+  findLatestShortProject,
+  computeShortTermTrial,
+  type ShortTrialProject,
+  type ShortTrialResult,
+} from '../utils/shortTermTrial';
 import ConfirmModal from './ui/ConfirmModal';
 
 /** 计划单方向徽章配色 */
@@ -51,6 +56,8 @@ interface PlanOrderCardProps {
   position?: Position | null;
   /** 费率配置（用于计算执行后模拟） */
   feeConfig?: FeeConfig | null;
+  /** 短线项目池（进行中的短期项目，仅短线计划单用于短线试算匹配） */
+  shortProjects?: ShortTrialProject[];
   /** 编辑回调 */
   onEdit?: (order: PlannedOrder) => void;
   /** 执行回调：用户确认执行后，传入实际价格/数量/备注 */
@@ -80,6 +87,7 @@ export default function PlanOrderCard({
   quote,
   position,
   feeConfig,
+  shortProjects,
   onEdit,
   onExecute,
   onCancel,
@@ -109,6 +117,8 @@ export default function PlanOrderCard({
   // 当前现价
   const currentPrice = quote?.currentPrice ?? 0;
   const hasQuote = currentPrice > 0;
+  // 【短线/中长期强隔离】短线计划单不参与任何中长期成本摊薄试算
+  const isShortTerm = order.context === 'short-term';
 
   // 计划价 vs 现价对比
   const priceDiff = hasQuote ? currentPrice - order.plannedPrice : 0;
@@ -130,8 +140,9 @@ export default function PlanOrderCard({
   const execValid = execPriceNum > 0 && execAmountNum > 0;
 
   // 执行后模拟计算（中长期上下文，执行弹窗用）
+  // 【短线/中长期强隔离】短线计划单不参与 calcBatchExecution，返回 null
   const execSimulation = useMemo(() => {
-    if (!position || position.isClosed || !feeConfig || order.context === 'short-term') return null;
+    if (!position || position.isClosed || !feeConfig || isShortTerm) return null;
     if (execPriceNum <= 0 || execAmountNum <= 0) return null;
     const type = order.direction === 'buy' ? 'add' : 'reduce';
     try {
@@ -143,8 +154,9 @@ export default function PlanOrderCard({
   }, [position, feeConfig, order.context, order.direction, execPriceNum, execAmountNum]);
 
   // 试算预览（活跃计划卡片上用计划价模拟）
+  // 【短线/中长期强隔离】短线计划单不参与 calcBatchExecution，返回 null
   const trialSimulation = useMemo(() => {
-    if (!position || position.isClosed || !feeConfig || order.context === 'short-term' || order.status !== 'active') return null;
+    if (!position || position.isClosed || !feeConfig || isShortTerm || order.status !== 'active') return null;
     const type = order.direction === 'buy' ? 'add' : 'reduce';
     try {
       return calcBatchExecution(position, type, order.plannedPrice, order.plannedAmount, feeConfig);
@@ -154,34 +166,42 @@ export default function PlanOrderCard({
     }
   }, [position, feeConfig, order.context, order.direction, order.status, order.plannedPrice, order.plannedAmount]);
 
-  // 短线试算：预估规费
-  const shortTermFee = useMemo(() => {
-    if (!feeConfig || order.context !== 'short-term' || order.status !== 'active') return null;
+  // 短线试算：匹配该标的最新进行中的短期项目（按 openedAt 倒序）
+  // 【短线/中长期强隔离】仅依赖短线项目池，绝不读取中长期底仓
+  const matchedProject = useMemo(
+    () => (shortProjects ? findLatestShortProject(order.fullCode, shortProjects) : null),
+    [shortProjects, order.fullCode],
+  );
+
+  // 【短线/中长期强隔离】短线试算引擎：严格按分支逻辑计算，杜绝向下穿透到底仓
+  const trialResult = useMemo<ShortTrialResult | null>(() => {
+    if (!isShortTerm || order.status !== 'active') return null;
     if (order.plannedPrice <= 0 || order.plannedAmount <= 0) return null;
     try {
-      const code = order.fullCode.replace(/^sh|sz|bj/, '');
-      const kind = matchSecurityKind(order.stockName, code);
-      return calcTradeFees(order.plannedPrice, order.plannedAmount, order.direction, feeConfig, kind);
+      return computeShortTermTrial(
+        order.direction,
+        order.plannedPrice,
+        order.plannedAmount,
+        order.fullCode,
+        order.stockName,
+        matchedProject,
+        feeConfig,
+      );
     } catch (e) {
-      console.warn('[PlanOrderCard] shortTermFee calc error:', e);
+      console.warn('[PlanOrderCard] computeShortTermTrial error:', e);
       return null;
     }
-  }, [feeConfig, order.context, order.direction, order.status, order.plannedPrice, order.plannedAmount, order.fullCode, order.stockName]);
-
-  // Debug: 试算预览条件检查
-  if (order.context !== 'short-term' && order.status === 'active') {
-    console.log('[PlanOrderCard] trialSimulation debug:', {
-      stockName: order.stockName,
-      context: order.context,
-      status: order.status,
-      hasPosition: !!position,
-      positionClosed: position?.isClosed,
-      hasFeeConfig: !!feeConfig,
-      trialSimulation: trialSimulation ? 'computed' : 'null',
-      plannedPrice: order.plannedPrice,
-      plannedAmount: order.plannedAmount,
-    });
-  }
+  }, [
+    isShortTerm,
+    order.status,
+    order.direction,
+    order.plannedPrice,
+    order.plannedAmount,
+    order.fullCode,
+    order.stockName,
+    matchedProject,
+    feeConfig,
+  ]);
 
   const handleExecuteConfirm = () => {
     if (!execValid) return;
@@ -362,8 +382,8 @@ export default function PlanOrderCard({
             </div>
           )}
 
-          {/* 底层仓位对比（仅在有持仓时显示） */}
-          {position && !position.isClosed && (
+          {/* 底层仓位对比（中长期专用；短线严格隔离，不展示底仓成本/持仓/累计投入） */}
+          {!isShortTerm && position && !position.isClosed && (
             <div className="mx-3 mb-2 p-2 rounded-lg bg-slate-800/40 border border-slate-700/40">
               <div className="flex items-center gap-1 text-[10px] text-slate-500 mb-1.5">
                 <span>📦 当前底仓</span>
@@ -383,16 +403,12 @@ export default function PlanOrderCard({
                   </span>
                 </div>
               )}
-              {order.context === 'short-term' && (
-                <div className="mt-1 text-[9px] text-slate-600 italic">
-                  * 短线执行不改变底层仓位，仅记录流水
-                </div>
-              )}
             </div>
           )}
 
           {/* 试算预览（活跃计划 + 有持仓 + 中长期，直接用计划价模拟） */}
-          {order.status === 'active' && position && !position.isClosed && feeConfig && order.context !== 'short-term' && trialSimulation && (
+          {/* 【短线/中长期强隔离】短线计划单不渲染中长期成本摊薄试算面板 */}
+          {order.status === 'active' && position && !position.isClosed && feeConfig && !isShortTerm && trialSimulation && (
             <div className="mx-3 mb-2 p-2 rounded-lg bg-emerald-900/20 border border-emerald-700/30">
               <div className="text-[10px] text-emerald-400 mb-1.5 flex items-center gap-1">
                 <span>🔮 按计划价试算</span>
@@ -411,7 +427,7 @@ export default function PlanOrderCard({
           )}
 
           {/* 短线试算预览 */}
-          {order.status === 'active' && order.context === 'short-term' && (
+          {order.status === 'active' && isShortTerm && trialResult && (
             <div className="mx-3 mb-2 p-2 rounded-lg bg-sky-900/20 border border-sky-700/30">
               <div className="text-[10px] text-sky-400 mb-1.5 flex items-center gap-1">
                 <span>🔮 短线试算</span>
@@ -423,27 +439,63 @@ export default function PlanOrderCard({
                     {order.direction === 'buy' ? '正T · 买入' : '倒T · 卖出'}
                   </span>
                 </div>
-                {shortTermFee && (
+                {trialResult.kind === 'blocked-sell' && (
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-500">预估规费</span>
-                    <span className="font-mono text-amber-400">¥{shortTermFee.total.toFixed(2)}</span>
+                    <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5 text-amber-400" />
+                    <span className="text-[10px] text-amber-300">{trialResult.message}</span>
                   </div>
                 )}
-                {order.direction === 'sell' && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500">底仓</span>
-                    {position && !position.isClosed ? (
-                      <span className="text-green-400 flex items-center gap-1">
-                        <CheckCircle className="w-2.5 h-2.5" />
-                        可用 ¥{position.currentCost.toFixed(3)} × {position.currentAmount}股
-                      </span>
-                    ) : (
-                      <span className="text-amber-400 flex items-center gap-1">
-                        <AlertTriangle className="w-2.5 h-2.5" />
-                        无可用底仓
-                      </span>
-                    )}
-                  </div>
+                {trialResult.kind === 'new-project-buy' && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">新建短期项目</span>
+                      <span className="text-sky-400">🆕</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">初始成本基准</span>
+                      <span className="font-mono text-slate-200">¥{trialResult.initCost.toFixed(3)} × {trialResult.initAmount}股</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">预估规费</span>
+                      <span className="font-mono text-amber-400">¥{trialResult.fee.toFixed(2)}</span>
+                    </div>
+                  </>
+                )}
+                {trialResult.kind === 'matched-buy' && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">追加买入后新均价</span>
+                      <span className="font-mono text-slate-200">¥{trialResult.newAvgCost.toFixed(3)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">追加后总持仓</span>
+                      <span className="font-mono text-slate-200">{trialResult.newAmount.toLocaleString()}股</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">预估规费</span>
+                      <span className="font-mono text-amber-400">¥{trialResult.addedFee.toFixed(2)}</span>
+                    </div>
+                  </>
+                )}
+                {trialResult.kind === 'matched-sell' && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">对冲差价</span>
+                      <span className="font-mono text-slate-200">¥{trialResult.avgCost.toFixed(3)} → 计划 ¥{order.plannedPrice.toFixed(2)} ({trialResult.spreadPct >= 0 ? '+' : ''}{trialResult.spreadPct.toFixed(2)}%)</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">对冲数量</span>
+                      <span className="font-mono text-slate-200">{trialResult.hedgeAmount.toLocaleString()}股</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">预估规费</span>
+                      <span className="font-mono text-amber-400">¥{trialResult.fee.toFixed(2)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">预估净收益</span>
+                      <span className={`font-mono ${trialResult.netIncome >= 0 ? 'text-red-400' : 'text-green-400'}`}>{trialResult.netIncome >= 0 ? '+' : ''}¥{trialResult.netIncome.toFixed(2)}</span>
+                    </div>
+                  </>
                 )}
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500">执行方式</span>
@@ -479,7 +531,7 @@ export default function PlanOrderCard({
                 <div className="font-mono text-slate-300 text-center">¥{formatAmount(order.plannedPrice * order.plannedAmount)}</div>
                 <div className="font-mono text-slate-300 text-center">¥{formatAmount(executedTotal)}</div>
 
-                {order.context !== 'short-term' && order.actual.newCost !== undefined && (
+                {!isShortTerm && order.actual.newCost !== undefined && (
                   <>
                     <div className="text-slate-400 border-t border-blue-700/10 pt-1">执行后成本</div>
                     <div className="font-mono text-slate-300 text-center border-t border-blue-700/10 pt-1">—</div>
@@ -507,7 +559,7 @@ export default function PlanOrderCard({
                   </>
                 )}
 
-                {order.context === 'short-term' && order.actual.avgPrice !== undefined && (
+                {isShortTerm && order.actual.avgPrice !== undefined && (
                   <>
                     <div className="text-slate-400 border-t border-blue-700/10 pt-1">加权均价</div>
                     <div className="font-mono text-slate-300 text-center border-t border-blue-700/10 pt-1 col-span-2">¥{order.actual.avgPrice.toFixed(2)}</div>
@@ -708,13 +760,14 @@ export default function PlanOrderCard({
             )}
 
             {/* 短线提示 + 倒T校验 */}
-            {order.context === 'short-term' && (
+            {/* 【短线/中长期强隔离】短线侧监听自持（正T先买后卖）可独立持有并卖出，无需强制依赖中长期底仓 */}
+            {isShortTerm && (
               <div className="mb-3">
                 {order.direction === 'sell' && (!position || position.isClosed) ? (
                   <div className="bg-red-900/20 border border-red-700/30 p-2 rounded-lg">
                     <p className="text-[10px] text-red-400 flex items-center gap-1">
                       <AlertTriangle className="w-3 h-3 shrink-0" />
-                      <span>该标的无底仓，倒T卖出需要先有持仓才能借仓卖出，执行可能被拒绝</span>
+                      <span>该标的无中长期底仓：若短线流水池中无正T买入自持，倒T卖出可能被拒绝</span>
                     </p>
                   </div>
                 ) : (

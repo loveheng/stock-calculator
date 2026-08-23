@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { useStreamResults, useAppStore } from '../store';
 import { roundTo, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
+import { toShortTrialProject } from '../utils/shortTermTrial';
 import { generateId, calcBatchExecution } from '../store/utils';
 import type { StockStreamResult } from '../utils/tStreamEngine';
 import type { PlannedOrder, PositionBatch, StreamAddResult } from '../store/types';
@@ -106,6 +107,9 @@ export default function Home() {
     () => streamResults.filter((s) => s.status !== 'CLEARED'),
     [streamResults],
   );
+
+  // 【短线/中长期强隔离】短线试算项目池，供首页短线计划单卡片匹配
+  const homeShortTrialProjects = useMemo(() => allActiveStreams.map(toShortTrialProject), [allActiveStreams]);
 
   // ---- 已完成战报归档（COMPLETED rounds） ----
   const completedRounds = useMemo(
@@ -933,6 +937,7 @@ export default function Home() {
                   quote={homePlanQuotes[p.fullCode] ?? null}
                   position={pos ?? null}
                   feeConfig={feeConfig}
+                  shortProjects={homeShortTrialProjects}
                   onExecute={handleHomePlanExecute}
                   onCancel={cancelPlan}
                   onNavigate={handleHomePlanNavigate}

@@ -375,19 +375,20 @@ export function calcBatchExecution(
     newTotalInvested += price * amount + totalFee;
     newCost = newTotalInvested / newAmount;
   } else {
-    if (totalAmount > 0) {
-      const costBasisPerShare = totalInvested / totalAmount;
-      const costBasisOfSold = costBasisPerShare * amount;
-      const netProceeds = price * amount - totalFee;
-      newRealizedPnL += netProceeds - costBasisOfSold;
-      newTotalInvested -= costBasisOfSold;
-    }
-    newAmount = totalAmount - amount;
+    // 减仓：保本摊薄法，实现动态保本成本。
+    // 卖出回笼资金，从总投入中扣除并计入本次规费，剩余部分作为保本成本基数。
+    const soldAmount = price * amount;                             // 卖出回笼资金
+    newAmount = totalAmount - amount;                              // 剩余持仓股数
+    if (newAmount < 0) newAmount = 0;                              // 超过持仓：上游已校验，此处兜底清仓
     if (newAmount <= 0) {
+      // 完全清仓：成本归零，差额全部计入已实现盈亏
+      newRealizedPnL += (soldAmount - totalFee) - totalInvested;
       newCost = 0;
       newTotalInvested = 0;
     } else {
-      newCost = newTotalInvested / newAmount;
+      const remainingInvested = totalInvested - soldAmount + totalFee;  // 剩余总投入（含规费）
+      newTotalInvested = remainingInvested;
+      newCost = remainingInvested / newAmount;                          // 保本摊薄成本
     }
   }
 

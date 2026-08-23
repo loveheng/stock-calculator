@@ -31,6 +31,7 @@ import type { Position } from './types';
 import { generateId } from './utils';
 import { useAppStore } from './index';
 import { safePersist } from './persistence';
+import { recordAudit } from '../risk/auditLogger';
 import { matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
 import { extractBaseline } from '../utils/baselineExtractor';
 import { runSandboxEngine, type EngineOptions, type EngineRejection } from '../utils/sandboxEngine';
@@ -683,6 +684,10 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
       if (token !== loadToken) return;
       set({ klineLoading: false, klineError: err instanceof Error ? err.message : 'K 线加载失败，请检查网络后重试。' });
     }
+    // 【风控审计】记录沙盘选股操作
+    recordAudit('sandbox_select_stock', 'sandbox', fullCode, 'success', {
+      tags: { fullCode },
+    });
   },
 
   selectBranch: (branchId) => {
@@ -820,6 +825,10 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
     }
     await safePersist(() => putSandboxBranch(branch));
     set({ branches: [...get().branches, branch], selectedBranchId: branch.id, activeComputed: computed });
+    // 【风控审计】记录预设生成
+    recordAudit('sandbox_generate_preset', 'sandbox', branch.id, 'success', {
+      tags: { fullCode: branch.fullCode, strategyId, branchName: branch.branchName },
+    });
   },
 
   updatePreset: async (branchId, params, options = {}) => {
@@ -902,6 +911,7 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
   },
 
   deleteBranch: async (branchId) => {
+    const branch = get().branches.find((b) => b.id === branchId);
     await deleteSandboxBranch(branchId); // 软删 + 订单级联软删
     savedOrdersCache.delete(branchId);
     memoInvalidate(branchId);
@@ -912,6 +922,10 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
       comparedBranchIds: comparedBranchIds.filter((id) => id !== branchId),
       activeComputed: selectedBranchId === branchId ? null : get().activeComputed,
       dirtyBranchIds: get().dirtyBranchIds.filter((id) => id !== branchId),
+    });
+    // 【风控审计】记录沙盘分支删除
+    recordAudit('sandbox_delete_branch', 'sandbox', branchId, 'success', {
+      tags: { branchName: branch?.branchName ?? '', branchType: branch?.branchType ?? '' },
     });
   },
 
@@ -930,6 +944,11 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
       dirtyBranchIds: get().dirtyBranchIds.includes(branchId)
         ? get().dirtyBranchIds
         : [...get().dirtyBranchIds, branchId],
+    });
+    // 【风控审计】记录用户方案订单编辑
+    recordAudit('sandbox_update_orders', 'sandbox', branchId, 'success', {
+      tags: { branchName: branch.branchName },
+      after: { orderCount: normalized.length },
     });
   },
 
@@ -970,6 +989,11 @@ export const useSandboxStore = create<SandboxStore>()((set, get) => ({
       branches: get().branches.map((b) => (b.id === branchId ? updated : b)),
       activeComputed: get().selectedBranchId === branchId ? computed : get().activeComputed,
       dirtyBranchIds: get().dirtyBranchIds.filter((id) => id !== branchId),
+    });
+    // 【风控审计】记录模拟运行
+    recordAudit('sandbox_run_simulation', 'sandbox', branchId, 'success', {
+      tags: { fullCode: branch.fullCode, branchType: branch.branchType, branchName: branch.branchName },
+      after: { status: updated.status, ordersCount: computed?.result?.snapshots?.length ?? 0 },
     });
   },
 

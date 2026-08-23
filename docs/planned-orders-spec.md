@@ -1,8 +1,8 @@
 # 计划单（plannedOrders）开发文档
 
-> 版本：v1（对齐当前实现）
+> 版本：v2（2026-08 — 重构：严格短线/中长期强隔离，新增分支试算引擎）
 > 定位：面向**开发者**的实现说明，描述计划单的数据模型、Store 契约、执行链路与页面集成，供二次开发与排障使用。
-> 关联：`src/store/types.ts`（领域类型）、`src/store/index.ts`（Store Actions）、`src/db/schema.ts`（DB 实体）、`src/db/index.ts`（DAO）、`src/components/PlanOrderCard.tsx`（UI）、`src/views/TCalculator.tsx`（短线页）、`src/views/CostAveraging.tsx`（中长期页）、`src/views/Home.tsx`（首页快速执行）。
+> 关联：`src/store/types.ts`（领域类型）、`src/store/index.ts`（Store Actions）、`src/db/schema.ts`（DB 实体）、`src/db/index.ts`（DAO）、`src/components/PlanOrderCard.tsx`（UI）、`src/utils/shortTermTrial.ts`（短线试算引擎，v2 新增）、`src/views/TCalculator.tsx`（短线页）、`src/views/CostAveraging.tsx`（中长期页）、`src/views/Home.tsx`（首页快速执行）。
 
 ---
 
@@ -186,6 +186,8 @@ interface PlanOrderCardProps {
   quote?: StockQuoteSummary | null;      // 实时行情（可空）
   position?: Position | null;            // 当前底仓（可空）
   feeConfig?: FeeConfig | null;
+  /** 短线项目池（进行中的短期项目，仅短线计划单用于短线试算匹配；v2 新增） */
+  shortProjects?: ShortTrialProject[];
   onEdit?: (order) => void;              // 编辑
   onExecute?: (order, actualPrice, actualAmount, note) => void;
   onCancel?: (id) => void;
@@ -200,14 +202,21 @@ interface PlanOrderCardProps {
 | `currentPrice` / `priceDiff` / `diffPercent` | 有 quote | 现价与计划价差额 |
 | `execSimulation` | 中长期 + 有 position + 有 feeConfig | 执行弹窗内按**实际输入值**模拟 `calcBatchExecution` |
 | `trialSimulation` | 中长期 + active + 有 position | 卡片展开区按**计划价**模拟 |
-| `shortTermFee` | 短线 + active | `calcTradeFees` 预估规费 |
+| `matchedProject` | `shortProjects` 存在 | `findLatestShortProject(order.fullCode, shortProjects)` 匹配最新进行中短线项目 |
+| `trialResult` | isShortTerm + active | `computeShortTermTrial(...)` **分支试算引擎**，绝不读取底仓（v2 新增，替代旧 `shortTermFee`） |
 | `isFavorable` | — | 买入现价≤计划价、卖出现价≥计划价记为"利好" |
 
 ### 4.2 展开区（移动端默认折叠，桌面端默认展开）
 
 - 实时对比（现价 / 计划价 / 差额 / 方向提示）。
-- 底层仓位对比（成本、累计投入、已实现盈亏；短线提示"不改变底层仓位"）。
-- 试算预览（中长期按计划价 / 短线预估规费）。
+- 底层仓位对比（**仅中长期**：成本、累计投入、已实现盈亏；v2 起短线计划单**隐藏**此块，避免底仓数据穿透）。
+- 试算预览：
+  - 中长期：按**计划价**模拟 `calcBatchExecution`（成本摊薄 / 持有数量 / 投入 / 规费）。
+  - 短线（v2 重构）：严格按 `shortTermTrial.ts` 的**4 分支**渲染，**禁用**底仓成本/股数/可卖来源读取：
+    1. **`matched-buy`**：匹配到短期项目 + 买入 → 追加后新均价 / 总持仓 / 预估规费。
+    2. **`matched-sell`**：匹配到短期项目 + 卖出 → 对冲差价 / 对冲数量 / 预估规费 / 净收益。
+    3. **`new-project-buy`**：无短期项目 + 买入 → 新建短期项目 / 初始成本基准 / 预估规费。
+    4. **`blocked-sell`**：无短期项目 + 卖出 → **阻断试算**，仅显示红色警示横幅（"需借用底仓，暂不进行收益试算"），**不渲染收益/规费表**。
 - 已执行对比表（计划 vs 实际：价格/数量/总额/成本/持有/投入/规费）。
 - 操作按钮：active → 「编辑 / 执行 / 取消 /（跳转）」；executed / expired / cancelled → 仅展示说明。
 
@@ -217,6 +226,40 @@ interface PlanOrderCardProps {
 - 中长期显示仓位变化预览（成本价 / 持有数量 / 累计投入 / 已实现盈亏 / 规费）。
 - 短线显示"仅记录流水，不改变底层仓位"，倒T卖出校验底仓。
 - 达成判定：`buy ? actual ≤ planned : actual ≥ planned` → ✅ / ⚠️。
+
+### 4.4 短线试算引擎（shortTermTrial.ts，v2 新增）
+
+文件位置：`src/utils/shortTermTrial.ts`
+
+核心接口：
+
+```ts
+type ShortTrialProject = {
+  fullCode: string; mode: 'long' | 'short'; status: string;
+  pendingAmount: number;    // 剩余待处理持仓量
+  avgCost: number;          // 加权均价 P_avg
+  realizedPnL: number; openedAt?: string;
+};
+
+type ShortTrialResult =
+  | { kind: 'matched-buy';    project; newAvgCost; newAmount; addedFee }
+  | { kind: 'matched-sell';   project; avgCost; hedgeAmount; netIncome; fee; spreadPct }
+  | { kind: 'new-project-buy'; initCost; initAmount; fee }
+  | { kind: 'blocked-sell';   reason: 'no-short-project'; message: string };
+
+function findLatestShortProject(fullCode, projects): ShortTrialProject | null;
+function toShortTrialProject(sr: StockStreamResult): ShortTrialProject;
+function computeShortTermTrial(direction, price, amount, fullCode, stockName, project, feeConfig?): ShortTrialResult;
+```
+
+**核心规则**：
+
+1. 存在短期项目 + 买入 → 基于当前均价与持仓试算追加买入后的新加权成本（`matched-buy`）。
+2. 存在短期项目 + 卖出 → 基于短期项目加权均价做对冲差价试算（`matched-sell`）。
+3. 无短期项目 + 买入 → 允许试算，以计划价与量作为初始成本基准（`new-project-buy`）。
+4. 无短期项目 + 卖出 → **阻断试算**，输出警告，**禁止**穿透到底仓计算收益（`blocked-sell`）。
+
+**隔离保障**：该引擎纯函数，不接收 `position` 参数，不依赖任何中长期底仓数据。
 
 ---
 
@@ -243,7 +286,7 @@ const shortTermPlans = useMemo(() => {
   const displayWindow = 3 * 24 * 60 * 60 * 1000;
   return plannedOrders.filter((p) => {
     if (p.status === 'cancelled') return false;
-    if (p.context !== 'short-term' && p.context !== 'both') return false;   // context 关键
+    if (p.context !== 'short-term') return false;   // 【强隔离】短线页仅展示严格 short-term
     if (p.status === 'expired' || p.status === 'executed') {
       const expiresAt = new Date(p.expiresAt).getTime();
       return (now - expiresAt) <= displayWindow;
@@ -253,8 +296,22 @@ const shortTermPlans = useMemo(() => {
 }, [plannedOrders]);
 ```
 
-- `context !== 'short-term' && context !== 'both'` → 短线页只展示 short-term / both。
+- `context !== 'short-term'` → 短线页只展示严格 `short-term`，`both` / `long-term` 一律不进入短线视图（强隔离）。
 - `shortTermPlans` 全量送达 `PlanOrderCard`；卡片自作状态展示。
+
+### 5.2.1 短线项目池 -> 试算项目池（v2 新增）
+
+```ts
+// 进行中的短线项目（CLEARED 已归档的不算）
+const activeResults = useMemo(() => results.filter((r) => r.status !== 'CLEARED'), [results]);
+
+// 转换为 ShortTrialProject，供 PlanOrderCard 的短线试算引擎匹配
+const shortTrialProjects = useMemo(() => activeResults.map(toShortTrialProject), [activeResults]);
+```
+
+- `activeResults` 来自 `useStreamResults()`，是当前短线页的流水池撮合结果。
+- `shortTrialProjects` 通过 `toShortTrialProject` 提取出试算所需字段（`pendingAmount` / `avgCost` 等），**绝不包含**中长期底仓。
+- 传入 `PlanOrderCard` 的 `shortProjects` prop，由卡片内部的 `computeShortTermTrial` 按 4 分支计算。
 
 ### 5.3 创建 `handleCreatePlan` 与编辑
 
@@ -283,6 +340,8 @@ const handlePlanExecute = useCallback((order, actualPrice, actualAmount, note) =
 要点：
 - 短路执行**必须先** `addStreamRecord` 成功，再 `markPlanExecuted`。
 - `addStreamRecord` 是同步的（`StreamAddResult?`），若被 Store 层校验拒绝（如倒卖无底仓）则不改变计划状态。
+- **【强隔离】短路执行绝不调用 `addBatch`，绝不修改中长期底仓成本/持仓/累计投入**；只追加短线流水。
+- **标的自动关联**：执行即走 `addStreamRecord` → 该 `fullCode` 若有进行中短线项目自动归入；若无，`findOrCreateOpenRound` 自动初始化该标的的短线 Round（短线自持持有），**不强制依赖中长期已建仓**（正T买→卖可在短线侧独立完成）。
 
 ### 5.5 行情订阅
 
@@ -331,6 +390,19 @@ const handlePlanExecute = (order, actualPrice, actualAmount, note) => {
 - 执行 = `addBatch`（修改底仓成本 / 数量）+ `markPlanExecuted`（写回 `newCost` 等）。
 - 展示用全局 `app-toast`，而短线页用本地 `showToast`。
 
+**减仓（reduce）成本口径 = 保本摊薄法**（`calcBatchExecution` reduce 分支，已重构）：
+
+```
+soldAmount        = price × amount            // 卖出回笼资金
+remainingInvested = prevTotalInvested − soldAmount + totalFee   // 剩余总投入（含规费）
+remainingAmount   = prevAmount − amount     // 剩余持仓股数
+newCost           = remainingInvested / remainingAmount   // 执行后摊薄成本（保本口径）
+```
+
+- 剩余持仓 `remainingAmount ≤ 0`（完全清仓）时：`newCost = 0`，并将差额 `(soldAmount − totalFee) − prevTotalInvested` 全部计入已实现盈亏（`newRealizedPnL`）。
+- 该结果通过 `addBatch` 的 `currentCost / currentAmount / realizedPnL / totalInvested` **真实写入**底仓账本，且 `loadPositionsFromDB` 直接读存储的 `currentCost`（不重算），故计划单减仓后成本**会动态更新并持久保留**。
+- **口径一致性警示**：真实账本存在多个独立写入口，其中**手动加减仓弹窗 `handleBatchConfirm`（CostAveraging.tsx）与 `recomputePositionSnapshot`（删除批次 / 做T对账 / 流水 reconcile）仍为平均成本法（成本基础法）**。因此计划单执行（保本法）与手动弹窗（平均成本法）对同一笔减仓，执行后成本可能不同；如需统一须同步改这两处 reduce 分支。
+
 ---
 
 ## 7. 首页 Home.tsx（快速执行）
@@ -339,6 +411,7 @@ const handlePlanExecute = (order, actualPrice, actualAmount, note) => {
 
 - `homePlans`：过滤 active/executed + 3 天窗口，不短 / long 都进。
 - `activePlanCount`：active 且未过期的计数（角标）。
+- `homeShortTrialProjects`（v2 新增）：`allActiveStreams.map(toShortTrialProject)`，传入 `PlanOrderCard` 的 `shortProjects` prop，使首页短线计划单也能正确匹配短线项目进行试算，避免穿透到底仓。
 
 ### 7.2 快速执行 `handleHomePlanExecute`
 
@@ -364,7 +437,7 @@ markPlanExecuted(order.id, { …合并两种链路的结果… });
 
 | 维度 | TCalculator（短线） | CostAveraging（中长期） | Home（快速执行） |
 |---|---|---|---|
-| context 过滤 | `short-term \| both` | `long-term \| both` | 全部（`homePlans`） |
+| context 过滤 | `short-term`（严格） | `long-term \| both` | 全部（`homePlans`） |
 | 真实成交入口 | `addStreamRecord`（流水） | `addBatch`（批次） | 按 context 双分支 |
 | 是否改底仓 | 否（仅流水） | 是（成本 / 数量 / 投入） | 视 context |
 | 达成判定 | `buy? ≤ : ≥` 计划价 | 同上 | 同上 |

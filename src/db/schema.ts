@@ -510,6 +510,30 @@ export interface KlineCacheEntity {
   fetchedAt: number;
 }
 
+/** 审计日志实体（auditLogs 表）。只追加、不修改、不删除。 */
+export interface AuditLogEntity {
+  /** 全局唯一主键（ulid，按时间序排列） */
+  id: string;
+  /** 操作时间戳（epoch ms） */
+  timestamp: number;
+  /** 操作类型标识 */
+  action: string;
+  /** 操作目标类型（position / round / batch / sandbox / system） */
+  targetType: string;
+  /** 操作目标主键 */
+  targetId: string;
+  /** 操作前的关键状态快照（JSON 序列化） */
+  beforeJson?: string;
+  /** 操作后的关键状态快照（JSON 序列化） */
+  afterJson?: string;
+  /** 操作结果：success / rejected */
+  result: string;
+  /** 拒绝原因或异常信息 */
+  reason?: string;
+  /** 关联标签（JSON 序列化，如 {"fullCode":"sh601318","roundId":"xxx"}） */
+  tagsJson?: string;
+}
+
 /**
  * 各版本不变的基础表结构（v2）。
  * 后续版本基于此增量叠加或覆盖，不再全量复制。
@@ -586,12 +610,18 @@ const STORES_V11 = {
   klineCache: 'fullCode, lastDate, fetchedAt',
 } as const;
 
+/** v12：新增 auditLogs 表（审计日志，只追加） */
+const STORES_V12 = {
+  ...STORES_V11,
+  auditLogs: 'id, action, targetType, targetId, result, timestamp, [action+timestamp]',
+} as const;
+
 /**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
- * @description 集中管理全部 12 张规范化表，并声明各表的索引字段以支持高效查询。
+ * @description 集中管理全部 13 张规范化表，并声明各表的索引字段以支持高效查询。
  * @note 索引字符串格式为 Dexie schema：主键在前（`++` 自增 / 普通字段），逗号分隔的字段均会被建立索引。
- * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V11 常量定义。
+ * @note 版本升级采用增量叠加模式，见 STORES_V2~STORES_V12 常量定义。
  */
 export class TradingLedgerDB extends Dexie {
   /** 股票基础信息表 */
@@ -634,6 +664,9 @@ export class TradingLedgerDB extends Dexie {
   /** K 线缓存表（前复权日 K 线持久化，主键 fullCode） */
   klineCache!: Table<KlineCacheEntity, string>;
 
+  /** 审计日志表（只追加） */
+  auditLogs!: Table<AuditLogEntity, string>;
+
   /**
    * 初始化数据库结构（版本链 v2→v11）。
    *
@@ -669,6 +702,7 @@ export class TradingLedgerDB extends Dexie {
     this.version(9).stores(STORES_V9 as Record<string, string | null>);
     this.version(10).stores(STORES_V10 as Record<string, string | null>);
     this.version(11).stores(STORES_V11 as Record<string, string | null>);
+    this.version(12).stores(STORES_V12 as Record<string, string | null>);
   }
 }
 

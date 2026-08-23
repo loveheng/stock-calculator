@@ -22,6 +22,7 @@ import {
 import { ledgerService } from '../services/ledgerService';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
+import { setMarketPrices } from '../risk/priceCache';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
 import { toShortTrialProject } from '../utils/shortTermTrial';
 import {
@@ -1136,6 +1137,9 @@ export default function TCalculator() {
     [stock, activeResults]
   );
   const { quotes, isTrading, lastUpdated } = useLiveQuotes(quoteCodes);
+
+  // 同步实时行情到风控价格缓存（R2 价格偏离校验用）
+  useEffect(() => { setMarketPrices(quotes); }, [quotes]);
 
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [price, setPrice] = useState('');

@@ -50,6 +50,11 @@ import {
   deletePlannedOrder,
   } from '../db/index';
 import { safePersist, getIsSyncingFromRemote, setIsSyncingFromRemote } from './persistence';
+import { validate, amountSanityRule, priceDeviationRule, importDataIntegrityRule, type RiskRule } from '../risk/validator';
+import { getMarketPrice } from '../risk/priceCache';
+import type { RiskValidationContext } from '../risk/types';
+import { recordAudit } from '../risk/auditLogger';
+import type { RiskValidationReport } from '../risk/types';
 import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
 import { DEFAULT_FEE_CONFIG } from './feePresets';
 import { positionAdjustmentPort } from '../services/positionAdjustmentPort';
@@ -271,6 +276,19 @@ async function persistPositionDiffs(positions: Position[], finalPositions: Posit
 }
 
 /**
+ * 风控校验辅助：执行规则集合并返回报告。无市价时跳过价格相关规则（getMarketPrice 返回 undefined）。
+ * 校验仅使用纯函数，不产生副作用。
+ */
+function runRiskValidation<T>(
+  rules: RiskRule<T>[],
+  data: T,
+  marketPriceFn?: (fullCode: string) => number | undefined,
+): RiskValidationReport {
+  const ctx: RiskValidationContext = { now: new Date().toISOString(), getMarketPrice: marketPriceFn ?? getMarketPrice };
+  return validate(rules, data, ctx);
+}
+
+/**
  * 全量对账：以持仓批次履历为基线，依据当前流水池状态重建底仓。
  *
  * 每个写操作（新增/删除/修改流水、清空流水池）后调用，保证：
@@ -347,10 +365,18 @@ export const useAppStore = create<AppStore>()((set, get) => ({
   loadTRounds: async () => { const rounds = await loadTRoundsFromDB(); if (rounds.length) set(s => ({ tRounds: [...s.tRounds.filter(r => !rounds.some(nr => nr.id === r.id)), ...rounds] })); },
   setCoreDataLoaded: (loaded: boolean) => { set({ coreDataLoaded: loaded }); },
 
-  setFeeConfig: (partial) => { set(s => ({ feeConfig: { ...s.feeConfig, ...partial } })); safePersist(() => putFeeConfig(get().feeConfig)); },
+  setFeeConfig: (partial) => { set(s => ({ feeConfig: { ...s.feeConfig, ...partial } })); safePersist(() => putFeeConfig(get().feeConfig)); recordAudit('set_fee_config', 'system', 'fee-config', 'success', { after: { ...partial } }); },
 
   addStreamRecord: (record) => {
     if (!get().coreDataLoaded) return { cleared: false, rejected: true, rejectedReason: '系统数据加载中，请稍后重试' };
+    // 【风控 R1/R2】前置校验：数量与价格合理性。阻止 error，放行 warning。
+    const riskReport = runRiskValidation(
+      [amountSanityRule(record.amount, record.direction === 'buy' ? '买入数量' : '卖出数量'), priceDeviationRule(record.price, record.fullCode, record.direction === 'buy' ? '买入价格' : '卖出价格')],
+      record,
+    );
+    if (riskReport.blocked) {
+      return { cleared: false, rejected: true, rejectedReason: riskReport.summary };
+    }
     if (record.direction === 'sell') {
       const existing = activeStreamsFromRounds(get().tRounds).filter(s => s.fullCode === record.fullCode);
       const pos = get().positions.find(p => p.fullCode === record.fullCode && !p.isClosed);
@@ -429,6 +455,11 @@ export const useAppStore = create<AppStore>()((set, get) => ({
         await putLongTermRecord(excessMergeLTRecord);
       }
     });
+    // 【风控审计】记录流水操作
+    recordAudit('add_stream_record', 'round', updatedRound.id, 'success', {
+      tags: { fullCode: record.fullCode, direction: record.direction },
+      after: { id: record.id, price: record.price, amount: record.amount },
+    });
     return { cleared: stream?.status === 'CLEARED', netProfit: stream?.transferProfit, avgPrice: stream?.avgPrice };
   },
 
@@ -459,6 +490,10 @@ export const useAppStore = create<AppStore>()((set, get) => ({
       }
       await persistPositionDiffs(positions, finalPositions);
     });
+    // 【风控审计】记录删除流水操作
+    recordAudit('remove_stream_record', 'round', removedRound?.id ?? id, 'success', {
+      tags: { streamId: id },
+    });
   },
 
   clearStreams: () => {
@@ -475,6 +510,10 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     });
     set({ tRounds: keptRounds, positions: fixedPositions });
     safePersist(async () => { for (const id of openIds) await deleteTRoundWithTransactions(id); for (const p of changed) { await replacePositionSnapshotWithBatches(p, p.batches); } });
+    // 【风控审计】记录清空流水操作
+    recordAudit('clear_streams', 'system', 'all', 'success', {
+      tags: { clearedRounds: openIds.join(',') },
+    });
   },
 
   removeRound: (id) => {
@@ -662,9 +701,17 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     return { ok: true, message: msg };
   },
 
-  addPosition: (pos) => { set(s => ({ positions: [...s.positions, pos] })); safePersist(() => putPositionWithBatches(pos, pos.batches)); },
+  addPosition: (pos) => {
+    set(s => ({ positions: [...s.positions, pos] }));
+    safePersist(() => putPositionWithBatches(pos, pos.batches));
+    // 【风控审计】记录建仓
+    recordAudit('add_position', 'position', pos.id, 'success', {
+      tags: { fullCode: pos.fullCode },
+      after: { currentCost: pos.currentCost, currentAmount: pos.currentAmount, batchCount: pos.batches.length },
+    });
+  },
   updatePosition: (id, updates) => { set(s => ({ positions: s.positions.map(p => p.id === id ? { ...p, ...updates } : p) })); const u = get().positions.find(p => p.id === id); if (u) safePersist(() => putPosition(u)); },
-  closePosition: (id) => { set(s => ({ positions: s.positions.map(p => p.id === id ? { ...p, isClosed: true, closedAt: new Date().toISOString() } : p) })); const u = get().positions.find(p => p.id === id); if (u) safePersist(() => putPosition(u)); },
+  closePosition: (id) => { set(s => ({ positions: s.positions.map(p => p.id === id ? { ...p, isClosed: true, closedAt: new Date().toISOString() } : p) })); const u = get().positions.find(p => p.id === id); if (u) safePersist(() => putPosition(u)); recordAudit('close_position', 'position', id, 'success'); },
   addBatch: (pid, batch, updates) => {
     const base = get().positions.find(p => p.id === pid);
     if (!base) return;
@@ -674,8 +721,17 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     // updatePosition 的新值先落库，随后 addBatchToPosition 的旧快照显式事务必然覆盖新值 → 总是旧值。
     // 合并为单次写库后不存在该问题。
     const updated: Position = { ...base, ...updates, batches: [...base.batches, batch] };
+    // 【风控 R1】批次数量合理性校验
+    const riskReport = runRiskValidation([amountSanityRule(batch.amount, batch.type === 'reduce' ? '减仓数量' : '加减数量')], batch, undefined);
+    if (riskReport.blocked) return;
     set(s => ({ positions: s.positions.map(p => (p.id === pid ? updated : p)) }));
     safePersist(() => addBatchToPosition(updated, batch));
+    // 【风控审计】记录批次追加
+    recordAudit('add_batch', 'batch', batch.id, 'success', {
+      tags: { positionId: pid, fullCode: base.fullCode, type: batch.type },
+      before: { currentAmount: base.currentAmount, currentCost: base.currentCost },
+      after: { currentAmount: updated.currentAmount, currentCost: updated.currentCost },
+    });
   },
   deletePositionBatch: (pid, bid) => {
     const base = get().positions.find((p) => p.id === pid);
@@ -691,8 +747,12 @@ export const useAppStore = create<AppStore>()((set, get) => ({
       await deletePositionBatch(bid);
       await putPosition(updated);
     });
+    // 【风控审计】记录批次删除
+    recordAudit('delete_batch', 'batch', bid, 'success', {
+      tags: { positionId: pid }
+    });
   },
-  removePosition: (id) => { set(s => ({ positions: s.positions.filter(p => p.id !== id) })); safePersist(() => deletePositionWithBatches(id)); },
+  removePosition: (id) => { set(s => ({ positions: s.positions.filter(p => p.id !== id) })); safePersist(() => deletePositionWithBatches(id)); recordAudit('remove_position', 'position', id, 'success'); },
 
   // -- 计划单 --
   loadPlannedOrders: async () => {
@@ -733,6 +793,12 @@ export const useAppStore = create<AppStore>()((set, get) => ({
   exportData: () => { const state = get(); return { version: EXPORT_VERSION, feeConfig: state.feeConfig, tRounds: state.tRounds, positions: state.positions, stocks: state.stocks, longTermRecords: state.longTermRecords, plannedOrders: state.plannedOrders }; },
 
   importData: (data, silent) => {
+    // 【风控 R3】导入数据完整性校验
+    const riskReport = runRiskValidation([importDataIntegrityRule(data)], data, undefined);
+    if (riskReport.blocked) {
+      console.warn('[Risk] 导入数据校验未通过:', riskReport.summary);
+      return;
+    }
     const rounds = data.tRounds ?? [];
     set({ feeConfig: data.feeConfig, tRounds: rounds, positions: data.positions ?? [], stocks: data.stocks ?? [], longTermRecords: data.longTermRecords ?? [], plannedOrders: data.plannedOrders ?? [] });
     safePersist(() => safeImportAllData(data.feeConfig, data.positions ?? [], rounds, data.stocks ?? [], data.longTermRecords ?? [], data.plannedOrders ?? []));
@@ -745,6 +811,10 @@ export const useAppStore = create<AppStore>()((set, get) => ({
       // 自动同步监听器若使用 store.subscribe 会同步/微任务内触发，需要在此之后才复位
       setTimeout(() => { setIsSyncingFromRemote(false); }, 0);
     }
+    // 【风控审计】记录导入操作
+    recordAudit('import_data', 'system', 'all', 'success', {
+      tags: { silent: String(silent), version: String(data.version) },
+    });
   },
 
   exportJSON: async () => {

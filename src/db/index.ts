@@ -26,6 +26,7 @@ import { cleanUndefined } from './cleanUndefined';
 import {
   db as tradingDb,
   type AccountCashEntity,
+  type AuditLogEntity,
   type CashFlowEntity,
   type FeeConfigEntity,
   type KlineCacheEntity,
@@ -52,6 +53,7 @@ export interface PageResult<T> {
   hasMore: boolean;
 }
 
+import type { AuditActionType, AuditEntry } from '../risk/types';
 import type { LongTermRecord, PlannedOrder } from '../store/types';
 import type { KlineItem, SandboxBranch, SandboxOrder, CashInjection } from '../types/sandbox';
 export type { FeeConfig } from '../utils/mathUtils';
@@ -1499,4 +1501,87 @@ export async function loadKlineCache(fullCode: string): Promise<KlineCachePayloa
  */
 export async function clearKlineCache(fullCode: string): Promise<void> {
   await db.klineCache.delete(fullCode);
+}
+
+// ============================================================
+// 审计日志（auditLogs 表，只追加）
+// ============================================================
+
+/** 将 AuditEntry 映射为 AuditLogEntity（JSON 字段序列化）。 */
+function toAuditLogEntity(entry: AuditEntry): AuditLogEntity {
+  return cleanUndefined({
+    id: entry.id,
+    timestamp: entry.timestamp,
+    action: entry.action,
+    targetType: entry.targetType,
+    targetId: entry.targetId,
+    beforeJson: entry.before ? JSON.stringify(entry.before) : undefined,
+    afterJson: entry.after ? JSON.stringify(entry.after) : undefined,
+    result: entry.result,
+    reason: entry.reason,
+    tagsJson: entry.tags ? JSON.stringify(entry.tags) : undefined,
+  });
+}
+
+/** 将 DB 实体映射回 AuditEntry（反序列化 JSON 字段）。 */
+function toAuditEntry(entity: AuditLogEntity): AuditEntry {
+  let before: unknown;
+  let after: unknown;
+  let tags: Record<string, string> | undefined;
+  try {
+    if (entity.beforeJson) before = JSON.parse(entity.beforeJson);
+  } catch { /* 忽略损坏的快照 */ }
+  try {
+    if (entity.afterJson) after = JSON.parse(entity.afterJson);
+  } catch { /* 忽略损坏的快照 */ }
+  try {
+    if (entity.tagsJson) tags = JSON.parse(entity.tagsJson);
+  } catch { /* 忽略损坏的标签 */ }
+  return {
+    id: entity.id,
+    timestamp: entity.timestamp,
+    action: entity.action as AuditActionType,
+    targetType: entity.targetType,
+    targetId: entity.targetId,
+    ...(before !== undefined ? { before } : {}),
+    ...(after !== undefined ? { after } : {}),
+    result: entity.result as 'success' | 'rejected',
+    ...(entity.reason ? { reason: entity.reason } : {}),
+    ...(tags ? { tags } : {}),
+  };
+}
+
+/** 写入一条审计日志（只追加，已存在则忽略）。 */
+export async function putAuditLog(entry: AuditEntry): Promise<void> {
+  await db.auditLogs.put(toAuditLogEntity(entry));
+}
+
+/**
+ * 查询审计日志（按时间倒序分页）。
+ * @description 任一过滤条件均可选；limit 最大 200。
+ */
+export async function queryAuditLogs(options?: {
+  action?: AuditActionType;
+  targetType?: string;
+  targetId?: string;
+  limit?: number;
+  offset?: number;
+  since?: number;
+}): Promise<AuditEntry[]> {
+  const limit = Math.min(options?.limit ?? 50, 200);
+  const offset = options?.offset ?? 0;
+  let collection = db.auditLogs.orderBy('timestamp').reverse();
+
+  if (options?.action) collection = collection.filter((e) => e.action === options.action);
+  if (options?.targetType) collection = collection.filter((e) => e.targetType === options.targetType);
+  if (options?.targetId) collection = collection.filter((e) => e.targetId === options.targetId);
+  if (options?.since) collection = collection.filter((e) => e.timestamp >= (options.since as number));
+
+  const entities = await collection.offset(offset).limit(limit).toArray();
+  return entities.map(toAuditEntry);
+}
+
+/** 删除指定时间之前的所有审计日志（写多读少的表定期清理，仅供运维调用）。 */
+export async function deleteAuditLogsOlderThan(olderThan: number): Promise<void> {
+  await db.auditLogs.where('timestamp').below(olderThan).delete();
 }

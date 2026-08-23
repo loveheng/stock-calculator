@@ -36,6 +36,7 @@ import type { PlannedOrder, PositionBatch, StreamAddResult } from '../store/type
 import type { TStreamRecord } from '../utils/tStreamEngine';
 import PlanOrderCard from '../components/PlanOrderCard';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
+import { setMarketPrices } from '../risk/priceCache';
 
 // ---- 时间维度 ----
 type TimeRange = '1d' | '7d' | '30d' | 'all';
@@ -259,6 +260,9 @@ export default function Home() {
   // 订阅所有计划单标的的实时行情
   const homePlanQuoteCodes = useMemo(() => homePlans.map((p) => p.fullCode), [homePlans]);
   const { quotes: homePlanQuotes } = useLiveQuotes(homePlanQuoteCodes);
+
+  // 同步实时行情到风控价格缓存（R2 价格偏离校验用）
+  useEffect(() => { setMarketPrices(homePlanQuotes); }, [homePlanQuotes]);
 
   // 首页计划单快速执行
   const handleHomePlanExecute = useCallback((order: PlannedOrder, actualPrice: number, actualAmount: number, note: string) => {

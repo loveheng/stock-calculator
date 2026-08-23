@@ -18,7 +18,7 @@
 
 ## 1. 完成度总览（一句话结论）
 
-**核心功能已全部落地，实现完整度约 95%**：数据层、基线提取、推演引擎、8 套策略生成器、K 线三级缓存、
+**核心功能已全部落地，实现完整度约 95%**：数据层、基线提取、推演引擎、9 套策略生成器、K 线三级缓存、
 Zustand 状态层、8 个 UI 组件 + 主页面、数据库（STORES_V11 三张表）与路由均已实现，并有 9 个测试文件。
 
 预算口径边缘场景（预设单与基线合并、共享同一模拟预算时越限被拒）已按**方案 2** 修复（见 §2.3）：
@@ -34,7 +34,7 @@ Zustand 状态层、8 个 UI 组件 + 主页面、数据库（STORES_V11 三张�
 | 基线提取 | `utils/baselineExtractor.ts` | ✅ 完整 |
 | 推演引擎 | `utils/sandboxEngine.ts` | ✅ 完整 |
 | 指标 / B&H / 对比 | `utils/metricsEngine.ts` | ✅ 完整 |
-| 策略生成器（8 套） | `utils/strategyGenerators.ts` | ✅ 完整 |
+| 策略生成器（9 套） | `utils/strategyGenerators.ts` | ✅ 完整 |
 | K 线获取（三级缓存） | `services/klineService.ts` | ✅ 完整 |
 | 状态层（含 DCA、过期检测） | `store/sandboxStore.ts` | ✅ 完整（998 行） |
 | UI 组件 + 页面 | `components/sandbox/*`（8 个）+ `views/SandboxPlayback.tsx` | ✅ 完整 |
@@ -50,7 +50,7 @@ Zustand 状态层、8 个 UI 组件 + 主页面、数据库（STORES_V11 三张�
 | 测试文件 | 覆盖 | 结果 |
 |---|---|---|
 | `__tests__/sandboxEngine.test.ts` | 资金约束 / T+1 / 持仓不足 / 超评估日 / 统一评估日 / 动态抖动可复现 / 规费一致 / 基线自洽 | ✅ 绿 |
-| `__tests__/strategyGenerators.test.ts` | 8 套策略不变量（100 股取整、现金约束、确定性） | ✅ 绿 |
+| `__tests__/strategyGenerators.test.ts` | 9 套策略不变量（100 股取整、现金约束、确定性） | ✅ 绿 |
 | `__tests__/presetAudit.test.ts` | 静态审计：载入真实前复权 K 线逐策略跑出买卖/触发原因，核对资金不变量（除 model-recommend 之外的 7 策略） | ✅ 绿 |
 | `__tests__/sandboxStore.test.ts` | 前复权换算 / 基线与预设合并 / K 线起点 / 三源过期检测 / memo 复用 | ✅ 绿 |
 | `__tests__/sandboxDb.test.ts` | 分支 CRUD / 订单批量幂等 / K 线缓存往返 | ✅ 绿 |
@@ -107,7 +107,7 @@ Zustand 状态层、8 个 UI 组件 + 主页面、数据库（STORES_V11 三张�
 | `src/utils/baselineExtractor.ts` | 逻辑 | 把真实持仓批次履历 → 沙盘订单时间线 + 资金占用峰值 + 基线指纹 + 净持仓（自校验） | ~105 |
 | `src/utils/sandboxEngine.ts` | 引擎 | 时间线重演核心：资金硬约束（禁止透支）、T+1 锁定、统一评估日清算、动态价格抖动、结构化拒绝（含行动指引）、DCA 现金注入、多口径收益 | 602 |
 | `src/utils/metricsEngine.ts` | 指标 | 回撤 / 波动率 / B&H 基准 / `enrichResult` 补全引擎结果 / `buildComparisonRows` 四维对比（最优分支标注） | 185 |
-| `src/utils/strategyGenerators.ts` | 生成器 | **8 套**策略注册表（ma20-bounce、pyramid、grid、stop-profit、max-opportunity、pure-dca、hybrid-regime、model-recommend）；统一 `StrategyGenerator` 接口；另含通用策略引擎 `runStrategyEngine`、`budgetQty`/`computeRemainingCash`、选股打分 `extractFactors`/`evaluateSignals`、资金分配器 `CapitalAllocator`、市场状态检测 `detectMarketRegime`（早期 gap-fill 补全建议生成器已移除） | 1320 |
+| `src/utils/strategyGenerators.ts` | 生成器 | **9 套**策略注册表（ma20-bounce、pyramid、grid、stop-profit、max-opportunity、pure-dca、hybrid-regime、model-recommend、manual-blank）；统一 `StrategyGenerator` 接口；另含通用策略引擎 `runStrategyEngine`、`budgetQty`/`computeRemainingCash`、选股打分 `extractFactors`/`evaluateSignals`、资金分配器 `CapitalAllocator`、市场状态检测 `detectMarketRegime`（早期 gap-fill 补全建议生成器已移除） | 1320 |
 | `src/utils/presetAudit.ts` | 逻辑/工具 | 预设策略静态审计：载入真实前复权 K 线，逐策略跑出每笔买卖与触发原因，核对资金不变量；`auditPresetOrders` / `renderAudit` | ~210 |
 | `src/services/klineService.ts` | 数据服务 | 腾讯 ifzq 前复权日 K 线获取 + 三级缓存（内存→IndexedDB→网络）+ 增量合并 + 除权漂移检测 + 复权系数表 | ~361 |
 | `src/store/sandboxStore.ts` | 状态层 | 三类分支管理、非响应式 memo 缓存（`computeBranchResult`）、三源过期检测、DCA 操作、预设生成/复制/重配、运行推演、对比 | ~998 |

@@ -141,7 +141,7 @@ export interface SandboxBranch {
   lastBaselineSignature: string;    // 基线指纹（批次数量|末笔时间|当前股数）→ 🔄 检测
 
   // ---- 预设专属（branchType === 'preset'） ----
-  presetStrategyId?: string;        // 'ma20-bounce' | 'pyramid' | 'grid' | 'stop-profit'
+  presetStrategyId?: string;        // 'ma20-bounce' | 'pyramid' | 'grid' | 'stop-profit' | 'max-opportunity' | 'pure-dca' | 'hybrid-regime' | 'model-recommend' | 'manual-blank'
   presetParams?: Record<string, number>;
 
   // ---- 用户方案专属（branchType === 'user'） ----
@@ -433,7 +433,7 @@ asOfDate = min(
 
 ```typescript
 interface StrategyGenerator {
-  id: string;                       // 'ma20-bounce' | 'pyramid' | 'grid' | 'stop-profit'
+  id: string;                       // 'ma20-bounce' | 'pyramid' | 'grid' | 'stop-profit' | 'max-opportunity' | 'pure-dca' | 'hybrid-regime' | 'model-recommend' | 'manual-blank'
   name: string;
   description: string;
   defaultParams: Record<string, number>;
@@ -454,7 +454,7 @@ interface StrategyContext {
 }
 ```
 
-### 5.1 四大经典策略
+### 5.1 九大预设策略
 
 | # | 策略 | 触发价位规则 | 资金分配算法 | 适用场景 |
 |---|---|---|---|---|
@@ -462,6 +462,11 @@ interface StrategyContext {
 | 2 | **金字塔左侧摊薄** `pyramid` | 现价每跌 3%~5% 设一个补仓点（或 ATR 动态步长） | 1:2:3（20%:30%:50%）越跌买越多 | 深套解套、波段自救 |
 | 3 | **波动区间网格** `grid` | 近 N 日箱体：买=下沿+0.382 黄金分割，卖=上沿−0.618 | 资金 4~6 等份，触下轨买 1 份、触上轨卖 1 份 | 震荡市、ETF 做T |
 | 4 | **破位止损/达标止盈** `stop-profit` | 止损=近 20 日最低 或 亏损 5% 取较宽松者；止盈=2R 风险报酬比 | 2% 账户风险原则反推平仓股数 | 趋势交易、严格风控 |
+| 5 | **最大机会满仓出击** `max-opportunity` | 回踩 MA60 + 站稳 MA20 + 距大底止损 ≤4% 时触发 | 动用 ≤80% 资金一键打满，绑定硬止损 + 1.5 ATR 移动止盈 | 平时持币、等待共振机会 |
+| 6 | **纯被动定期定投** `pure-dca` | 每 N 个交易日按固定周期使用已入账资金买入 | 等额分仓，不主动卖出 | 定期定额基准线 |
+| 7 | **环境自适应混合** `hybrid-regime` | 识别市场状态（趋势/震荡/高波）动态分配网格、模型、止损子策略 | 按识别分数分配资金到多策略 | 复杂市场环境自适应 |
+| 8 | **多因子智能推荐** `model-recommend` | 因子提取（均线/成交量/振幅）→ 评分 → 动态资金分配 | 综合评分驱动买入/卖出决策 | 多因子量化信号 |
+| 9 | **空白手动操盘** `manual-blank` | 无自动交易信号，纯粹持币/锁仓观望 | 不触发任何交易，由用户在时间线上手动添加订单 | 手动步进演练、零干扰沙盘 |
 
 **共性约束**：数量向下取整至 100 股整数倍；买入总额 ≤ 可用现金；订单全部落在 K 线日期上。
 
@@ -479,7 +484,7 @@ interface StrategyContext {
 
 | 环节 | 耗时 | 结论 |
 |---|---|---|
-| 5 个策略生成器 + 推演引擎 | 2~10 ms | 纯 CPU 轻量逻辑，无需优化 |
+| 9 个策略生成器 + 推演引擎 | 2~10 ms | 纯 CPU 轻量逻辑，无需优化 |
 | K 线网络请求 | 100~500 ms | **真正瓶颈，必须缓存** |
 | 图表 DOM 渲染 | 10~50 ms | lightweight-charts canvas 批渲染 |
 

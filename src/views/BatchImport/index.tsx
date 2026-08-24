@@ -5,7 +5,7 @@ import { calcTradeFees, matchSecurityKind } from '../../utils/mathUtils';
 import { RiskController } from '../../risk/riskController';
 import { parseClipboardText, enrichDraftRow, completeDedupCheck, buildHistoryFromStore, groupRowsByStock, inferPlanBind } from '../../services/importAdapter';
 import { normalizeCode } from '../../utils/dedup';
-import { parseOcrFile, extractImageFromClipboard, revokeObjectUrl } from '../../services/ocrService';
+import { parseOcrFile, extractImageFromClipboard, revokeObjectUrl, validateImage } from '../../services/ocrService';
 import { generateTxFingerprint } from '../../utils/dedup';
 import type { ImportDraftRow, GroupRiskLevel } from '../../types/import';
 import type { StockSearchItem } from '../../types/stock';
@@ -28,6 +28,35 @@ export default function BatchImportPage() {
   const [allExpanded, setAllExpanded] = useState(true);
   const [riskFilterOn, setRiskFilterOn] = useState(false);
   const [ocrImageUrl, setOcrImageUrl] = useState<string | null>(null);
+  const [ocrStatus, setOcrStatus] = useState<{ loading: boolean; message: string }>({ loading: false, message: '' });
+
+  // ---- 自包含 Toast（与 TCalculator 相同的交互模式，但独立于路由） ----
+  const [toast, setToast] = useState<string | null>(null);
+  const [toastVisible, setToastVisible] = useState(false);
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = useCallback((msg: string, duration = 4000) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast(msg);
+    requestAnimationFrame(() => requestAnimationFrame(() => setToastVisible(true)));
+    toastTimer.current = window.setTimeout(() => {
+      setToastVisible(false);
+      toastTimer.current = window.setTimeout(() => setToast(null), 300);
+    }, duration);
+  }, []);
+
+  // 监听全局 app-toast 事件
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const msg = (e as CustomEvent<string>).detail;
+      showToast(msg, 4000);
+    };
+    window.addEventListener('app-toast', handler);
+    return () => {
+      window.removeEventListener('app-toast', handler);
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    };
+  }, [showToast]);
 
   // 历史库指纹
   const history = useMemo(() => buildHistoryFromStore(positions, longTermRecords), [positions, longTermRecords]);
@@ -139,17 +168,44 @@ export default function BatchImportPage() {
   }, [positions, plannedOrders, history]);
 
   const handleFileDrop = useCallback(async (file: File) => {
+    // 文本/CSV 文件跳过图片校验
+    const isImage = !file.type.startsWith('text/') && !/\.(txt|csv|tsv)$/i.test(file.name);
+
+    if (isImage) {
+      // 前端图片预检
+      const validation = await validateImage(file);
+      if (!validation.valid) {
+        window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${validation.message}` }));
+        return;
+      }
+    }
+
+    // 设置 loading 状态
+    setOcrStatus({ loading: true, message: isImage ? '正在校验图片尺寸与规格...' : '正在解析文件...' });
+
     try {
+      if (isImage) {
+        setOcrStatus({ loading: true, message: '正在智能提取交割单明细，请稍候...' });
+      }
       const result = await parseOcrFile(file, parseClipboardText);
       if (result.previewUrl) setOcrImageUrl(result.previewUrl);
       const newRows = result.records.map((r) => {
         const ts = r.timestamp ? new Date(r.timestamp).getTime() : undefined;
         return enrichDraftRow({ fullCode: r.fullCode, direction: r.direction ?? 'buy', price: r.price ?? 0, amount: r.amount ?? 0, timestamp: ts, stockName: r.stockName }, positions, plannedOrders);
       });
+
+      if (newRows.length === 0) {
+        setOcrStatus({ loading: false, message: '' });
+        window.dispatchEvent(new CustomEvent('app-toast', { detail: '❌ 未能从截图中识别到有效的成交记录，请确认是否为已成交流水明细' }));
+        return;
+      }
+
       const deduped = completeDedupCheck(newRows, history);
       setRows((prev) => [...prev, ...deduped]);
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ OCR 解析完成，已导入 ${newRows.length} 条交易` }));
+      setOcrStatus({ loading: false, message: `✅ 成功识别出 ${newRows.length} 笔成交记录，请核对明细` });
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 成功识别出 ${newRows.length} 笔成交记录` }));
     } catch (e: any) {
+      setOcrStatus({ loading: false, message: '' });
       window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${e.message}` }));
     }
   }, [positions, plannedOrders, history]);
@@ -234,6 +290,24 @@ export default function BatchImportPage() {
         <span className="text-xs text-slate-500">{rows.length} 条暂存 | {skipCount} 条跳过</span>
       </div>
 
+      {/* Toast — 自动消失 + 淡入淡出 + 手动关闭 */}
+      {toast && (
+        <div
+          className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-800 text-white text-sm shadow-lg border border-slate-600 transition-opacity duration-300 ${
+            toastVisible ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          <span className="mr-3">{toast}</span>
+          <button
+            onClick={() => { setToastVisible(false); setTimeout(() => setToast(null), 300); }}
+            className="text-slate-400 hover:text-white transition-colors text-base leading-none"
+            aria-label="关闭"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <ImportToolbar
         onFileDrop={handleFileDrop}
         onPasteText={() => handlePasteText()}
@@ -248,6 +322,7 @@ export default function BatchImportPage() {
         skipCount={skipCount}
         ocrImageUrl={ocrImageUrl ?? undefined}
         onDismissOcrImage={() => { revokeObjectUrl(ocrImageUrl ?? ''); setOcrImageUrl(null); }}
+        ocrStatus={ocrStatus}
       />
 
       {/* 批量校验/去重快捷按钮 */}

@@ -121,6 +121,11 @@ export default defineConfig({
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
       },
+      // OCR 解析服务代理：本地部署的证券交割单识别接口
+      '/api/import': {
+        target: 'https://sc.oklhj.eu.org',
+        changeOrigin: true,
+      },
       // WebDAV 代理：使用全局 fetch() 转发，避免动态 require
       '/api/webdav': {
         target: 'http://localhost:5173',

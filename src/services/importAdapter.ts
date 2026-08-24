@@ -38,7 +38,9 @@ function toDirection(v: unknown): 'buy' | 'sell' | undefined {
  * 兼容 { items: [...] } 包装对象 或 裸数组。
  */
 export function parseOcrPayload(payload: unknown): RawTxRecord[] {
-  const raw = (payload as any)?.items ?? payload;
+  // 兼容两种包装：直接数组，或 { code, data: [...] } / { items: [...] }
+  const obj = (payload ?? {}) as any;
+  const raw = Array.isArray(payload) ? payload : (obj.data ?? obj.items ?? obj.records ?? []);
   if (!Array.isArray(raw)) return [];
   const out: RawTxRecord[] = [];
   for (const it of raw) {

@@ -14,6 +14,12 @@
  *   matcher 刻意【不匹配】/api/* 通配，避免中间件在 rewrite 落点上游拦截
  *   /api/webdav 导致请求滑落到 SPA 静态层报 405 Method Not Allowed。
  *
+ * 【2025-08-24 新增 · /api/import】
+ *   OCR 交割单识别服务（sc.oklhj.eu.org）也通过 Edge Middleware 代理，
+ *   与静态行情上游采用相同的白名单转发模式，保证 Vercel 部署后 /api/import
+ *   也能正常被代理转发，不会滑落到 SPA 层报 405。
+ *   本地开发时由 Vite 的 server.proxy 完成同等转发。
+ *
  * 【设计】
  *   1. OPTIONS 预检直接返回 200（解决 405）。
  *   2. 静态上游注入业务头（Referer / User-Agent 等），剥离 Vercel 内部头
@@ -48,6 +54,11 @@ const UPSTREAMS = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
   },
+  // OCR 交割单识别服务代理
+  '/api/import': {
+    base: 'https://sc.oklhj.eu.org',
+    headers: {},
+  },
 };
 
 /** 匹配路径前缀（按长度降序，避免 `/api/eastmoney` 被 `/api` 误匹配）。 */
@@ -80,6 +91,7 @@ export const config = {
     '/api-qt/:path*',
     '/api-kline/:path*',
     '/api/eastmoney/:path*',
+    '/api/import/:path*',
   ],
 };
 

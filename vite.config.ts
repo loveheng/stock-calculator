@@ -123,6 +123,7 @@ export default defineConfig({
       },
       // OCR 解析服务代理：本地部署的证券交割单识别接口
       '/api/import': {
+        //target: 'http://localhost:18080',
         target: 'https://sc.oklhj.eu.org',
         changeOrigin: true,
       },

@@ -54,11 +54,11 @@ const UPSTREAMS = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
   },
-  // OCR 交割单识别服务代理
+  // OCR 交割单识别服务代理（保留原始路径前缀，不剥离 /api/import）
   '/api/import': {
     base: 'https://sc.oklhj.eu.org',
     headers: {},
-    stripPrefix: false, // 关键：不剥离前缀，完整透传
+    stripPrefix: false,
   },
 };
 
@@ -155,7 +155,9 @@ export default async function middleware(request) {
 
   const upstream = UPSTREAMS[matchedPrefix];
   const forwardHeaders = new Headers();
-  const upstreamPath = pathname.slice(matchedPrefix.length) || '/';
+  const upstreamPath = upstream.stripPrefix === false
+    ? pathname
+    : pathname.slice(matchedPrefix.length) || '/';
   const upstreamUrl = `${upstream.base}${upstreamPath}${url.search}`;
 
   // ---------- 静态代理：注入上游所需业务头 + 剔除 Vercel 内部头 ----------

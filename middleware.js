@@ -58,6 +58,7 @@ const UPSTREAMS = {
   '/api/import': {
     base: 'https://sc.oklhj.eu.org',
     headers: {},
+    stripPrefix: false, // 关键：不剥离前缀，完整透传
   },
 };
 

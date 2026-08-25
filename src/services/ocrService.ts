@@ -165,8 +165,83 @@ export async function validateImage(file: File): Promise<ImageValidationResult> 
 }
 
 // ============================================================
-// 主解析入口
+// 图片压缩与转码（上传前预处理）
 // ============================================================
+
+/** 压缩输出尺寸上限（只缩小不放大） */
+const COMPRESS_MAX_WIDTH = 1024;
+const COMPRESS_MAX_HEIGHT = 2048;
+const COMPRESS_QUALITY = 0.8;
+const COMPRESS_FORMAT = 'image/jpeg';
+
+/**
+ * 用 Canvas 对图片进行等比缩放压缩并转码为 JPEG。
+ * - 只缩小不放大（原图小于上限时不做处理）
+ * - 返回新 File 对象，替换原始文件用于上传
+ * @param file 原始图片文件
+ * @returns 压缩后的 File 对象
+ */
+export async function compressImage(file: File): Promise<File> {
+  const img = await loadImage(file);
+
+  let { width, height } = img;
+
+  // 只在超出上限时缩小
+  if (width > COMPRESS_MAX_WIDTH || height > COMPRESS_MAX_HEIGHT) {
+    const ratio = Math.min(COMPRESS_MAX_WIDTH / width, COMPRESS_MAX_HEIGHT / height);
+    width = Math.round(width * ratio);
+    height = Math.round(height * ratio);
+  }
+
+  // 如果原图尺寸未超出上限，且已经是 JPEG（无需转码），直接返回原文件
+  if (width === img.width && height === img.height && file.type === COMPRESS_FORMAT) {
+    closeImage(img);
+    return file;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(img, 0, 0, width, height);
+
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => {
+      if (b) resolve(b);
+      else reject(new Error('Canvas toBlob 失败'));
+    }, COMPRESS_FORMAT, COMPRESS_QUALITY);
+  });
+
+  closeImage(img);
+
+  // 保持原始文件名，扩展名改为 .jpg
+  const name = file.name.replace(/\.[^.]+$/, '') + '.jpg';
+  return new File([blob], name, { type: COMPRESS_FORMAT });
+}
+
+/** 加载图片为 ImageBitmap 或 HTMLImageElement */
+async function loadImage(file: File): Promise<ImageBitmap | HTMLImageElement> {
+  // 优先使用 createImageBitmap（更高效，在主线程外解码）
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    // 降级到 Image 对象
+    return new Promise<HTMLImageElement>((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
+      img.src = url;
+    });
+  }
+}
+
+/** 释放 ImageBitmap 资源 */
+function closeImage(img: ImageBitmap | HTMLImageElement): void {
+  if (img instanceof ImageBitmap) {
+    img.close();
+  }
+}
 
 /**
  * 将已选定的图片/文本文件解析为交易记录。
@@ -186,10 +261,14 @@ export async function parseOcrFile(
     return { records, previewUrl: undefined };
   }
 
-  // 图片 → OCR 接口
+  // 图片 → 压缩 → OCR 接口
   const previewUrl = URL.createObjectURL(file);
+
+  // 上传前压缩（只缩小不放大，转 JPEG 质量 0.8）
+  const compressed = await compressImage(file);
+
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append('file', compressed);
   const resp = await fetch('/api/import/ocr-parse', { method: 'POST', body: formData });
   if (!resp.ok) throw new Error(`OCR 服务返回 ${resp.status}`);
   const json = await resp.json();

@@ -7,6 +7,7 @@ import { parseClipboardText, enrichDraftRow, completeDedupCheck, buildHistoryFro
 import { normalizeCode } from '../../utils/dedup';
 import { parseOcrFile, extractImageFromClipboard, revokeObjectUrl, validateImage } from '../../services/ocrService';
 import { generateTxFingerprint } from '../../utils/dedup';
+import { mergeImportedTradesToPositions } from '../../utils/importMerger';
 import type { ImportDraftRow, GroupRiskLevel } from '../../types/import';
 import type { StockSearchItem } from '../../types/stock';
 import type { PositionBatch } from '../../store/types';
@@ -248,7 +249,26 @@ export default function BatchImportPage() {
     let success = 0;
     const errors: string[] = [];
     const successIds: string[] = [];
-    for (const row of valid) {
+
+    // 【关键修复】先聚合同标的中长期流水，避免每个标的拆分成多个独立仓位
+    // 1. 拆出中长期类别的行（LONG_TERM_BATCH / NEW_POSITION）与其他类别（短线做T / 计划单）
+    const longTermRows = valid.filter((r) => r.targetCategory === 'LONG_TERM_BATCH' || r.targetCategory === 'NEW_POSITION');
+    const otherRows = valid.filter((r) => r.targetCategory !== 'LONG_TERM_BATCH' && r.targetCategory !== 'NEW_POSITION');
+
+    // 2. 中长期行按 stock_code 合并（加权加仓 / 卖出减仓）
+    const mergedInstructions = mergeImportedTradesToPositions(longTermRows, positions);
+    for (const instruction of mergedInstructions) {
+      try {
+        const count = await commitMergedLongTerm(instruction, { feeConfig, addBatch, addPosition });
+        success += count;
+        successIds.push(...instruction.allRows.map((r) => r.id));
+      } catch (e: any) {
+        errors.push(`${instruction.fullCode}: ${e.message}`);
+      }
+    }
+
+    // 3. 其余行仍按原逻辑逐行过账
+    for (const row of otherRows) {
       try {
         await commitRow(row, { positions, feeConfig, addBatch, addStreamRecord, addPosition, markPlanExecuted, plannedOrders });
         success++; successIds.push(row.id);
@@ -256,6 +276,7 @@ export default function BatchImportPage() {
         errors.push(`${row.fullCode}: ${e.message}`);
       }
     }
+
     if (successIds.length > 0) setRows((prev) => prev.filter((r) => !successIds.includes(r.id)));
     setCommitting(false);
     window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 成功过账 ${success} 条${errors.length ? `，${errors.length} 条失败` : ''}` }));
@@ -412,4 +433,173 @@ async function commitRow(
     addBatch(pos.id, batch, { currentCost: calc.newCost, currentAmount: calc.newAmount, realizedPnL: calc.newRealizedPnL, totalInvested: calc.newTotalInvested });
     markPlanExecuted(order.id, { executedAt: now, actualPrice: row.price, actualAmount: row.amount, isAchieved: order.direction === 'buy' ? row.price <= order.plannedPrice : row.price >= order.plannedPrice, newCost: calc.newCost, newAmount: calc.newAmount, newTotalInvested: calc.newTotalInvested, totalFee: calc.totalFee });
   }
+}
+
+/**
+ * 过账一条合并后的中长期导入指令（同标的多笔流水的聚合结果）。
+ *
+ * 保证同一 stock_code 在导入时只创建一个持仓（或追加到已有持仓），
+ * 并根据多笔买入的加权平均成本价建/加仓、卖出做减仓。
+ *
+ * @param instruction 合并后的导入指令
+ * @param deps 提交依赖
+ * @returns 实际过账的流水条数（用于工具栏计数展示）
+ */
+async function commitMergedLongTerm(
+  instruction: { action: 'create_position' | 'add_to_position'; fullCode: string; stockName: string; existingPositionId?: string; existingPosition?: any; buySummary: { totalAmount: number; totalCost: number; weightedPrice: number; count: number } | null; sellSummary: { totalAmount: number; totalProceeds: number; count: number } | null; allRows: ImportDraftRow[] },
+  deps: { feeConfig: any; addBatch: any; addPosition: any },
+): Promise<number> {
+  const { feeConfig, addBatch, addPosition } = deps;
+  const { fullCode, stockName, buySummary, sellSummary, allRows } = instruction;
+  const now = new Date().toISOString();
+  const kind = matchSecurityKind('', fullCode.replace(/^(sh|sz|bj)/, ''));
+  let count = 0;
+
+  // ── 新建持仓：合并多笔买入为加权平均价，若有卖出再减仓 ──
+  if (instruction.action === 'create_position') {
+    // 必须有买入才能建仓
+    if (!buySummary || buySummary.totalAmount <= 0) {
+      console.warn(`[importMerger] 跳过 ${fullCode}：无买入流水，无法建仓`);
+      return 0;
+    }
+
+    // 合并买入的加权平均成本（含规费）
+    const buyFee = calcTradeFees(buySummary.weightedPrice, buySummary.totalAmount, 'buy', feeConfig, kind).total;
+    const totalInvested = buySummary.totalCost + buyFee;
+    const weightedCost = totalInvested / buySummary.totalAmount;
+
+    const batches: PositionBatch[] = [{
+      id: generateId(),
+      timestamp: new Date(allRows[0].timestamp).toISOString(),
+      type: 'open' as const,
+      price: buySummary.weightedPrice,
+      amount: buySummary.totalAmount,
+      costAfter: weightedCost,
+      amountAfter: buySummary.totalAmount,
+      fee: buyFee,
+    }];
+    count += buySummary.count;
+
+    let currentCost = weightedCost;
+    let currentAmount = buySummary.totalAmount;
+    let realizedPnL = 0;
+    let totalCostBasis = totalInvested;
+
+    // 若有卖出，对新建持仓进行减仓
+    if (sellSummary && sellSummary.totalAmount > 0) {
+      const avgSellPrice = sellSummary.totalProceeds / sellSummary.totalAmount;
+      const sellFee = calcTradeFees(avgSellPrice, sellSummary.totalAmount, 'sell', feeConfig, kind).total;
+      const costBasisPerShare = currentCost;
+      const netProceeds = sellSummary.totalProceeds - sellFee;
+      realizedPnL += netProceeds - costBasisPerShare * sellSummary.totalAmount;
+      totalCostBasis -= costBasisPerShare * sellSummary.totalAmount;
+      currentAmount -= sellSummary.totalAmount;
+      if (currentAmount <= 0) {
+        currentCost = 0;
+        currentAmount = 0;
+        totalCostBasis = 0;
+      } else {
+        currentCost = totalCostBasis / currentAmount;
+      }
+
+      batches.push({
+        id: generateId(),
+        timestamp: new Date(Math.max(...allRows.map((r) => r.timestamp))).toISOString(),
+        type: 'reduce' as const,
+        price: avgSellPrice,
+        amount: -sellSummary.totalAmount,
+        costAfter: currentCost,
+        amountAfter: currentAmount,
+        fee: sellFee,
+      });
+      count += sellSummary.count;
+    }
+
+    addPosition({
+      id: generateId(),
+      stockName: stockName || fullCode,
+      fullCode,
+      currentCost,
+      currentAmount,
+      batches,
+      isClosed: currentAmount <= 0,
+      createdAt: now,
+      openAt: new Date(allRows[0].timestamp).toISOString(),
+      realizedPnL,
+      totalInvested: totalCostBasis,
+    });
+    return count;
+  }
+
+  // ── 追加到已有持仓：加权加仓 + 卖出减仓 ──
+  if (instruction.action === 'add_to_position') {
+    if (!instruction.existingPosition) throw new Error('持仓不存在');
+    const pos = instruction.existingPosition;
+
+    // 1) 先处理买入（加权平均加仓）
+    if (buySummary && buySummary.totalAmount > 0) {
+      const buyFee = calcTradeFees(buySummary.weightedPrice, buySummary.totalAmount, 'buy', feeConfig, kind).total;
+      const snap = recomputePositionSnapshot(pos.batches);
+      const newAmount = snap.currentAmount + buySummary.totalAmount;
+      const newTotalInvested = snap.totalInvested + buySummary.totalCost + buyFee;
+      const newCost = newAmount > 0 ? newTotalInvested / newAmount : 0;
+
+      const batch: PositionBatch = {
+        id: generateId(),
+        timestamp: new Date(allRows[0].timestamp).toISOString(),
+        type: 'add' as const,
+        price: buySummary.weightedPrice,
+        amount: buySummary.totalAmount,
+        costAfter: newCost,
+        amountAfter: newAmount,
+        fee: buyFee,
+      };
+      addBatch(pos.id, batch, { currentCost: newCost, currentAmount: newAmount, totalInvested: newTotalInvested });
+      count += buySummary.count;
+    }
+
+    // 2) 后处理卖出（减仓）
+    if (sellSummary && sellSummary.totalAmount > 0) {
+      const avgSellPrice = sellSummary.totalProceeds / sellSummary.totalAmount;
+      const sellFee = calcTradeFees(avgSellPrice, sellSummary.totalAmount, 'sell', feeConfig, kind).total;
+
+      // 先计算当前持仓快照（若之前有买入批次，需以买入后的状态为基准）
+      const snap = recomputePositionSnapshot(pos.batches);
+      let preSellAmount = snap.currentAmount;
+      let preSellInvested = snap.totalInvested;
+      let preSellRealizedPnL = snap.realizedPnL;
+
+      // 如果之前有买入批次，模拟买入后的状态（直接计算，不需模拟批次对象）
+      if (buySummary && buySummary.totalAmount > 0) {
+        const buyFee = calcTradeFees(buySummary.weightedPrice, buySummary.totalAmount, 'buy', feeConfig, kind).total;
+        preSellAmount = snap.currentAmount + buySummary.totalAmount;
+        preSellInvested = snap.totalInvested + buySummary.totalCost + buyFee;
+      }
+
+      // 基于买入后（或原始）状态计算卖出结果
+      const costBasisPerShare = preSellAmount > 0 ? preSellInvested / preSellAmount : 0;
+      const netProceeds = sellSummary.totalProceeds - sellFee;
+      const newRealizedPnL = preSellRealizedPnL + (netProceeds - costBasisPerShare * sellSummary.totalAmount);
+      const newTotalInvested = preSellInvested - costBasisPerShare * sellSummary.totalAmount;
+      const newAmount = preSellAmount - sellSummary.totalAmount;
+      const newCost = newAmount > 0 ? newTotalInvested / newAmount : 0;
+
+      const batch: PositionBatch = {
+        id: generateId(),
+        timestamp: new Date(Math.max(...allRows.map((r) => r.timestamp))).toISOString(),
+        type: 'reduce' as const,
+        price: avgSellPrice,
+        amount: -sellSummary.totalAmount,
+        costAfter: newCost,
+        amountAfter: newAmount,
+        fee: sellFee,
+      };
+      addBatch(pos.id, batch, { currentCost: newCost, currentAmount: newAmount, realizedPnL: newRealizedPnL, totalInvested: newTotalInvested });
+      count += sellSummary.count;
+    }
+
+    return count;
+  }
+
+  return 0;
 }

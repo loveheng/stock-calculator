@@ -9,20 +9,15 @@
 
 import { generateId } from '../store/utils';
 import { generateTxFingerprint, classifyDraft, dateKey, type PreparedHistory } from '../utils/dedup';
-import { normalizeCode } from '../utils/dedup';
-export { normalizeCode };
+import { normalizeCode, canonicalizeFullCode } from '../utils/dedup';
+export { normalizeCode, canonicalizeFullCode };
 import type { ImportDraftRow, ImportTargetCategory, RawTxRecord } from '../types/import';
 export type { RawTxRecord };
 import type { Position, PlannedOrder } from '../store/types';
 
-/** 简易代码规范化：补市场前缀 + 去前缀统一大写（供 OCR 数字代码转 fullCode） */
+/** 代码规范化：补市场前缀 + 统一小写（供 OCR / 剪贴板数字代码转 fullCode）。委托 canonicalizeFullCode 处理更多格式（如 600519.SH、SH:600519）。 */
 export function toFullCode(code: string): string {
-  const c = String(code ?? '').trim();
-  if (/^(sh|sz|bj)/i.test(c)) return c.toLowerCase();
-  if (!/^\d{6}$/.test(c)) return c;
-  if (/^[695]/.test(c)) return 'sh' + c;
-  if (/^[48]/.test(c)) return 'bj' + c;
-  return 'sz' + c;
+  return canonicalizeFullCode(code);
 }
 
 /** 从字符串提取方向枚举 */
@@ -124,9 +119,13 @@ export function enrichDraftRow(
   positions: Position[],
   plannedOrders: PlannedOrder[],
 ): ImportDraftRow {
-  const fullCode = row.fullCode;
+  const fullCode = canonicalizeFullCode(row.fullCode);
   const norm = normalizeCode(fullCode);
   const pos = positions.find((p) => normalizeCode(p.fullCode) === norm && !p.isClosed);
+  // 统一键原则：若系统已存在该标的持仓，以其持仓上的权威代码/名称为准（消除导入与行情接口的名称/代码差异）
+  const canonicalFullCode = pos ? pos.fullCode : fullCode;
+  // 统一键原则：优先采用系统已存在的权威名称，否则保留导入的可读名称（归一化仅用于匹配，不用于展示存储）
+  const canonicalName = pos?.stockName || row.stockName || '';
   const activePlans = plannedOrders.filter(
     (p) => normalizeCode(p.fullCode) === norm && p.status === 'active',
   );
@@ -137,7 +136,7 @@ export function enrichDraftRow(
 
   // 智能预挂载计划单：当方向/价格/数量匹配时自动设为 BIND_PLANNED_ORDER
   const planBind = row.targetCategory ? undefined : inferPlanBind(
-    { fullCode: row.fullCode, direction: row.direction, price: row.price, amount: row.amount },
+    { fullCode: canonicalFullCode, direction: row.direction, price: row.price, amount: row.amount },
     plannedOrders,
   );
   if (planBind && !row.targetCategory) {
@@ -150,15 +149,15 @@ export function enrichDraftRow(
   return {
     id: row.id ?? generateId(),
     fingerprint: generateTxFingerprint({
-      fullCode,
+      fullCode: canonicalFullCode,
       direction: row.direction,
       price: row.price,
       amount: row.amount,
       timestamp: ts,
     }),
     timestamp: ts,
-    fullCode,
-    stockName: row.stockName ?? pos?.stockName ?? '',
+    fullCode: canonicalFullCode,
+    stockName: canonicalName,
     direction: row.direction,
     price: row.price,
     amount: row.amount,

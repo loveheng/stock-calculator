@@ -11,6 +11,9 @@ import {
   dateKey,
   generateTxFingerprint,
   classifyDraft,
+  canonicalizeFullCode,
+  normalizeStockName,
+  isSameStock,
   type PreparedHistory,
 } from '../utils/dedup';
 
@@ -204,5 +207,90 @@ describe('classifyDraft', () => {
       history,
     );
     expect(result.status).toBe('POTENTIAL');
+  });
+});
+
+// ============================================================
+// canonicalizeFullCode
+// ============================================================
+describe('canonicalizeFullCode', () => {
+  test('已有 sh 前缀保持不变', () => {
+    expect(canonicalizeFullCode('sh600519')).toBe('sh600519');
+  });
+  test('sz 前缀小写归一', () => {
+    expect(canonicalizeFullCode('SZ000001')).toBe('sz000001');
+  });
+  test('后缀格式 600519.SH → sh600519', () => {
+    expect(canonicalizeFullCode('600519.SH')).toBe('sh600519');
+  });
+  test('后缀格式 600519-sh → sh600519', () => {
+    expect(canonicalizeFullCode('600519-sh')).toBe('sh600519');
+  });
+  test('冒号分隔 SH:600519 → sh600519', () => {
+    expect(canonicalizeFullCode('SH:600519')).toBe('sh600519');
+  });
+  test('纯数字 6 开头 → sh', () => {
+    expect(canonicalizeFullCode('600519')).toBe('sh600519');
+  });
+  test('纯数字 0 开头 → sz', () => {
+    expect(canonicalizeFullCode('000001')).toBe('sz000001');
+  });
+  test('纯数字 4 开头 → bj', () => {
+    expect(canonicalizeFullCode('430001')).toBe('bj430001');
+  });
+  test('非 6 位数字原样返回', () => {
+    expect(canonicalizeFullCode('12345')).toBe('12345');
+  });
+  test('空字符串容错', () => {
+    expect(canonicalizeFullCode('')).toBe('');
+  });
+});
+
+// ============================================================
+// normalizeStockName
+// ============================================================
+describe('normalizeStockName', () => {
+  test('普通名称不变', () => {
+    expect(normalizeStockName('贵州茅台')).toBe('贵州茅台');
+  });
+  test('ST 股票去掉前缀', () => {
+    expect(normalizeStockName('ST闻泰')).toBe('闻泰');
+  });
+  test('*ST 股票去掉星号和前缀', () => {
+    expect(normalizeStockName('*ST闻泰')).toBe('闻泰');
+  });
+  test('XD 除权前缀去掉', () => {
+    expect(normalizeStockName('XD贵州茅台')).toBe('贵州茅台');
+  });
+  test('N 新股前缀去掉', () => {
+    expect(normalizeStockName('N中芯')).toBe('中芯');
+  });
+  test('去空白', () => {
+    expect(normalizeStockName(' 贵州茅台 ')).toBe('贵州茅台');
+  });
+  test('*ST闻泰 与 闻泰 归一化后相等', () => {
+    expect(normalizeStockName('*ST闻泰')).toBe('闻泰');
+    expect(normalizeStockName('闻泰科技')).toBe('闻泰科技');
+  });
+  test('空字符串容错', () => {
+    expect(normalizeStockName('')).toBe('');
+  });
+});
+
+// ============================================================
+// isSameStock
+// ============================================================
+describe('isSameStock', () => {
+  test('相同代码 → true', () => {
+    expect(isSameStock({ fullCode: 'sh600519' }, { fullCode: '600519' })).toBe(true);
+  });
+  test('不同代码但名称归一化匹配 → true', () => {
+    expect(isSameStock({ stockName: '*ST闻泰' }, { stockName: '闻泰科技' })).toBe(false);
+  });
+  test('代码为空时名称归一化匹配 → true', () => {
+    expect(isSameStock({ stockName: '*ST闻泰' }, { stockName: '*ST闻泰' })).toBe(true);
+  });
+  test('全空 → false', () => {
+    expect(isSameStock({}, {})).toBe(false);
   });
 });

@@ -9,13 +9,12 @@
 
 import React, { useRef, useState, useCallback } from 'react';
 import {
-  Upload, ClipboardPaste, Maximize2, Minimize2, Filter, Eraser, Send, Eye, X,
+  Upload, Maximize2, Minimize2, Filter, Eraser, Send, Eye, X,
   HelpCircle, FileImage, AlertTriangle, Loader2, CheckCircle, Lightbulb,
 } from 'lucide-react';
 
 interface ImportToolbarProps {
   onFileDrop: (file: File) => void;
-  onPasteText: () => void;
   onToggleExpand: () => void;
   onToggleRiskFilter: () => void;
   riskFilterOn: boolean;
@@ -33,7 +32,7 @@ interface ImportToolbarProps {
 }
 
 export default function ImportToolbar({
-  onFileDrop, onPasteText, onToggleExpand, onToggleRiskFilter,
+  onFileDrop, onToggleExpand, onToggleRiskFilter,
   riskFilterOn, allExpanded, onClear, onCommitAll, committing,
   rowCount, skipCount, ocrImageUrl, onDismissOcrImage, ocrStatus,
 }: ImportToolbarProps) {
@@ -117,12 +116,6 @@ export default function ImportToolbar({
 
       {/* 操作栏 */}
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={onPasteText} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs rounded-lg transition-colors">
-          <ClipboardPaste className="w-3.5 h-3.5" /> 粘贴文本 (Ctrl+V)
-        </button>
-
-        <div className="w-px h-5 bg-slate-700 mx-1" />
-
         <button onClick={onToggleExpand} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs rounded-lg transition-colors">
           {allExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           {allExpanded ? '全部折叠' : '全部展开'}

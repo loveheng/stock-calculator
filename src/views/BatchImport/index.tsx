@@ -310,7 +310,6 @@ export default function BatchImportPage() {
 
       <ImportToolbar
         onFileDrop={handleFileDrop}
-        onPasteText={() => handlePasteText()}
         onToggleExpand={() => setAllExpanded((v) => !v)}
         onToggleRiskFilter={() => setRiskFilterOn((v) => !v)}
         riskFilterOn={riskFilterOn}
@@ -344,6 +343,7 @@ export default function BatchImportPage() {
               group={g}
               positions={positions}
               plannedOrders={plannedOrders}
+              allExpanded={allExpanded}
               onUpdateRow={updateRow}
               onDeleteRow={deleteRow}
               onAddRow={(code, name) => addRow(code, name)}

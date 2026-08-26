@@ -44,6 +44,7 @@ interface StockImportCardProps {
   group: CardGroup;
   positions: Position[];
   plannedOrders: PlannedOrder[];
+  allExpanded: boolean;
   onUpdateRow: (id: string, patch: Partial<ImportDraftRow>) => void;
   onDeleteRow: (id: string) => void;
   onAddRow: (fullCode: string, stockName?: string) => void;
@@ -74,10 +75,16 @@ const VAL_ICON: Record<string, React.ReactNode> = {
 const VAL_COLOR: Record<string, string> = { PENDING: 'text-slate-400', PASSED: 'text-green-400', WARNING: 'text-amber-400', ERROR: 'text-red-400' };
 
 export default function StockImportCard({
-  group, positions, plannedOrders,
+  group, positions, plannedOrders, allExpanded,
   onUpdateRow, onDeleteRow, onAddRow, onCommitGroup, onDiscardGroup, onBindPosition,
 }: StockImportCardProps) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(allExpanded);
+
+  // 父级「全部展开/折叠」同步：allExpanded 变化时驱动所有卡片同步
+  useEffect(() => {
+    setExpanded(allExpanded);
+  }, [allExpanded]);
+
   const isMobile = useIsMobile();
   const norm = group.key;
   const availPositions = getAvailablePositions(positions, norm);

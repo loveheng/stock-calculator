@@ -470,8 +470,8 @@ export function buildHistoryFromStore(
        │           │
        │           ├── 按 normalizeCode(fullCode) 分组
        │           ├── 每组按时间排序
-       │           ├── 汇总买入 → 加权平均价（总买入金额 / 总股数）
-       │           ├── 汇总卖出 → 减仓
+       │           ├── 汇总买入/卖出 → 决定仓位动作（create / add_to）
+       │           ├── 保留每笔交易的原始价格/数量/时间戳╱用于后续逐批过账
        │           ├── 匹配已有持仓（未结仓）→ 决定 action
        │           │   ├── 已有持仓 → add_to_position
        │           │   └── 无持仓 → create_position
@@ -509,14 +509,16 @@ interface SellSummary {
 }
 ```
 
-**加权加仓 / 卖出减仓的执行逻辑**（`commitMergedLongTerm`）：
+**每笔交易独立过账的执行逻辑**（`commitMergedLongTerm`）：
+
+核心原则：**仓位归并，但批次独立。** 每笔交易作为独立 `PositionBatch` 记录，保留原始价格/数量/时间戳，`costAfter`/`amountAfter` 逐笔累积计算。
 
 | 场景 | 处理 |
 |------|------|
-| `create_position` + 有买入 | 按加权平均价 + 规费建仓，追加 `open` 批次 |
-| `create_position` + 有卖出 | 建仓后追加 `reduce` 批次做减仓 |
-| `add_to_position` + 有买入 | 先 `addBatch`（`add` 类型）加权加仓 |
-| `add_to_position` + 有卖出 | 以买入后（或原始）快照为基础做 `reduce` 减仓 |
+| `create_position` + 买入 | 首笔买入 → `open` 批次，后续买入 → `add` 批次，每笔独立 |
+| `create_position` + 卖出 | 逐笔追加 `reduce` 批次做减仓，每笔独立 |
+| `add_to_position` + 买入 | 逐笔 `addBatch`（`add` 类型），每笔独立 |
+| `add_to_position` + 卖出 | 逐笔 `addBatch`（`reduce` 类型），每笔独立 |
 
 ### 7.1 过账路由
 
@@ -527,10 +529,10 @@ handleCommitRows(validRows)
     │   └── mergeImportedTradesToPositions()
     │           │
     │           ├── create_position → commitMergedLongTerm
-    │           │   └── calcTradeFees → addPosition(加权开仓) → addBatch
+    │           │   └── 逐笔: calcTradeFees → 构造独立 batch → addPosition(含所有批次)
     │           │
     │           └── add_to_position → commitMergedLongTerm
-    │               └── recomputePositionSnapshot → addBatch(加仓/减仓)
+    │               └── 逐笔: calcTradeFees → recomputePositionSnapshot → addBatch
     │
     ├── SHORT_TERM_T
     │   └── commitRow → calcTradeFees → addStreamRecord(自动建Round/撮合/归档)
@@ -540,6 +542,7 @@ handleCommitRows(validRows)
 ```
 
 **同标的聚合保证**：同一标的的 `LONG_TERM_BATCH` / `NEW_POSITION` 行在过账前已合并为唯一一条指令，因此 `addPosition` 对每个标的至多被调用一次。
+**但批次独立不合并**：合并的是「仓位」而非「交易」。每笔交易保留原始价格、数量、时间戳作为独立 `PositionBatch`，首笔为 `open`，后续买入为 `add`，卖出为 `reduce`。`costAfter`/`amountAfter` 逐笔累积。
 
 **两条路径互不交叉**：`commitMergedLongTerm` 和 `commitRow` 是对等的两个独立函数，不存在嵌套调用关系。`commitRow` 中**不包含** `LONG_TERM_BATCH` / `NEW_POSITION` 分支——该分支（旧版逐行建仓逻辑）已被删除，因为所有中长期行在到达 `commitRow` 之前已被 `mergeImportedTradesToPositions` 拦截聚合并转由 `commitMergedLongTerm` 处理。
 

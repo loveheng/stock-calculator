@@ -49,6 +49,14 @@ body {
   animation: sheetUp 0.28s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
+/* 移动端编辑抽屉动画 */
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+.animate-slide-up {
+  animation: sheetUp 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
 /* 触控友好：最小热区 44×44 */
 .tap-target {
   @apply min-h-[44px] min-w-[44px] inline-flex items-center justify-center;

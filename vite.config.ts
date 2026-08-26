@@ -18,6 +18,9 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+// Buffer is available globally in Node.js (used by the WebDAV proxy bypass)
+declare var Buffer: any;
+
 export default defineConfig({
   base: '/',
   plugins: [
@@ -150,12 +153,12 @@ export default defineConfig({
           const blocked = new Set(['host', 'referer', 'origin', 'cookie']);
           const blockedPrefix = ['x-vercel-', 'x-forwarded-'];
           const allowed = new Set(['authorization', 'content-type', 'depth', 'overwrite', 'if-match']);
-          const isBlocked = (k) => {
+          const isBlocked = (k: string) => {
             if (allowed.has(k)) return false;
             if (blockedPrefix.some((p) => k.startsWith(p))) return true;
             return blocked.has(k);
           };
-          const fwdHeaders = {};
+          const fwdHeaders: Record<string, string> = {};
           for (let i = 0; i < req.rawHeaders.length; i += 2) {
             const k = req.rawHeaders[i], v = req.rawHeaders[i + 1];
             if (!isBlocked(k.toLowerCase())) fwdHeaders[k] = v;
@@ -180,7 +183,7 @@ export default defineConfig({
             });
 
             // 构建响应头（透传上游 + CORS 头）
-            const rh = {};
+            const rh: Record<string, string> = {};
             upstreamRes.headers.forEach((value, key) => {
               const lower = key.toLowerCase();
               // 跳过 Node.js 自动生成的 hop-by-hop 头

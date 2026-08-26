@@ -270,7 +270,7 @@ export default function BatchImportPage() {
     // 3. 其余行仍按原逻辑逐行过账
     for (const row of otherRows) {
       try {
-        await commitRow(row, { positions, feeConfig, addBatch, addStreamRecord, addPosition, markPlanExecuted, plannedOrders });
+        await commitRow(row, { positions, feeConfig, addBatch, addStreamRecord, markPlanExecuted, plannedOrders });
         success++; successIds.push(row.id);
       } catch (e: any) {
         errors.push(`${row.fullCode}: ${e.message}`);
@@ -382,43 +382,14 @@ export default function BatchImportPage() {
 // ---- 单行过账逻辑（与之前保持不变） ----
 async function commitRow(
   row: ImportDraftRow,
-  deps: { positions: any[]; feeConfig: any; addBatch: any; addStreamRecord: any; addPosition: any; markPlanExecuted: any; plannedOrders: any[] },
+  deps: { positions: any[]; feeConfig: any; addBatch: any; addStreamRecord: any; markPlanExecuted: any; plannedOrders: any[] },
 ) {
-  const { positions, feeConfig, addBatch, addStreamRecord, addPosition, markPlanExecuted, plannedOrders } = deps;
+  const { positions, feeConfig, addBatch, addStreamRecord, markPlanExecuted, plannedOrders } = deps;
   const now = new Date().toISOString();
 
-  if (row.targetCategory === 'LONG_TERM_BATCH' || row.targetCategory === 'NEW_POSITION') {
-    if (row.isNewPosition || !row.targetPositionId || row.targetCategory === 'NEW_POSITION') {
-      const totalFee = calcTradeFees(row.price, row.amount, 'buy', feeConfig, matchSecurityKind('', row.fullCode.replace(/^(sh|sz|bj)/, ''))).total;
-      const totalInvested = row.price * row.amount + totalFee;
-      const pos = {
-        id: generateId(), stockName: row.stockName || row.fullCode, fullCode: row.fullCode,
-        currentCost: totalInvested / row.amount, currentAmount: row.amount,
-        batches: [{ id: generateId(), timestamp: new Date(row.timestamp).toISOString(), type: 'open' as const, price: row.price, amount: row.amount, costAfter: totalInvested / row.amount, amountAfter: row.amount, fee: totalFee }],
-        isClosed: false, createdAt: now, realizedPnL: 0, totalInvested,
-      };
-      addPosition(pos);
-    } else {
-      const pos = positions.find((p: any) => p.id === row.targetPositionId);
-      if (!pos) throw new Error('持仓不存在');
-      const type = row.direction === 'buy' ? 'add' : 'reduce';
-      const tradeDir = type === 'add' ? 'buy' : 'sell';
-      const totalFee = calcTradeFees(row.price, row.amount, tradeDir, feeConfig, matchSecurityKind('', row.fullCode.replace(/^(sh|sz|bj)/, ''))).total;
-      const snap = recomputePositionSnapshot(pos.batches);
-      let newCost = snap.currentCost, newAmount = snap.currentAmount, newRealizedPnL = snap.realizedPnL, newTotalInvested = snap.totalInvested;
-      if (type === 'add') {
-        newAmount += row.amount; newTotalInvested += row.price * row.amount + totalFee; newCost = newTotalInvested / newAmount;
-      } else {
-        const costBasisPerShare = newTotalInvested / newAmount;
-        const netProceeds = row.price * row.amount - totalFee;
-        newRealizedPnL += netProceeds - costBasisPerShare * row.amount;
-        newTotalInvested -= costBasisPerShare * row.amount; newAmount -= row.amount;
-        newCost = newAmount > 0 ? newTotalInvested / newAmount : 0;
-      }
-      const batch: PositionBatch = { id: generateId(), timestamp: new Date(row.timestamp).toISOString(), type, price: row.price, amount: type === 'add' ? row.amount : -row.amount, costAfter: newCost, amountAfter: newAmount, fee: totalFee };
-      addBatch(pos.id, batch, { currentCost: newCost, currentAmount: newAmount, realizedPnL: newRealizedPnL, totalInvested: newTotalInvested });
-    }
-  } else if (row.targetCategory === 'SHORT_TERM_T') {
+  // 中长期（LONG_TERM_BATCH / NEW_POSITION）不走这里：已在 handleCommitRows 中
+  // 经 mergeImportedTradesToPositions 聚合成单条指令后由 commitMergedLongTerm 过账。
+  if (row.targetCategory === 'SHORT_TERM_T') {
     const totalFee = calcTradeFees(row.price, row.amount, row.direction, feeConfig, matchSecurityKind('', row.fullCode.replace(/^(sh|sz|bj)/, ''))).total;
     addStreamRecord({ id: generateId(), timestamp: new Date(row.timestamp).toISOString(), fullCode: row.fullCode, stockName: row.stockName || row.fullCode, direction: row.direction, price: row.price, amount: row.amount, fee: totalFee });
   } else if (row.targetCategory === 'BIND_PLANNED_ORDER') {

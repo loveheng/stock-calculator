@@ -59,6 +59,7 @@ import { RiskController } from '../risk/riskController';
 import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
 import { DEFAULT_FEE_CONFIG } from './feePresets';
 import { positionAdjustmentPort } from '../services/positionAdjustmentPort';
+import { normalizeCode, normalizeStockName } from '../utils/dedup';
 import {
   generateId,
   formatTradeNo,
@@ -707,6 +708,23 @@ export const useAppStore = create<AppStore>()((set, get) => ({
   },
 
   addPosition: (pos) => {
+    // 【不变量】同一标的只能有一个「开启」仓位。若已存在开启仓位，拒绝重复建仓并抛错，
+    // 确保调用方（CostAveraging / BatchImport）不会创建同标的多仓位。
+    const norm = pos.fullCode ? normalizeCode(pos.fullCode) : '';
+    const dup = get().positions.find((p) => {
+      if (p.isClosed) return false;
+      if (norm && normalizeCode(p.fullCode) === norm) return true;
+      if (!norm) return normalizeStockName(p.stockName) === normalizeStockName(pos.stockName);
+      return false;
+    });
+    if (dup) {
+      recordAudit('add_position_blocked', 'position', pos.id, 'failure', {
+        reason: '同标的开启仓位已存在',
+        fullCode: pos.fullCode,
+        existingId: dup.id,
+      });
+      throw new Error(`标的「${pos.stockName || pos.fullCode}」尚存在开启仓位（${dup.fullCode || dup.stockName}），请直接在原账本上加仓`);
+    }
     set(s => ({ positions: [...s.positions, pos] }));
     safePersist(() => putPositionWithBatches(pos, pos.batches));
     // 【风控审计】记录建仓

@@ -1,9 +1,9 @@
 # 批量导入工作台文档
 
-> **文件位置**: `src/views/BatchImport/` + `src/types/import.ts` + `src/utils/dedup.ts` + `src/services/importAdapter.ts` + `src/services/ocrService.ts`  
-> **关联模块**: `src/risk/riskController.ts`（风控预检）、`src/store/`（分流过账）  
+> **文件位置**: `src/views/BatchImport/` + `src/types/import.ts` + `src/utils/dedup.ts` + `src/utils/importMerger.ts` + `src/services/importAdapter.ts` + `src/services/ocrService.ts`  
+> **关联模块**: `src/risk/riskController.ts`（风控预检）、`src/store/`（分流过账）、`src/utils/dedup.ts`（代码/名称归一化）  
 > **路由**: `/batch-import`  
-> **最后更新**: 2026-08-23 (v2 — 重构为分组卡片流 + OCR 上传)
+> **最后更新**: 2026-08-26 (v3 — 同标的聚合加权加仓 + 代码/名称归一化)
 
 ---
 
@@ -15,7 +15,7 @@
 4. [防重核心层（dedup.ts）](#4-防重核心层dedupts)
 5. [适配清洗层（importAdapter.ts）](#5-适配清洗层importadapterts)
 6. [暂存工作台（BatchImport 视图）](#6-暂存工作台batchimport-视图)
-7. [分流过账（commitRow）](#7-分流过账commitrow)
+7. [聚合与分流过账（merge + commitRow）](#7-聚合与分流过账merge--commitrow)
 8. [集成点全览](#8-集成点全览)
 9. [尚未实现 / 待办事项](#9-尚未实现--待办事项)
 
@@ -26,14 +26,15 @@
 批量导入工作台提供了一个**独立路由**（`/batch-import`）的暂存工作台，用于手工录入、剪贴板粘贴、OCR/CSV（未来扩展）等来源的交易数据批量导入。流程遵循**两阶段暂存区（Staging & Validation）架构**：
 
 ```
-录入/解析 → 暂存草稿 → 批量风控校验 → 一键分流过账落库
+录入/解析 → 暂存草稿 → 批量风控校验 → 聚合（同标的中长期合并）→ 一键分流过账落库
 ```
 
 ### 核心设计原则
 
 - **两阶段暂存区**：数据先进入暂存表格（非持久化 React state），用户确认后再分流过账，避免脏数据直接写入 store
 - **三道防重防线**：表内去重（Intra-Batch）→ 跨库比对（Cross-Store）→ UI 差异化标记（覆盖/跳过）
-- **业务归类驱动分流**：每行数据指定归类目标（长期批次/短线做T/履约计划单），过账时自动调用对应 store action
+- **业务归类驱动分流**：每行数据指定归类目标（长期批次/短线做T/履约计划单），过账时同标的中长期流水中长期批次先聚合（加权加仓/卖出减仓），再调用对应 store action
+- **同标的聚合**：批量导入时，同一标的的多笔中长期流水在过账前合并为一条指令，避免创建多个独立仓位
 - **风控前置**：过账前可调用 `RiskController` 批量预检，拦截违规交易
 - **全键盘友好**：Enter/Tab 换行输入，提高录入效率
 
@@ -55,13 +56,14 @@ src/
 ├── types/
 │   └── import.ts                     # 批量导入数据类型契约
 ├── utils/
-│   └── dedup.ts                      # 交易特征指纹生成与查重纯函数
+│   ├── dedup.ts                      # 交易特征指纹生成、查重、代码/名称归一化
+│   └── importMerger.ts               # 同标的聚合（加权加仓/卖出减仓）
 ├── services/
 │   ├── importAdapter.ts              # 格式归一化、智能关联 Position/Plan、防重批处理、OCR 载荷解析
 │   └── ocrService.ts                 # OCR 图像解析服务（调用后端接口 + 本地文本降级）
 ├── views/
 │   └── BatchImport/
-│       ├── index.tsx                 # 路由主页面（状态管理 + 分组编排 + 全局粘贴监听）
+│       ├── index.tsx                 # 路由主页面（状态管理 + 分组编排 + 全局粘贴监听 + 过账编排）
 │       ├── StockImportCard.tsx       # 按标的分组的折叠卡片（Summary Bar + 行内编辑列表）
 │       └── ImportToolbar.tsx         # 顶部工具栏（上传区 + 全局操作按钮 + OCR 缩略图预览）
 └── App.tsx                           # 路由注册（/batch-import）+ 导航项
@@ -78,8 +80,9 @@ src/
           ▼
 适配清洗层 (Adapter & Ingestion)
   ├── importAdapter.ts      — parseClipboardText / parseOcrPayload / enrichDraftRow / completeDedupCheck / inferPlanBind / groupRowsByStock
+  ├── importMerger.ts       — mergeImportedTradesToPositions / MergedImportInstruction / BuySummary / SellSummary
   ├── ocrService.ts         — parseOcrFile / extractImageFromClipboard / revokeObjectUrl
-  └── dedup.ts              — generateTxFingerprint / classifyDraft / PreparedHistory
+  └── dedup.ts              — generateTxFingerprint / classifyDraft / normalizeCode / canonicalizeFullCode / normalizeStockName / isSameStock / PreparedHistory
           │
           ├──► riskController.ts    — 风控预检（evaluateTTrade / evaluateBatch）
           ├──► store actions        — 分流过账（addBatch / addStreamRecord / addPosition / markPlanExecuted）
@@ -160,9 +163,40 @@ Fingerprint = normalizeCode(fullCode) + "_" + direction + "_" + price.toFixed(3)
 ```
 
 **关键细节**：
-- `normalizeCode`：去除 `sh/sz/bj` 前缀，转大写（`sh600519` → `600519`）
+- `normalizeCode`：从任意格式提取 6 位数字代码（`600519`、`sh600519`、`SH:600519`、`600519.SH` 均归一为 `600519`）；回退时去市场前缀转大写
 - `dateKey`：本地时区 `YYYYMMDD`（`new Date(ts).getFullYear() + pad(month) + pad(day)`）
 - 时间戳精度对齐：手动录入可能只填日期，未来 OCR 可能精确到秒，指纹采用**年月日 + 价格(3位) + 数量 + 方向 + 代码**作为基准主特征
+
+### 4.1a 归一化工具函数
+
+代码/名称差异的归一化处理是导入防重与同标的聚合的基础：
+
+```typescript
+// 归一化代码：从任意格式提取 6 位数字
+normalizeCode('sh600519')    // → '600519'
+normalizeCode('SH:600519')  // → '600519'
+normalizeCode('600519.SH')  // → '600519'
+normalizeCode('600519')     // → '600519'
+
+// 规范化为带市场前缀的完整代码（用于存储）
+canonicalizeFullCode('600519')      // → 'sh600519'  （按首位推测市场：6/9/5→沪, 4/8→北, 其余→深）
+canonicalizeFullCode('SH:600519')  // → 'sh600519'
+canonicalizeFullCode('600519.SH')  // → 'sh600519'
+
+// 归一化名称：大写 + 去风险/除权/新股前缀 + 去空格
+normalizeStockName('*ST闻泰')   // → '闻泰'
+normalizeStockName('XD贵州茅台') // → '贵州茅台'
+normalizeStockName('N华大')     // → '华大'
+
+// 判断是否同一标的：优先代码（权威），其次名称（辅助）
+isSameStock({ fullCode: 'sh600519' }, { fullCode: '600519' })  // → true
+isSameStock({ stockName: '*ST闻泰' }, { stockName: 'ST闻泰' })  // → true
+```
+
+**设计原则**：
+- **代码是权威键**，`normalizeCode` 用于所有比对/分组
+- **名称仅作展示辅助和兜底匹配**（当依赖手动输入、无代码时）
+- 导入时若系统已存在该标的持仓，采用系统持仓上的权威代码/名称（`enrichDraftRow` 中的统一键原则）
 
 ### 4.2 核心函数
 
@@ -187,6 +221,12 @@ interface PreparedHistory {
   price: number;
   amount: number;
 }
+
+// 归一化工具
+function normalizeCode(raw: string): string
+function canonicalizeFullCode(raw: string): string
+function normalizeStockName(raw: string): string
+function isSameStock(a, b): boolean
 ```
 
 ### 4.3 判定逻辑
@@ -228,6 +268,18 @@ interface PreparedHistory {
 | 该标的有活跃计划单 | 可选 `BIND_PLANNED_ORDER` |
 
 同时自动填充 `targetPositionId`（匹配持仓）、`targetPlannedOrderId`（匹配计划单）、`isNewPosition`（无持仓时）。
+
+**统一键原则**：导入时若系统已存在该标的持仓，以持仓上的 `fullCode`/`stockName` 为准（消除导入与行情接口/剪贴板之间的代码/名称差异）。`enrichDraftRow` 内部先对 `fullCode` 做 `canonicalizeFullCode` 规范化，再以 `normalizeCode` 匹配持仓，匹配到后采用持仓的权威代码和名称。
+
+```typescript
+// 示例：导入代码 '600519'（无市场前缀），系统已有持仓 'sh600519'
+const fullCode = canonicalizeFullCode('600519');  // → 'sh600519'
+const norm = normalizeCode(fullCode);              // → '600519'
+const pos = positions.find(p => normalizeCode(p.fullCode) === norm);
+// 确定用持仓的权威代码/名称
+const canonicalFullCode = pos ? pos.fullCode : fullCode;  // → 'sh600519'
+const canonicalName = pos?.stockName || row.stockName;    // 用持仓上的名称
+```
 
 ### 5.2a 计划单智能预挂载（`inferPlanBind`）
 
@@ -399,27 +451,134 @@ export function buildHistoryFromStore(
 
 ---
 
-## 7. 分流过账（commitRow）
+## 7. 聚合与分流过账（merge + commitRow）
+
+### 7.0 同标的聚合（`mergeImportedTradesToPositions`）
+
+**核心改造**：为解决同一标的（如 `*ST闻泰`）多笔流水被拆分为多个独立仓位的 Bug，在过账前新增聚合步骤。
+
+**生命周期插入点**：位于 `handleCommitRows` 中、正式调用 `addPosition` / `addBatch` 之前。
+
+```
+用户点击「确认过账」
+       │
+       ▼
+  过滤 valid 行
+       │
+       ├── LONG_TERM_BATCH / NEW_POSITION
+       │   └── mergeImportedTradesToPositions()  ← 在此聚合
+       │           │
+       │           ├── 按 normalizeCode(fullCode) 分组
+       │           ├── 每组按时间排序
+       │           ├── 汇总买入 → 加权平均价（总买入金额 / 总股数）
+       │           ├── 汇总卖出 → 减仓
+       │           ├── 匹配已有持仓（未结仓）→ 决定 action
+       │           │   ├── 已有持仓 → add_to_position
+       │           │   └── 无持仓 → create_position
+       │           └── 返回 MergedImportInstruction[]（每标的唯一一条指令）
+       │
+       └── 其他类别（SHORT_TERM_T / BIND_PLANNED_ORDER）
+           └── 逐行 commitRow（不变）
+```
+
+**聚合结果类型**：
+
+```typescript
+interface MergedImportInstruction {
+  fullCode: string;              // 完整证券代码（含市场前缀）
+  stockName: string;             // 证券名称
+  action: 'create_position' | 'add_to_position';
+  existingPositionId?: string;   // 已有持仓 ID
+  existingPosition?: Position;   // 已有持仓对象
+  allRows: ImportDraftRow[];     // 按时间排序的原始行（审计与 UI 追溯）
+  buySummary: BuySummary | null;  // 买入汇总（加权平均）
+  sellSummary: SellSummary | null; // 卖出汇总
+}
+
+interface BuySummary {
+  totalAmount: number;   // 总买入股数
+  totalCost: number;     // 总买入金额
+  weightedPrice: number; // 加权平均买入价 = totalCost / totalAmount
+  count: number;         // 合并的买入笔数
+}
+
+interface SellSummary {
+  totalAmount: number;   // 总卖出股数
+  totalProceeds: number; // 总卖出金额
+  count: number;         // 合并的卖出笔数
+}
+```
+
+**加权加仓 / 卖出减仓的执行逻辑**（`commitMergedLongTerm`）：
+
+| 场景 | 处理 |
+|------|------|
+| `create_position` + 有买入 | 按加权平均价 + 规费建仓，追加 `open` 批次 |
+| `create_position` + 有卖出 | 建仓后追加 `reduce` 批次做减仓 |
+| `add_to_position` + 有买入 | 先 `addBatch`（`add` 类型）加权加仓 |
+| `add_to_position` + 有卖出 | 以买入后（或原始）快照为基础做 `reduce` 减仓 |
 
 ### 7.1 过账路由
 
 ```
-commitRow(row, positions, feeConfig, plannedOrders)
+handleCommitRows(validRows)
     │
-    ├── NEW_POSITION → calcTradeFees → addPosition(新开仓) → addBatch
-    │
-    ├── LONG_TERM_BATCH
-    │   ├── isNewPosition || !targetPositionId
-    │   │   └── calcTradeFees → addPosition(新开仓) → addBatch
-    │   └── 已有持仓
-    │       └── recomputePositionSnapshot → addBatch(加仓/减仓)
+    ├── LONG_TERM_BATCH / NEW_POSITION
+    │   └── mergeImportedTradesToPositions()
+    │           │
+    │           ├── create_position → commitMergedLongTerm
+    │           │   └── calcTradeFees → addPosition(加权开仓) → addBatch
+    │           │
+    │           └── add_to_position → commitMergedLongTerm
+    │               └── recomputePositionSnapshot → addBatch(加仓/减仓)
     │
     ├── SHORT_TERM_T
-    │   └── calcTradeFees → addStreamRecord(自动建Round/撮合/归档)
+    │   └── commitRow → calcTradeFees → addStreamRecord(自动建Round/撮合/归档)
     │
     └── BIND_PLANNED_ORDER
-        └── calcBatchExecution → addBatch + markPlanExecuted
+        └── commitRow → calcBatchExecution → addBatch + markPlanExecuted
 ```
+
+**同标的聚合保证**：同一标的的 `LONG_TERM_BATCH` / `NEW_POSITION` 行在过账前已合并为唯一一条指令，因此 `addPosition` 对每个标的至多被调用一次。
+
+**两条路径互不交叉**：`commitMergedLongTerm` 和 `commitRow` 是对等的两个独立函数，不存在嵌套调用关系。`commitRow` 中**不包含** `LONG_TERM_BATCH` / `NEW_POSITION` 分支——该分支（旧版逐行建仓逻辑）已被删除，因为所有中长期行在到达 `commitRow` 之前已被 `mergeImportedTradesToPositions` 拦截聚合并转由 `commitMergedLongTerm` 处理。
+
+```
+handleCommitRows(validRows)
+   │
+   ├── LONG_TERM_BATCH / NEW_POSITION  ──► mergeImportedTradesToPositions()
+   │                                           │
+   │                                           └── commitMergedLongTerm（聚合执行）
+   │
+   └── SHORT_TERM_T / BIND_PLANNED_ORDER ──► commitRow（逐条执行）
+```
+
+这种分层保证了：
+- **中长期**：先聚合再执行，标的不重复、加权价准确
+- **短线做T / 计划单**：逐条独立，无聚合语义，不需归并
+- **无死代码**：所有行的目标类别在两个分支中有且仅有一个归宿
+
+### 7.1a Store 级不变量守卫
+
+`addPosition` 在 store 层增加了**同标的开启仓位拦截**，作为全系统防御纵深：
+
+```typescript
+addPosition: (pos) => {
+  // 检查是否存在同标的开启仓位（normalizeCode 比对 + 名称兜底）
+  const dup = existingOpenPosition(get().positions, pos);
+  if (dup) {
+    recordAudit('add_position_blocked', ...);  // 审计留痕
+    throw new Error('标的尚存在开启仓位，请直接在原账本上加仓');
+  }
+  set(...);  // 正常建仓
+}
+```
+
+| 防护层级 | 拦截点 | 用户可见性 |
+|----------|--------|----------|
+| UI 层 | `CostAveraging.handleOpenPosition` | `dupAlert` 弹窗 |
+| 聚合层 | `mergeImportedTradesToPositions` | 预览卡片已合并，过账时无感 |
+| Store 层 | `addPosition`（全系统） | 抛错 → 调用方 toast/弹窗 |
 
 ### 7.2 状态流转
 
@@ -430,6 +589,9 @@ commitRow(row, positions, feeConfig, plannedOrders)
                    确认过账（跳过 ERROR + skipImport）
                            │
                            ▼
+                   聚合同标的中长期流水 ← 新增步骤
+                           │
+                           ▼
                    分流落库 → 清空已过账行
 ```
 
@@ -438,14 +600,15 @@ commitRow(row, positions, feeConfig, plannedOrders)
 - 过账失败的行保留在表格中，标红提示
 - 成功过账的行自动从暂存清除
 - 风控 ERROR 的行在过账前被拦截，提示用户先处理
+- 聚合后的单条指令执行失败时，整组同标的流水均不会过账（原子性保证）
 
 ### 7.4 分组过账
 
 支持三种粒度：
 | 操作 | 触发位置 | 行为 |
 |------|----------|------|
-| 一键全部过账 | 工具栏按钮 | 遍历所有行，过滤 valid 行逐行过账 |
-| 过账本组 | 卡片头部按钮 | 仅过账单张卡片内的所有 valid 行 |
+| 一键全部过账 | 工具栏按钮 | 遍历所有行，过滤 valid 行 → 聚合 + 逐行过账 |
+| 过账本组 | 卡片头部按钮 | 仅过账单张卡片内的所有 valid 行（同标的中长期自动聚合） |
 | 整组丢弃 | 卡片头部按钮 | 删除单张卡片内的所有行（不落库） |
 
 ---
@@ -456,8 +619,10 @@ commitRow(row, positions, feeConfig, plannedOrders)
 
 | 模块 | 文件 | 用途 |
 |------|------|------|
-| Store 持仓管理 | `src/store/index.ts` | `addBatch`（中长期批次）、`addPosition`（新开仓）、`addStreamRecord`（短线做T）、`markPlanExecuted`（计划履约） |
+| Store 持仓管理 | `src/store/index.ts` | `addBatch`（中长期批次）、`addPosition`（新开仓，含同标的守卫）、`addStreamRecord`（短线做T）、`markPlanExecuted`（计划履约） |
 | Store 计算工具 | `src/store/utils.ts` | `generateId`、`calcBatchExecution`、`recomputePositionSnapshot` |
+| 同标的聚合 | `src/utils/importMerger.ts` | 导入前按 `normalizeCode` 合并同标的流水，加权加仓/卖出减仓 |
+| 代码/名称归一化 | `src/utils/dedup.ts` | `normalizeCode`、`canonicalizeFullCode`、`normalizeStockName`、`isSameStock` |
 | 风控门面 | `src/risk/riskController.ts` | `evaluateTTrade`（做T评估）、`evaluateBatch`（批次评估） |
 | 费率计算 | `src/utils/mathUtils.ts` | `calcTradeFees`、`matchSecurityKind` |
 | 股票搜索 | `src/components/ui/StockAutocomplete.tsx` | 代码/名称搜索联想 |

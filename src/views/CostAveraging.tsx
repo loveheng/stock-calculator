@@ -15,6 +15,7 @@ import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2, ChevronR
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind, evaluateDynamicPyramid, computePositionLifecycleSummary } from '../utils/mathUtils';
 import { recomputePositionSnapshot, getCloseBlockReason, useStreamResults, generateId, calcBatchExecution } from '../store';
+import { normalizeCode, normalizeStockName } from '../utils/dedup';
 import { recordAudit } from '../risk/auditLogger';
 import { recalculatePosition } from '../utils/calculator';
 import type { Position, PositionBatch } from '../store';
@@ -462,8 +463,21 @@ function PositionLedger() {
     const fullCode = selectedStock?.fullCode ?? '';
 
     // 同一股票代码已存在进行中持仓 → 阻止重复建仓
-    if (fullCode && positions.some((p) => p.fullCode === fullCode && !p.isClosed)) {
-      setDupAlert(`${selectedStock?.Name ?? stockName.trim()}（${fullCode}）已存在进行中持仓，请直接在原账本上加仓。`);
+    // 使用 normalizeCode 消除 sh600519 / 600519 / SH:600519 等格式差异
+    const normCode = fullCode ? normalizeCode(fullCode) : '';
+    const dupPosition = positions.find((p) => {
+      if (p.isClosed) return false;
+      if (normCode && normalizeCode(p.fullCode) === normCode) return true;
+      // 当 fullCode 为空时，用归一化名称做兜底匹配
+      if (!normCode) {
+        return normalizeStockName(p.stockName) === normalizeStockName(stockName.trim());
+      }
+      return false;
+    });
+    if (dupPosition) {
+      const displayName = selectedStock?.Name ?? stockName.trim();
+      const displayCode = dupPosition.fullCode || normCode || displayName;
+      setDupAlert(`${displayName}（${displayCode}）已存在进行中持仓，请直接在原账本上加仓。`);
       return;
     }
 
@@ -499,7 +513,12 @@ function PositionLedger() {
       totalInvested,
     };
 
-    addPosition(pos);
+    try {
+      addPosition(pos);
+    } catch (e: any) {
+      setDupAlert(e.message || '建仓失败，请检查是否已存在开启仓位');
+      return;
+    }
     setStockName('');
     setSelectedStock(null);
     setOpenPrice('');

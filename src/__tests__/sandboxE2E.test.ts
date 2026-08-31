@@ -36,7 +36,7 @@ vi.mock('../services/klineService', async (importOriginal) => {
 
 import { useAppStore } from '../store';
 import { useSandboxStore } from '../store/sandboxStore';
-import { initStore } from '../db/storeInit';
+import { initStore } from '../store/bootstrap';
 import { db } from '../db';
 
 // ============================================================

@@ -24,10 +24,14 @@ import {
   X,
   FlaskConical,
   ClipboardList,
+  LogIn,
+  LogOut,
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
+import AuthGate from './components/ui/AuthGate';
 import { useLoadCoreData } from './hooks/useDataLoader';
 import { useAppStore } from './store';
+import { useAuthStore } from './store/useAuthStore';
 
 // --- 页面视图导入（静态导入，非懒加载） ---
 import HomePage from './views/Home';
@@ -127,11 +131,60 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
 }
 
 /**
+ * 顶部栏右侧账户入口（E2EE 鉴权 D6）。
+ *
+ * @description 未登录 → "登录"按钮打开 AuthModal；已登录 → 邮箱 + 退出按钮。
+ *              initialized 前渲染同宽占位，避免会话恢复期间闪烁。
+ *              登出仅销毁会话与密钥缓存，本地 Dexie 账本数据保留。
+ */
+// ---- 顶部栏账户区 ----
+function AccountArea() {
+  const initialized = useAuthStore((s) => s.initialized);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const email = useAuthStore((s) => s.user?.email ?? '');
+  const setAuthModalOpen = useAuthStore((s) => s.setAuthModalOpen);
+  const logout = useAuthStore((s) => s.logout);
+
+  if (!initialized) return <div className="ml-auto w-[76px]" aria-hidden="true" />;
+
+  if (!isAuthenticated) {
+    return (
+      <button
+        onClick={() => setAuthModalOpen(true)}
+        className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+      >
+        <LogIn className="w-3.5 h-3.5" />
+        登录
+      </button>
+    );
+  }
+
+  return (
+    <div className="ml-auto flex items-center gap-2 min-w-0">
+      <span
+        className="text-xs text-slate-400 truncate max-w-[160px] hidden sm:inline"
+        title={email}
+      >
+        {email}
+      </span>
+      <button
+        onClick={() => void logout()}
+        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-700 hover:border-red-500/60 hover:text-red-400 text-slate-400 text-xs transition-colors"
+        title="退出登录（本地账本数据保留）"
+      >
+        <LogOut className="w-3.5 h-3.5" />
+        退出
+      </button>
+    </div>
+  );
+}
+
+/**
  * 主布局组件。
  *
  * @description 桌面端展示固定侧边栏，移动端展示抽屉式侧边栏（含遮罩）；
  *              顶部为 sticky 标题栏，内容区通过 <Routes> 分发各页面组件；
- *              同时挂载 PWA 安装引导。
+ *              同时挂载 PWA 安装引导与 E2EE 认证门控（AuthGate）。
  * @returns {JSX.Element} 应用主布局视图
  * @note 本组件为静态壳层，不含业务数据读写
  */
@@ -170,6 +223,9 @@ function AppLayout() {
       {/* 安装引导 */}
       <InstallPrompt />
 
+      {/* E2EE 认证门控：initSession / 锁屏 / 登录注册 / 助记词备份 / 找回密码 / 全局 Toast */}
+      <AuthGate />
+
       {/* 主内容区 */}
       <main className="main-area flex-1 min-h-screen w-full">
         {/* 顶部栏 */}
@@ -181,6 +237,7 @@ function AppLayout() {
             <Menu className="w-5 h-5" />
           </button>
           <h2 className="text-base font-semibold text-slate-200">{pageTitle}</h2>
+          <AccountArea />
         </header>
 
         {/* 页面内容 */}

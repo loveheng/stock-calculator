@@ -21,7 +21,7 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeKline } from './helpers/sandboxFixture';
 import { calcTradeFees, type SecurityKind } from '../utils/mathUtils';
-import { DEFAULT_FEE_CONFIG } from '../store/feePresets';
+import { DEFAULT_FEE_CONFIG } from '../utils/feePresets';
 import type { Position } from '../store';
 import type { KlineItem } from '../types/sandbox';
 
@@ -37,7 +37,7 @@ vi.mock('../services/klineService', async (importOriginal) => {
 
 import { useAppStore } from '../store';
 import { useSandboxStore } from '../store/sandboxStore';
-import { initStore } from '../db/storeInit';
+import { initStore } from '../store/bootstrap';
 import { db } from '../db';
 
 const FULL_CODE = 'sh600000';

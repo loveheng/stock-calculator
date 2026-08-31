@@ -19,7 +19,7 @@
 // ============================================================
 import Dexie, { type Table } from 'dexie';
 import { matchSecurityKind, type FeeConfig, type SecurityKind } from '../utils/mathUtils';
-import type { PositionBatch, Position, RoundTxn, TRoundArchive } from '../store';
+import type { PositionBatch, Position, RoundTxn, TRoundArchive } from '../types/domain';
 import type { StockMeta } from '../types/stock';
 import { ulid } from 'ulid';
 import { cleanUndefined } from './cleanUndefined';
@@ -54,11 +54,10 @@ export interface PageResult<T> {
 }
 
 import type { AuditActionType, AuditEntry } from '../risk/types';
-import type { LongTermRecord, PlannedOrder } from '../store/types';
+import type { LongTermRecord, PlannedOrder } from '../types/domain';
 import type { KlineItem, SandboxBranch, SandboxOrder, CashInjection } from '../types/sandbox';
 export type { FeeConfig } from '../utils/mathUtils';
-export type { Position, PositionBatch, TRoundArchive, RoundTxn } from '../store';
-export type { LongTermRecord, PlannedOrder } from '../store/types';
+export type { Position, PositionBatch, TRoundArchive, RoundTxn, LongTermRecord, PlannedOrder } from '../types/domain';
 export type { StockMeta } from '../types/stock';
 
 /** 费率配置的行级视图模型（用于 UI 展示，非实体） */

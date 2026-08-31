@@ -9,7 +9,7 @@
  * @author 开发团队
  */
 
-import type { RoundTxn } from '../store/types';
+import type { Position, RoundTxn } from '../types/domain';
 
 export async function fetchCompletedRoundsPage(
   page: number,
@@ -31,10 +31,23 @@ export async function fetchAllLongTermRecords(): Promise<import('../db/index').L
   return dbQuery();
 }
 
+/**
+ * 一次性加载全部持仓（未平仓 + 已平仓），供沙盘回放的快捷持仓选择。
+ *
+ * @description 视图层不得直连 db 层，此封装沿用本文件的动态 import 惰性加载模式；
+ *              返回两者拼接的领域持仓数组（PositionRow 与 Position 为同一定义）。
+ */
+export async function fetchAllPositionsIncludingClosed(): Promise<Position[]> {
+  const db = await import('../db/index');
+  const [open, closed] = await Promise.all([db.loadPositionsFromDB(), db.fetchAllClosedPositions()]);
+  return [...open, ...closed];
+}
+
 // ---- 门面 ----
 
 export const ledgerService = {
   fetchCompletedRoundsPage,
   fetchTransactionsByRoundId,
   fetchAllLongTermRecords,
+  fetchAllPositionsIncludingClosed,
 };

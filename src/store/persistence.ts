@@ -1,13 +1,16 @@
 /**
  * @file persistence.ts
  * @description Store 持久化军械：带指数退避重试的落库队列（safePersist）、失败重放队列、
- *              持久化错误状态（persistError）与远端同步标记（isSyncingFromRemote）。
+ *              持久化错误状态（persistError）、远端同步标记（isSyncingFromRemote）
+ *              与首载完成标记（initialLoadDone）。
  *              从 store/index.ts 拆出，供各 slice 与 roundService 共用。
+ *              v8.1 解耦：initialLoadDone 标志从 db/storeInit 迁入 —— 本模块因此成为
+ *              零项目内依赖的叶子模块，risk/auditLogger 可安全依赖而不产生循环。
  * @layer Store (Persistence)
  * @author 开发团队
  */
-import { isInitialLoadDone } from '../db/storeInit';
 
+let initialLoadDone = false;
 let persistError: string | null = null;
 let pendingQueue: Array<() => Promise<void>> = [];
 let isProcessingQueue = false;
@@ -23,6 +26,15 @@ let isSyncingFromRemote = false;
 
 export function getIsSyncingFromRemote(): boolean { return isSyncingFromRemote; }
 export function setIsSyncingFromRemote(value: boolean): void { isSyncingFromRemote = value; }
+
+/**
+ * 查询初始化加载是否已完成（原位于 db/storeInit.ts）。
+ * 未完成前 safePersist 直接 no-op，禁止任何向 DB 的写入。
+ */
+export function isInitialLoadDone(): boolean { return initialLoadDone; }
+
+/** 首载（initStore）完成后调用，此后 safePersist 才开始真实落库。 */
+export function markInitialLoadDone(): void { initialLoadDone = true; }
 
 export function getPersistError(): string | null { return persistError; }
 export function clearPersistError(): void { persistError = null; }

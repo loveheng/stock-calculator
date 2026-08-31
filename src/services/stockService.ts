@@ -8,12 +8,13 @@
  *              并对相同代码集合的进行中请求做去重（并发共享同一 HTTP 请求）；
  *              另提供防抖工具函数供 UI 输入场景复用。
  * @layer Service
- * @storage_impact 本文件为纯网络服务层，不直接读写 IndexedDB；搜索结果由
- *                 调用方（视图/Store）决定是否缓存落库。
+ * @storage_impact 网络服务层；persistStockMeta 会将选中的股票元数据经 db 层落库
+ *                 （stocks 表 upsert），其余接口无 IndexedDB 副作用。
  * @author 开发团队
  */
 
-import type { StockQuoteSummary, StockSearchItem } from '../types/stock';
+import type { StockQuoteSummary, StockSearchItem, StockMeta } from '../types/stock';
+import { putStock } from '../db';
 
 /** 行情摘要类型同时从服务层导出，便于 UI 侧统一从服务模块引用。 */
 export type { StockQuoteSummary };
@@ -139,6 +140,18 @@ export async function searchStocks(input: string): Promise<StockSearchItem[]> {
   const text = new TextDecoder('gbk').decode(buffer);
 
   return parseSmartboxPayload(text);
+}
+
+/**
+ * 将选中的股票元数据 upsert 进 stocks 表（fullCode 为业务主键）。
+ *
+ * @description 供选股组件在用户确定选中项时调用，补齐其他实体通过 fullCode
+ *              关联查询股票名称所需的基础数据；id/时间戳/软删除标记由 db 层
+ *              （toStockEntity + withTimestamps）统一补齐。
+ * @param {StockMeta} stock - 规范化股票元数据
+ */
+export async function persistStockMeta(stock: StockMeta): Promise<void> {
+  await putStock(stock);
 }
 
 /**

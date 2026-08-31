@@ -31,7 +31,7 @@ import type { SandboxOrder } from '../types/sandbox';
 
 import { useAppStore } from '../store';
 import { useSandboxStore } from '../store/sandboxStore';
-import { initStore } from '../db/storeInit';
+import { initStore } from '../store/bootstrap';
 import { db } from '../db';
 import SandboxPlayback from '../views/SandboxPlayback';
 import { FULL_CODE, makeKline, makePosition } from './helpers/sandboxFixture';

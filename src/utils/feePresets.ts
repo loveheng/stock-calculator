@@ -1,12 +1,12 @@
 /**
  * @file feePresets.ts
- * @description 费率模板常量。从 store/index.ts 拆出，纯常量、无副作用，
- *              仅依赖类型定义，供 store、视图与导入导出共用。
- * @layer Store (Constants)
+ * @description 费率模板常量。纯常量、无副作用，仅依赖类型定义，供 store、视图与导入导出共用。
+ *              （原先位于 store/feePresets.ts；因 utils 层禁止依赖 store，常量模块统一下沉至本层）
+ * @layer Utility (Constants)
  * @author 开发团队
  */
-import type { FeeConfig } from '../utils/mathUtils';
-import type { FeePresetName } from './types';
+import type { FeeConfig } from './mathUtils';
+import type { FeePresetName } from '../types/domain';
 
 export const DEFAULT_FEE_CONFIG: FeeConfig = {
   commissionRate: 0.00025, isFreeFive: false, minCommission: 0.5,

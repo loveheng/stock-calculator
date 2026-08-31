@@ -8,7 +8,12 @@
     "build": "vite build && node scripts/postbuild.js",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "pretest": "npm run check:arch",
+    "test:watch": "vitest",
+    "check:layers": "node scripts/check-layers.mjs",
+    "check:circular": "npx --yes madge --circular --extensions ts,tsx src",
+    "check:arch": "npm run check:layers && npm run check:circular",
+    "map:features": "node scripts/feature-map.mjs"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
@@ -26,6 +31,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "@scure/bip39": "^2.4.0",
     "autoprefixer": "^10.5.4",
     "decimal.js": "^10.6.0",
     "dexie": "^4.4.4",

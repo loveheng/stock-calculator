@@ -8,7 +8,8 @@
  * @author 开发团队
  */
 
-import type { PositionBatchEntity, PositionEntity } from '../db/schema';
+import type { PositionBatchEntity, PositionEntity } from '../types/domain';
+import type { PositionBatch } from '../types/domain';
 
 /**
  * `recalculatePosition` 的返回结构：一次重建后的持仓权威快照。
@@ -214,4 +215,71 @@ export function recalculatePosition(batches: PositionBatchEntity[]): PositionSna
   }
 
   return snapshot;
+}
+
+/**
+ * 从批次履历重建持仓快照（成本/数量/已实现盈亏/累计投入）—— Store 领域口径。
+ *
+ * @description 采用「总资金抽回法」按时间顺序遍历批次：
+ *  - 买入（open/add）：按 价格×数量＋规费 累计投入资金与数量；
+ *  - 卖出（reduce）：按当前摊薄成本抽回资金，同时累计已实现盈亏（净收入－摊薄成本）。
+ * 用于删除批次后重建权威快照，与建仓/加减仓的写入路径保持同一口径。
+ * 与上方 recalculatePosition 的区别：本函数面向 Store 领域类型 PositionBatch（amount
+ * 带符号），不做做T对配台账；recalculatePosition 面向 Dexie 实体并含整轮/对冲对配法。
+ * （原位于 store/utils.ts，迁移至此使 services/db 层可以零 store 依赖地复用该纯计算。）
+ * @param batches 持仓的完整批次履历（含 open/add/reduce，先后顺序由 timestamp 决定）
+ * @returns {{ currentCost: number; currentAmount: number; realizedPnL: number; totalInvested: number }}
+ */
+export function recomputePositionSnapshot(batches: PositionBatch[]): {
+  currentCost: number;
+  currentAmount: number;
+  realizedPnL: number;
+  totalInvested: number;
+} {
+  const sorted = [...batches].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+  let totalInvested = 0;
+  let totalAmount = 0;
+  let realizedPnL = 0;
+
+  for (const batch of sorted) {
+    const qty = Math.abs(batch.amount);
+    const batchFee = batch.fee || 0;
+    if (batch.amount > 0) {
+      totalInvested += batch.price * qty + batchFee;
+      totalAmount += qty;
+    } else if (batch.kind === 'borrow') {
+      // 出借：只减数量与成本基数，不产生盈亏（借仓卖出，非真实落袋）
+      if (totalAmount > 0) {
+        const costBasisPerShare = totalInvested / totalAmount;
+        totalInvested -= costBasisPerShare * qty;
+      }
+      totalAmount -= qty;
+      if (totalAmount <= 0) {
+        totalInvested = 0;
+        totalAmount = 0;
+      }
+    } else {
+      if (totalAmount > 0) {
+        const costBasisPerShare = totalInvested / totalAmount;
+        const costBasisOfSold = costBasisPerShare * qty;
+        const netProceeds = batch.price * qty - batchFee;
+        realizedPnL += netProceeds - costBasisOfSold;
+        totalInvested -= costBasisOfSold;
+      }
+      totalAmount -= qty;
+      if (totalAmount <= 0) {
+        totalInvested = 0;
+        totalAmount = 0;
+      }
+    }
+  }
+
+  return {
+    currentCost: totalAmount > 0 ? totalInvested / totalAmount : 0,
+    currentAmount: totalAmount,
+    realizedPnL,
+    totalInvested,
+  };
 }

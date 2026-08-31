@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useAppStore } from '../../store';
-import { generateId, calcBatchExecution, recomputePositionSnapshot } from '../../store/utils';
+import { generateId, calcBatchExecution } from '../../store/utils';
+import { recomputePositionSnapshot } from '../../utils/calculator';
 import { calcTradeFees, matchSecurityKind } from '../../utils/mathUtils';
 import { RiskController } from '../../risk/riskController';
 import { parseClipboardText, enrichDraftRow, completeDedupCheck, buildHistoryFromStore, groupRowsByStock, inferPlanBind } from '../../services/importAdapter';

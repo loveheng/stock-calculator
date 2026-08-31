@@ -1,8 +1,8 @@
 # 股票计算器 PWA — 项目阅读指南
 
-> **版本**：v7（按需加载重构）  
-> **技术栈**：React 19 + React Router 7 + Zustand + Dexie (IndexedDB) + TypeScript + Vite + PWA + Vitest  
-> **最后更新**：2026-08-13
+> **版本**：v9（分层解耦 + 架构护栏）
+> **技术栈**：React 19 + React Router 7 + Zustand + Dexie (IndexedDB) + TypeScript + Vite + PWA + Vitest
+> **最后更新**：2026-08-31
 
 ---
 
@@ -109,17 +109,31 @@ stock-calculator/
 ### 3.1 分层架构
 
 ```
-Views (React Components)                    ← UI 交互层
-    │  通过 Zustand Selector 订阅状态 / 调用 Action
-Hooks (React Custom Hooks)                  ← 共享逻辑层（按需加载、数据获取）
-    └─ useLoadCoreData / useArchivedRounds
-Store (Zustand useAppStore)                 ← 内存状态 + Action 逻辑
-    ├─ index.ts   31 个 Action + safePersist 增量写库
-    ├─ types.ts   AppStore 接口（状态 + 全部 Action 签名）
-    └─ utils.ts   纯函数（撮合结果派生 Hook、Round 自动归档、履历重建）
-DB Layer (Dexie IndexedDB)                  ← 持久化存储
-    └─ schema.ts（12 表） / index.ts（40+ 函数） / storeInit.ts
+types/domain.ts（零依赖叶子，唯一权威类型定义）
+        ↑
+utils / risk（纯计算层：sandboxEngine · tStreamEngine · calculator · riskController …）
+        ↑
+db（Dexie 持久化）    services（应用服务/网络）    store（Zustand 状态机）
+        ↑
+hooks（数据桥接：useDataLoader · useStreamResults · useLiveQuotes …）
+        ↑
+views / components（UI）
 ```
+
+依赖方向必须单向（上层可依赖下层，反向禁止），由静态护栏强制（见 3.4）：
+
+| 层 | 允许依赖 | 禁止 |
+|---|---|---|
+| `types/domain.ts` | 无 | 任何 import（领域类型 + 行级实体的唯一权威定义，db/schema 只 re-export） |
+| `utils/**` | types、utils 内部 | store（R2）、db |
+| `risk/**` | types、utils | store；db 仅限审计落库。views 直调 RiskController 属有意设计，不加透传层 |
+| `db/**` | types、dexie | store/services/views。`db/index.ts` 是桶：Row 别名 + entity↔domain 映射 + 全部导出，re-export 必须保持完整（动态 import 以桶为目标） |
+| `services/**` | db（推荐动态 import 惰性加载）、types | store、views |
+| `store/**` | db、services、risk、types、utils | views/components |
+| `hooks/**` | store、services、risk、types | — |
+| `views/**` `components/**` | store、hooks、services、risk、utils、types | db（R1，含类型导入——UI 不该知道行结构） |
+
+Store 内部结构（v9 切片化）：`index.ts` 只做初始状态 + slices 组装 + 向后兼容 re-export；业务 Action 按域拆分在 `store/slices/`（core 冷启动 / positions 持仓 / orders 计划单 / rounds 战报 / streams 流水池 / io 导入导出）；`persistence.ts`（safePersist）与 `bootstrap.ts`（冷启动引导）独立成模块；沙盘推演状态机独立为 `sandboxStore.ts`。
 
 ### 3.2 数据流（v7：按需加载 + 增量持久化）
 
@@ -161,11 +175,9 @@ DB Layer (Dexie IndexedDB)                  ← 持久化存储
 ### 3.3 安全防护机制（改代码前务必理解）
 
 ```typescript
-// db/storeInit.ts —— 启动装载是否完成
+// store/persistence.ts —— 启动装载是否完成 + 统一写库入口
 export function isInitialLoadDone(): boolean { return initialLoadDone; }
-
-// store/index.ts —— 统一写库入口
-async function safePersist(fn: () => Promise<void>) {
+export async function safePersist(fn: () => Promise<void>) {
   if (!isInitialLoadDone()) return;   // ① 启动装载中，禁止写库
   // ② 指数退避重试：最多重试 3 次（1s→2s→4s）
   // ③ 全部失败 → 加入 pendingQueue 失败队列，下次写库成功时自动重放
@@ -176,6 +188,41 @@ async function safePersist(fn: () => Promise<void>) {
 - **指数退避重试**：写库失败自动重试，容忍偶发 IndexedDB 事务冲突
 - **失败队列重放**：重试仍失败的操作不丢弃，入队后自动补偿，保证不丢数据
 - **零 clear() 原则**：整个代码库无 `table.clear()` 调用，所有删除按 id/fullCode 精确操作
+
+### 3.4 架构护栏（静态强制）
+
+分层规则靠约定不如靠工具。以下检查已挂进 `pretest`（`npm test` 前自动执行）与 CI（`.github/workflows/arch-guard.yml`，push/PR 触发）：
+
+| 检查 | 命令 | 内容 |
+|---|---|---|
+| 分层依赖 | `npm run check:layers` | `scripts/check-layers.mjs`（零依赖 node 脚本）：**R1** views/components 禁连 db（含类型导入）；**R2** utils 禁依赖 store；**R3** types/domain 零依赖叶子。静态 + 动态 import 与再导出均扫描，匹配前剥离注释，自动跳过 `__tests__` 与 `*.test.*` |
+| 循环依赖 | `npm run check:circular` | madge 全量扫描 src（经 npx 拉起，首次运行需网络） |
+| 聚合 | `npm run check:arch` | check:layers + check:circular |
+
+被护栏拦截时的正确做法：改走 store action / hooks / services，或把类型下沉到 `types/domain.ts`。**禁止**为通过检查而修改或绕过护栏脚本。
+
+### 3.5 功能地图与触点导航（两层体系）
+
+修改功能的定位链路：**下表定位功能锚点 → `npm run map:features` 拿完整实时触点（含测试）→ 到位修改**。
+
+- **第一层（稳定锚点）**：下表 12 个功能组，只维护功能级锚点（低频变化）；锚点按真实职责登记，不看文件名字面义（如 CostAveraging 实为实盘账本视图、Statistics 实为做T统计页）
+- **第二层（实时明细）**：`npm run map:features`（`scripts/feature-map.mjs`，零依赖）实时扫描 src/ 按功能分组输出视图/状态/服务/计算/测试，**不落盘、永不过期**；末尾「未归类」清单即漂移探测器——非空 = 有新功能待登记关键词，或文件命名缺功能词
+- **维护约定**：新增功能 → 脚本 GROUPS 登记关键词（确认未归类为 0）+ 表中加一行；锚点改名/拆分/换层时同步本表
+
+| 功能 | 状态（store） | 服务/计算 | 视图/UI | 一句话 |
+|---|---|---|---|---|
+| auth（E2EE 认证） | useAuthStore | authApi · cryptoService · apiClient · sessionPersistence · mnemonicService | AuthGate · AuthModal · MnemonicBackupModal 等（components/ui/） | 会话初始化/注册备份闭环/登录/设备免密 |
+| sandbox（沙盘推演） | sandboxStore | sandboxEngine · baselineExtractor · metricsEngine · presetAudit | SandboxPlayback + components/sandbox/* | 事后复盘 What-if：三类分支对比 + 基线重演 |
+| tstrategy（做T策略） | streamsSlice | tStreamEngine · strategyGenerators · shortTermTrial · tradingTime · positionAdjustmentPort · useStreamResults(hooks) | TCalculator · Statistics | 做T流水撮合派生/策略生成/做T↔中长线衔接 |
+| ledger（持仓/账本） | coreSlice · positionsSlice · ordersSlice · roundsSlice | calculator（核心算法）· ledgerService（门面）· store/reconcile | Home（仪表盘）· CostAveraging · PlanOrderCard | 持仓批次全生命周期/对账/保本价与收益统计 |
+| kline（K线/行情） | — | klineService · priceCache（risk/）· useLiveQuotes(hooks) | KlineChart（components/sandbox/） | 腾讯前复权日K三级缓存 + A股时段实时行情轮询 |
+| stock（股票元数据） | — | stockService | StockAutocomplete（components/ui/） | Smartbox 搜索/实时行情/选股元数据落库 |
+| import（批量导入） | — | importAdapter · ocrService · importMerger · dedup | views/BatchImport/* | 手动填表/剪贴板/OCR 原始数据归一化导入 |
+| sync（WebDAV 同步/备份） | ioSlice | webdavSync | WebDAVConfig | 多端同步与云端备份 + 全量导入导出 |
+| fee（费率） | — | feePresets · mathUtils（calcTradeFees） | FeeConfig | 规费预设与统一费率计算 |
+| risk（风控规则） | — | riskController · validator · auditLogger（src/risk/） | — | 平仓阻断/规则校验/审计落库；views 直调属有意设计 |
+| calc（涨跌幅计算器） | — | —（mathUtils 纯函数） | ChangeRate | 涨跌幅⇄目标价换算 + 涨跌停阶梯推算 |
+| app（应用骨架/通用） | index（组装）· bootstrap · persistence · types · utils | db/index+schema · useDataLoader(hooks) | App · main · ConfirmModal · InstallPrompt | Store 组装/冷启动/落库队列/schema 迁移/domain 权威类型 |
 
 ---
 
@@ -489,6 +536,11 @@ Position.batches
 | **Decimal.js 而非原生浮点** | 金融精度要求；JavaScript 0.1+0.2≠0.3 不可接受 |
 | **FIFO 撮合而非 LIFO** | 符合国内券商结算惯例 |
 | **证券类型分层费率（stock/etf/bond）** | ETF 免印花税/免五、债券免税，按品种精确计费 |
+| **类型单一权威源（v9）** | 领域类型统一定义在 `types/domain.ts`，db/schema 只 re-export；消除多处定义漂移，R3 保证它是零依赖叶子 |
+| **Store 切片化（v9）** | index.ts 只做组装，业务 Action 按 `store/slices/` 拆分；防止单文件无限膨胀、Action 之间隐式耦合 |
+| **架构护栏进 pretest/CI（v9）** | check:layers（R1/R2/R3）+ madge 循环检测在 `npm test` 与 CI 中自动执行——架构约定从「口头/文档」变「工具强制」，违例在合入前暴露 |
+| **生成式功能地图（v9）** | 功能→文件触点用脚本实时扫描生成而非手写清单：手写清单改两次代码必然腐烂，生成式永不过期；「未归类」清单让漂移可见 |
+| **memo 缓存键必须覆盖全部输入（v9）** | sandbox `computeBranchResult` 曾因缓存键中基线只有摘要（批次数/末笔时间/持股数），基线内容变化（如修正首笔日期）时命中过期缓存（BEYOND_ASOF bug）；现键含 `baselineDigest`（全量订单 FNV1a 指纹）+ `feeConfig`。教训：**缓存键遗漏任何一个影响输出的输入，就会拿到过期结果** |
 
 ---
 
@@ -499,9 +551,11 @@ npm install          # 安装依赖
 npm run dev          # 开发服务器 (http://localhost:5173)，HMR 热更新
 npm run build        # 生产构建 → dist/（vite build + scripts/postbuild.js）
 npm run preview      # 预览生产构建
-npm test             # 运行单元测试（vitest run；沙盘模块见 src/__tests__/sandbox*.test.ts）
+npm test             # 运行单元测试（pretest 自动先跑 check:arch 架构护栏；基线 472/472）
 npm run test:watch   # 监听模式，文件变化自动重跑
 npx tsc --noEmit     # TypeScript 类型检查（tsconfig 排除了 src/__tests__）
+npm run check:arch   # 手动单跑架构护栏：check:layers（R1/R2/R3 分层依赖）+ check:circular（madge 循环依赖）
+npm run map:features # 功能→文件触点速查（实时扫描生成，见 3.5）
 ```
 
 ---
@@ -522,3 +576,4 @@ npx tsc --noEmit     # TypeScript 类型检查（tsconfig 排除了 src/__tests_
 | **v7** | **按需加载重构：冷启动仅加载费率配置，核心数据由 useDataLoader 钩子按需加载；新增证券类型（stock/etf/bond）与 ETF 分层费率** |
 | v7.1 | 短线交易页聚焦当日：当前做T项目过滤 CLEARED 自动归档项（activeResults）；归档库改为「今日战报归档库」（仅显示当天完成的战报）；移除原注释状态的「中长期操作历史」UI 面板 |
 | **v8** | **做T数据模型重构：移除 tStreams 表与旧版 tRecords 兼容层 —— 流水唯一持久化为 tTransactions（Round 内，字段与引擎对齐），Round 概览存 tRounds；单标的单 OPENED Round 规则，结清复用同一 Round 标记 COMPLETED（消除重复归档）；tTransactions 增加 fullCode/direction 索引；v8 upgrade 直接删除 tStreams 表（历史数据不保留，不做迁移）** |
+| **v9** | **分层解耦重构：领域类型下沉 `types/domain.ts`（唯一权威源，schema re-export）；store 拆分为 slices（core/positions/orders/rounds/streams/io）+ 组装层；views 直连 db 的 8 处存量违例全部改造（services 惰性封装/类型下沉）；新增静态护栏 `check:layers`（R1/R2/R3）+ madge 循环检测，挂 pretest 与 CI（arch-guard.yml）；修复 `computeBranchResult` memo 缓存键碰撞（基线签名无法感知基线内容变化，键补 baselineDigest + feeConfig）；新增 `map:features` 功能触点实时速查（两层导航：功能地图锚点 + 生成式触点清单）** |

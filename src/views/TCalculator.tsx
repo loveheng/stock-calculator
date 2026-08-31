@@ -14,11 +14,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useAppStore,
-  useStreamResults,
   generateId,
   type Position,
   type RoundTxn,
 } from '../store';
+import { useStreamResults } from '../hooks/useStreamResults';
 import { ledgerService } from '../services/ledgerService';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';

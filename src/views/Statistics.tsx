@@ -11,7 +11,8 @@
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Search, X, ChevronDown, ChevronUp, BarChart3, Wallet, Loader2 } from 'lucide-react';
-import { useStreamResults, useAppStore } from '../store';
+import { useAppStore } from '../store';
+import { useStreamResults } from '../hooks/useStreamResults';
 import type { Position, PositionBatch, RoundTxn } from '../store';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
 import { ledgerService } from '../services/ledgerService';

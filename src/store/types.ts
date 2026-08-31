@@ -1,10 +1,13 @@
 /**
  * @file types.ts
- * @description Store 层所有类型定义，从 store/index.ts 中提取以保持单一职责。
- *              包含持仓、批次、做T记录、Round、中长期记录、现金流、导入导出等核心数据结构。
+ * @description Store 层类型定义：AppStore / AppStoreActions 等状态容器契约 + 导入导出结构。
+ *              领域数据契约（Position/PositionBatch/RoundTxn/TRoundArchive/LongTermRecord/
+ *              PlannedOrder）已下沉至 src/types/domain.ts，本文件 re-export 保持兼容。
+ *              包含做T记录、Round、中长期记录、现金流、导入导出等核心数据结构。
  *              v6.1 重构：统一类型系统 —— 所有类型不再与 db/index.ts 重复定义，
  *              db/index.ts 中的 Row 类型改用本文件中的类型别名；
  *              TRoundArchive 新增 lastUpdated 兼容字段（@deprecated）。
+ *              v8.1 解耦：领域类型迁移至 types/domain.ts（叶子模块），消除循环依赖根因。
  * @layer Store (Types)
  * @author 开发团队
  */
@@ -12,156 +15,32 @@
 import type { FeeConfig } from '../utils/mathUtils';
 import type { StockMeta, StockSearchItem } from '../types/stock';
 import type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
+import type {
+  Position,
+  PositionBatch,
+  RoundTxn,
+  TRoundArchive,
+  LongTermRecord,
+  PlannedOrder,
+} from '../types/domain';
 
-// ---- 建仓批次 ----
-export interface PositionBatch {
-  id: string;
-  timestamp: string;
-  type: 'open' | 'add' | 'reduce' | 'close';
-  price: number;
-  amount: number;
-  costAfter: number;
-  amountAfter: number;
-  note?: string;
-  fee?: number;
-  /** 自动调整标识：borrow=倒T出借（借仓卖出，非真实落袋），merge=倒T超额买回归并 */
-  kind?: 'borrow' | 'merge';
-  /** 该笔操作发生时的底仓成本价（元），仅借仓卖出时记录，用于显示成本对照 */
-  costPrice?: number;
-  /** 关联做T轮次 id：做T归档产生的批次用于回滚定位 */
-  sourceRoundId?: string;
-}
-
-// ---- 持仓（成本摊薄账本中的单只股票持仓） ----
-export interface Position {
-  id: string;
-  stockName: string;
-  fullCode: string;
-  currentCost: number;
-  currentAmount: number;
-  batches: PositionBatch[];
-  isClosed: boolean;
-  createdAt: string;
-  /** 开仓时间：第一笔买入（open 批次）的成交时间，ISO 字符串 */
-  openAt?: string;
-  closedAt?: string;
-  realizedPnL?: number;
-  totalInvested?: number;
-}
-
-// ---- Round 交易明细（每笔已撮合的做T交易） ----
 /**
- * @description v8 起与引擎 TStreamRecord 字段对齐：Round 的 transactions 即该轮全部流水，
- *              既作为流水池恢复源（OPENED Round），也作为战报成交明细（COMPLETED Round）。
+ * 领域类型下沉：持仓/批次/Round/中长期记录/计划单等纯数据契约已迁移至
+ * src/types/domain.ts（零依赖叶子模块），db / services / utils 层直接从那里导入，
+ * 消除「下层反向依赖 store」造成的循环依赖。
+ * 此处 re-export 保持 '../store'、'../store/types' 两条既有导入路径向后兼容。
  */
-export interface RoundTxn {
-  id: string;
-  timestamp: string;
-  /** 完整证券代码（含市场前缀），OPENED 流水必须有；归档明细可缺省（从 Round 冗余） */
-  fullCode?: string;
-  /** 股票名称快照 */
-  stockName?: string;
-  direction: 'buy' | 'sell' | 'merge';
-  price: number;
-  amount: number;
-  fee: number;
-  matchedAmount?: number;
-  realizedProfit?: number;
-  note?: string;
-  /** 行情快照 ID */
-  quoteId?: string;
-  /** 选股条目快照（恢复 UI 自动补全展示用） */
-  selectedStock?: unknown;
-  }
+export type {
+  Position,
+  PositionBatch,
+  RoundTxn,
+  TRoundArchive,
+  LongTermRecord,
+  PlannedOrder,
+} from '../types/domain';
 
-// ---- Round 战报归档 ----
-export interface TRoundArchive {
-  id: string;
-  positionId?: string;
-  fullCode: string;
-  stockName: string;
-  mode: 'long' | 'short';
-  status?: 'OPENED' | 'COMPLETED';
-  roundCode: string;
-  settleType: 'clear' | 'partial' | 'transfer';
-  netProfit: number;
-  totalFees?: number;
-  fees?: number;
-  openedAt: string;
-  closedAt?: string;
-  buyAmount?: number;
-  sellAmount?: number;
-  avgPrice?: number;
-  tradeCount?: number;
-  holdingDays?: number;
-  win?: boolean;
-  /** 划转底仓数量（transferToPosition 时记录） */
-  transferAmount?: number;
-  lastTouched?: string;
-  /** @deprecated 兼容旧版 DB 字段名，应使用 `lastTouched` */
-  lastUpdated?: number;
-  /**
-   * 做T成交明细（含撮合配对与划转记录）。
-   * 可选：列表加载器只返回轮次摘要（不含明细），展开「查看成交明细」时
-   * 才通过 fetchTransactionsByRoundId 按需查询 tTransactions 表。
-   * 写入路径（归档/结算/导入）必须携带完整明细以保证持久化。
-   */
-  transactions?: RoundTxn[];
-  }
-
-// ---- 中长期操作记录 ----
-export interface LongTermRecord {
-  id: string;
-  fullCode: string;
-  stockName: string;
-  timestamp: string;
-  type: 'buy' | 'sell' | 'merge' | 't-round';
-  price: number;
-  amount: number;
-  fee: number;
-  sourceReportId?: string;
-  note?: string;
-}
-
-// ---- 计划单 ----
-export interface PlannedOrder {
-  id: string;
-  fullCode: string;
-  stockName: string;
-  context: 'long-term' | 'short-term' | 'both';
-  direction: 'buy' | 'sell';
-  plannedPrice: number;
-  plannedAmount: number;
-  note?: string;
-  createdAt: string;
-  expiresAt: string;
-  validityDays: number;
-  status: 'active' | 'expired' | 'cancelled' | 'executed';
-  /** 计划创建时评估的动态金字塔健康度（仅中长期买入计划单） */
-  planPyramidHealth?: { score: number; level: 'HEALTHY' | 'NEUTRAL' | 'RISKY'; centerDeviation: number };
-  actual?: {
-    executedAt: string;
-    actualPrice: number;
-    actualAmount: number;
-    note?: string;
-    isAchieved: boolean;
-    /** 中长期执行结果：新成本价 */
-    newCost?: number;
-    /** 中长期执行结果：新持有数量 */
-    newAmount?: number;
-    /** 中长期执行结果：新累计投入 */
-    newTotalInvested?: number;
-    /** 中长期执行结果：规费 */
-    totalFee?: number;
-    /** 短线执行结果：加权均价 */
-    avgPrice?: number;
-    /** 短线执行结果：净收益 */
-    netProfit?: number;
-  };
-}
-
-/** 费率模板名称 */
-export type FeePresetName = '默认A股' | 'A股标准模板' | 'ETF模板' | '港股/美股免佣模板';
+/** 费率模板名称（定义已下沉 types/domain.ts 零依赖叶子，此处 re-export 兼容） */
+export type { FeePresetName } from '../types/domain';
 
 /** 流水追加结果：被 Store 层校验拒绝时 rejected=true */
 export interface StreamAddResult {

@@ -22,6 +22,7 @@ import type {
 import { cleanUndefined } from '../db/cleanUndefined';
 import type { Position, PositionBatch, RoundTxn, TRoundArchive } from '../store/types';
 import { calcTradeFees, matchSecurityKind, roundTo, type FeeConfig } from '../utils/mathUtils';
+import { recomputePositionSnapshot } from '../utils/calculator';
 import { putTRound } from '../db/index';
 /**
  * 命令 id 格式：`${roundId}-${seq}`
@@ -221,7 +222,6 @@ export function emitRoundAdjustments(
 
   return commands;
 }
-import { recomputePositionSnapshot } from '../store/utils';
 // ============================================================
 // 2. DB Functions: applyRoundAdjustments
 // ============================================================

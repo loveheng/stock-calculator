@@ -27,7 +27,8 @@ import {
   AlertTriangle,
   ArrowRight,
 } from 'lucide-react';
-import { useStreamResults, useAppStore } from '../store';
+import { useAppStore } from '../store';
+import { useStreamResults } from '../hooks/useStreamResults';
 import { roundTo, calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
 import { toShortTrialProject } from '../utils/shortTermTrial';
 import { generateId, calcBatchExecution } from '../store/utils';

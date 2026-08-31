@@ -15,8 +15,10 @@
  *
  * 【缓存架构】
  *  - 模块级 memoCache（非响应式）：key = branch.id|simulatedCash|generatedAtCash|
- *    jitterFactor|jitterWindowSize|presetParams|基线指纹|K线长度|末根日期|末根收盘；
- *    资金/持仓/K线任一变化自动失效；用户订单编辑显式 invalidate。
+ *    jitterFactor|jitterWindowSize|presetParams|基线指纹#基线内容摘要|费率指纹|
+ *    K线长度|末根日期|末根收盘；资金/持仓/K线/基线内容/费率任一变化自动失效；
+ *    用户订单编辑显式 invalidate。基线内容摘要解决了「批次数/末笔时间/持股数
+ *    均未变但中间批次内容变化（如修正首笔建仓日期）导致缓存键碰撞」的问题。
  *  - savedOrdersCache（非响应式）：user 分支订单内存副本。
  *  - K 线三级缓存由 services/klineService.ts 负责（内存 → IndexedDB → 网络增量）。
  * @layer Store
@@ -380,6 +382,37 @@ function memoInvalidate(branchId: string): void {
   }
 }
 
+/** FNV-1a 32 位哈希（确定性，足够防 memo 键碰撞） */
+function fnv1a(str: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** 基线订单内容指纹缓存：按数组身份记忆，避免每次计算都全量序列化 */
+const baselineDigestCache = new WeakMap<SandboxOrder[], string>();
+
+/**
+ * 基线订单内容摘要：`批次数|FNV-1a(全量订单 JSON)`。
+ *
+ * @description baselineSignature（批次数|末笔时间戳|持股数）无法感知中间批次
+ *              内容变化（如修正首笔建仓日期），会导致 computeBranchResult 的
+ *              memo 键碰撞、返回过期结果；本摘要对订单全量字段做哈希补上该盲区。
+ *              branchId 由 store 层注入，不属于基线内容，不参与指纹。
+ */
+function baselineDigest(orders: SandboxOrder[]): string {
+  if (orders.length === 0) return '0';
+  const cached = baselineDigestCache.get(orders);
+  if (cached) return cached;
+  const stable = orders.map(({ branchId: _branchId, ...rest }) => rest);
+  const digest = `${orders.length}|${fnv1a(JSON.stringify(stable))}`;
+  baselineDigestCache.set(orders, digest);
+  return digest;
+}
+
 // ============================================================
 // 分支结果计算（纯函数 + memo，规格书 §6.3）
 // ============================================================
@@ -410,7 +443,8 @@ export function computeBranchResult(branch: SandboxBranch, ctx: BranchComputeCon
     branch.jitterWindowSize,
     JSON.stringify(branch.presetParams ?? {}),
     JSON.stringify(branch.cashInjections ?? []),
-    baselineSignature,
+    `${baselineSignature}#${baselineDigest(baselineOrders)}`,
+    JSON.stringify(feeConfig),
     kline.length,
     last.date,
     last.close,

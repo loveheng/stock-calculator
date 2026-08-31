@@ -57,6 +57,7 @@ export type AuditActionType =
   | 'transfer_to_position'
   | 'settle_short_round'
   | 'add_position'
+  | 'add_position_blocked'
   | 'update_position'
   | 'close_position'
   | 'add_batch'

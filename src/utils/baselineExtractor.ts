@@ -22,7 +22,7 @@
  * @author 开发团队
  */
 
-import type { Position } from '../store/types';
+import type { Position } from '../types/domain';
 import type { SandboxOrder } from '../types/sandbox';
 
 /** 基线提取结果 */

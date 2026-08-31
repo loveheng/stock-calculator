@@ -7,23 +7,11 @@
  */
 
 import Dexie, { type Table } from 'dexie';
+import type { BaseEntity, PositionEntity, PositionBatchEntity } from '../types/domain';
 
+// 持仓相关实体（行级契约）已下沉 types/domain.ts 零依赖叶子；此处 re-export 保持既有导入路径兼容
+export type { BaseEntity, PositionEntity, PositionBatchEntity };
 
-/**
- * 所有持久化实体的公共基础字段。
- *
- * @description 提供全局统一的主键与审计时间戳；`isDeleted` 采用软删除标记（0=正常，1=已删除），物理删除前均以此字段过滤。
- */
-export interface BaseEntity {
-  /** 全局唯一主键，字符串 UUID */
-  id: string;
-  /** 创建时间戳（毫秒） */
-  createdAt: number;
-  /** 最近更新时间戳（毫秒），写入/更新记录时必须同步维护 */
-  updatedAt: number;
-  /** 软删除标记：0 = 正常，1 = 已软删除。查询时应过滤 `(isDeleted ?? 0) === 0` */
-  isDeleted?: number; // 0 = normal, 1 = soft-deleted
-}
 
 /** 股票基础信息实体（stocks 表）。`fullCode` 为唯一业务主键，关联持仓与做T记录。 */
 export interface StockEntity extends BaseEntity {
@@ -47,69 +35,6 @@ export interface StockEntity extends BaseEntity {
   shortName?: string;
   /** 统一代码 */
   unifiedCode?: string;
-}
-
-/** 持仓实体（positions 表）。记录某一股票的底仓成本、数量与平仓状态。 */
-export interface PositionEntity extends BaseEntity {
-  /** 关联股票完整代码 */
-  fullCode: string;
-  /** 当前加权成本（元） */
-  currentCost: number;
-  /** 当前持有数量（股） */
-  currentAmount: number;
-  /**
-   * 是否已平仓：0 = 未平仓，1 = 已平仓。
-   * 注意必须使用 0|1 数字而非 boolean —— IndexedDB 的索引 key 仅支持 number/string/Date/binary/Array，
-   * boolean 不是合法 key 类型，boolean 字段不会被 isClosed / [isClosed+isDeleted] 索引收录，
-   * 导致按索引查询（[0,0]/[1,0]）查不出任何数据。
-   */
-  isClosed: 0 | 1;
-  /** 平仓时间戳（毫秒），未平仓时缺省 */
-  closedAt?: number;
-  /** 开仓时间戳（毫秒）：第一笔买入（open 批次）的成交时间，存量数据可能默认，缺省时回退 createdAt */
-  openAt?: number;
-  /** 累计投入金额（元） */
-  totalInvested: number;
-  /** 已实现盈亏（元） */
-  realizedPnL: number;
-  /** 累计做 T 落袋净利润（元）。整轮/对冲对配口径：一轮等量对冲后 = 高抛净回款 - 低吸买入总成本；存量数据可能缺省 */
-  accumulatedTPnL?: number;
-  /** 初始建仓均价（元）：底仓真实买入（open 与未被做T对配消耗的 add）按数量加权的含规费均价；存量数据可能缺省 */
-  initialCost?: number;
-  /**
-   * 做T在途占用的底仓股数（reservedForT）：物化快照字段，与 positionAdjustments 中的 in-flight 命令同步更新。
-   * 日常读底仓时 O(1) 直取，无需扫描 positionAdjustments 表。
-   * 仅中长线侧维护（applyRoundAdjustments / rollbackRound），做T侧只读。
-   */
-  reservedForT?: number;
-}
-
-/** 持仓批次实体（positionBatches 表）。记录每次开仓/加仓/减仓操作对成本与数量的影响。 */
-export interface PositionBatchEntity extends BaseEntity {
-  /** 所属持仓的主键 id */
-  positionId: string;
-  /** 批次类型：开仓 / 加仓 / 减仓 */
-  type: 'open' | 'add' | 'reduce';
-  /** 成交单价（元） */
-  price: number;
-  /** 成交数量（股） */
-  amount: number;
-  /** 该笔交易手续费（元） */
-  fee: number;
-  /** 本次操作后的加权成本（元） */
-  costAfter: number;
-  /** 本次操作后的持仓数量（股） */
-  amountAfter: number;
-  /** 成交时间戳（毫秒） */
-  timestamp: number;
-  /** 备注 */
-  note?: string;
-  /** 自动调整标识：borrow=倒T出借（借仓卖出），merge=倒T超额买回归并 */
-  kind?: 'borrow' | 'merge';
-  /** 该笔操作发生时的底仓成本价（元），仅借仓卖出时记录，用于显示成本对照 */
-  costPrice?: number;
-  /** 关联做T轮次 id：做T归档产生的批次用于回滚定位 */
-  sourceRoundId?: string;
 }
 
 /** 做T轮次实体（tRounds 表）。一个 Round 代表一次完整/进行中的做T项目，采用绝对现金流法核算净收益。 */

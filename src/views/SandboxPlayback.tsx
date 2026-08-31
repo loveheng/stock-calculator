@@ -36,7 +36,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { useSandboxStore } from '../store/sandboxStore';
-import { loadPositionsFromDB, fetchAllClosedPositions } from '../db';
+import { fetchAllPositionsIncludingClosed } from '../services/ledgerService';
 import { generateId } from '../store/utils';
 import type { Position } from '../store/types';
 import type { EngineRejection } from '../utils/sandboxEngine';
@@ -463,8 +463,8 @@ export default function SandboxPlayback() {
   useEffect(() => {
     (async () => {
       try {
-        const [open, closed] = await Promise.all([loadPositionsFromDB(), fetchAllClosedPositions()]);
-        setQuickPositions([...open, ...closed]);
+        const all = await fetchAllPositionsIncludingClosed();
+        setQuickPositions(all);
       } catch {
         setQuickPositions([]);
       }

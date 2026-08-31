@@ -12,7 +12,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles.css';
-import { initStore } from './db/storeInit';
+import { initStore } from './store/bootstrap';
 import { initAutoSync } from './store';
 import { registerSW } from 'virtual:pwa-register';
 

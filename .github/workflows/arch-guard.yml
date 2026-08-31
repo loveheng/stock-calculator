@@ -1,0 +1,32 @@
+# 架构护栏 CI：分层依赖检查（R1/R2/R3）+ 循环依赖检测（madge）
+# 对应本地命令：npm run check:arch（在 stock-calculator/ 下）
+
+name: architecture-guard
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stock-calculator
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: stock-calculator/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Layer rules (views-direct-db forbidden)
+        run: npm run check:layers
+
+      - name: Circular dependencies (madge)
+        run: npm run check:circular

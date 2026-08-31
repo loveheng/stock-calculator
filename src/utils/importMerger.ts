@@ -15,7 +15,7 @@
  */
 
 import type { ImportDraftRow } from '../types/import';
-import type { Position } from '../store/types';
+import type { Position } from '../types/domain';
 import { normalizeCode, canonicalizeFullCode } from './dedup';
 
 // ──────────────────────────────────────────────

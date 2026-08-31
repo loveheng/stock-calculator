@@ -286,3 +286,27 @@ body {
     padding-bottom: env(safe-area-inset-bottom);
   }
 }
+
+/* ===== E2EE 鉴权：锁屏密码错误摇晃动画（SessionLockModal） ===== */
+@keyframes app-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-8px);
+  }
+  40% {
+    transform: translateX(8px);
+  }
+  60% {
+    transform: translateX(-5px);
+  }
+  80% {
+    transform: translateX(5px);
+  }
+}
+
+.animate-shake {
+  animation: app-shake 0.5s ease-in-out;
+}

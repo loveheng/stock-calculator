@@ -7,10 +7,9 @@
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { searchStocks, debounce } from '../../services/stockService';
-import { db } from '../../db/schema';
+import { searchStocks, debounce, persistStockMeta } from '../../services/stockService';
 import { matchSecurityKind } from '../../utils/mathUtils';
-import type { StockSearchItem } from '../../types/stock';
+import type { StockSearchItem, StockMeta } from '../../types/stock';
 
 interface StockAutocompleteProps {
   value: StockSearchItem | null;
@@ -81,9 +80,8 @@ export default function StockAutocomplete({
 
   const handleSelect = async (stock: StockSearchItem) => {
     // 将股票基础信息写入 stocks 表（upsert，fullCode 为主键），
-    // 供其他实体通过 fullCode 关联查询股票名称
-    await db.stocks.put({
-      id: crypto.randomUUID(),
+    // 供其他实体通过 fullCode 关联查询股票名称；经服务层落库，组件不直连 db
+    const meta: StockMeta = {
       fullCode: stock.fullCode,
       code: stock.Code,
       stockName: stock.Name,
@@ -94,10 +92,8 @@ export default function StockAutocomplete({
       quoteId: stock.QuoteID,
       shortName: stock.ShortName,
       unifiedCode: stock.UnifiedCode,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      isDeleted: 0,
-    });
+    };
+    await persistStockMeta(meta);
     onChange(stock);
     setInputValue(`${stock.fullCode} ${stock.Name}`);
     setIsOpen(false);

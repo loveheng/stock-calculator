@@ -19,7 +19,7 @@ import {
   generateStrategyOrders,
   type StrategyContext,
 } from './strategyGenerators';
-import { DEFAULT_FEE_CONFIG } from '../store/feePresets';
+import { DEFAULT_FEE_CONFIG } from './feePresets';
 import type { KlineItem, PresetStrategyId, SandboxOrder } from '../types/sandbox';
 
 /** 单笔审计行：订单 + 重放后的现金/持仓/市值/浮动盈亏 + 触发原因 */

@@ -1,6 +1,6 @@
 /**
  * @file ocrService.ts
- * @description OCR 图像解析服务：调用后端 POST /api/import/ocr-parse 接口，
+ * @description OCR 图像解析服务：调用后端 POST /api/import/process-image 接口，
  *              将图片上传后获取解析结果并归一化为 RawTxRecord[]。
  *              支持图片拖拽 / 剪贴板粘贴 / 文件选择三种入口。
  *              包含前端图片预检（格式、大小、尺寸、高宽比）。
@@ -245,7 +245,7 @@ function closeImage(img: ImageBitmap | HTMLImageElement): void {
 
 /**
  * 将已选定的图片/文本文件解析为交易记录。
- * - 图片文件 → POST /api/import/ocr-parse（FormData multipart）
+ * - 图片文件 → POST /api/import/process-image（FormData multipart）
  * - 文本/CSV/TSV 文件 → 本地读取文本
  * @param file 图片或文本文件
  * @param readText 文本读取回调（由调用方注入 parseClipboardText），图片时可不传
@@ -269,7 +269,7 @@ export async function parseOcrFile(
 
   const formData = new FormData();
   formData.append('file', compressed);
-  const resp = await fetch('/api/import/ocr-parse', { method: 'POST', body: formData });
+  const resp = await fetch('/api/import/process-image', { method: 'POST', body: formData });
   if (!resp.ok) throw new Error(`OCR 服务返回 ${resp.status}`);
   const json = await resp.json();
   const records = parseOcrPayload(json);

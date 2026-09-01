@@ -314,7 +314,7 @@ async function processFile(file: File) {
     console.log('[OCR] 开始上传:', file.name)
 
     const { data } = await http.post<ApiResponse<TradeDraftItem[]>>(
-      '/api/import/ocr-parse',
+      '/api/import/process-image',
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } },
     )

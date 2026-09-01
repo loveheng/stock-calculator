@@ -367,7 +367,7 @@ export function buildHistoryFromStore(
 | 点击选择文件 | `<input type="file">` 隐藏控件，accept `image/*,.csv,.tsv,.txt` |
 | 拖拽文件 | `onDragOver` / `onDrop` 事件，视觉反馈（蓝色高亮边框） |
 | 全局 Ctrl+V 粘贴 | `index.tsx` 中 `onPaste` 事件监听，区分图片（走 OCR）和文本（本地 TSV 解析） |
-| 图片→OCR 解析 | 调用 `ocrService.parseOcrFile` → `POST /api/import/ocr-parse`（后端就绪时）或本地文本降级 |
+| 图片→OCR 解析 | 调用 `ocrService.parseOcrFile` → `POST /api/import/process-image`（后端就绪时）或本地文本降级 |
 | 文本/CSV/TSV | 调用 `parseClipboardText` 本地解析，无需后端 |
 | OCR 缩略图预览 | 右上角小图缩略 + 点击放大 Modal |
 
@@ -659,7 +659,7 @@ addPosition: (pos) => {
 
 ### 9.2 OCR 后端接口部署
 
-**问题**：前端 OCR 服务（`src/services/ocrService.ts`）已就绪，但后端 `POST /api/import/ocr-parse` 端点尚未部署。
+**问题**：前端 OCR 服务（`src/services/ocrService.ts`）已就绪，但后端 `POST /api/import/process-image` 端点尚未部署。
 
 **当前状态**：
 - `ocrService.ts` 已实现 `parseOcrFile`（图片→OCR 接口 / 文本→本地 TSV 降级）
@@ -667,7 +667,7 @@ addPosition: (pos) => {
 - UI 已支持文件拖拽/点击上传、全局 Ctrl+V 粘贴图片、OCR 缩略图预览
 
 **待办**：
-1. 部署 OCR 解析服务到 `POST /api/import/ocr-parse`
+1. 部署 OCR 解析服务到 `POST /api/import/process-image`
 2. 接口返回格式需兼容 `parseOcrPayload` 的输入（`{ items: [...] }` 或裸数组）
 3. 接口错误时前端已会降级为 toast 提示
 

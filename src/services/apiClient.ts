@@ -37,9 +37,14 @@ export class SessionExpiredError extends AuthApiError {
   }
 }
 
-/** 基地址：默认本地后端；Vercel 部署时以 VITE_AUTH_API_BASE_URL 覆盖 */
+/**
+ * 基地址：默认同源相对路径，统一走代理（开发：vite.config.ts server.proxy；
+ * 线上：Vercel Edge Middleware middleware.js）——避免 HTTPS 站点直连 HTTP 后端
+ * 触发混合内容拦截，也无需后端 CORS 配置。仅在特殊场景下以
+ * VITE_AUTH_API_BASE_URL 覆盖为绝对地址（如直连调试）。
+ */
 export const AUTH_API_BASE_URL: string =
-  import.meta.env.VITE_AUTH_API_BASE_URL ?? 'http://localhost:18080/api/auth';
+  import.meta.env.VITE_AUTH_API_BASE_URL ?? '/api/auth';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 

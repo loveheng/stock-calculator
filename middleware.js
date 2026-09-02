@@ -20,6 +20,13 @@
  *   也能正常被代理转发，不会滑落到 SPA 层报 405。
  *   本地开发时由 Vite 的 server.proxy 完成同等转发。
  *
+ * 【2026-09-02 新增 · /api/auth】
+ *   E2EE 用户服务（Spring Boot :18080，与 OCR 交割单识别同源部署于
+ *   sc.oklhj.eu.org）。前端同源请求 /api/auth/*，由本中间件转发到上游
+ *   （stripPrefix: false 保留前缀）。认证令牌经 Authorization 头透传
+ *   （不在剔除名单内），无 Cookie/CSRF 面。
+ *   本地开发时由 Vite 的 server.proxy 完成同等转发。
+ *
  * 【设计】
  *   1. OPTIONS 预检直接返回 200（解决 405）。
  *   2. 静态上游注入业务头（Referer / User-Agent 等），剥离 Vercel 内部头
@@ -28,6 +35,10 @@
  *
  * @deployment 部署至 Vercel Edge Runtime，运行于全球边缘节点。
  */
+
+// 代理上游地址统一配置（防呆版：线上中间件结构上只读 UPSTREAMS.online，
+// 本地开发开关 DEV_UPSTREAM_ENV 对此处零影响，见 proxy.config.js）
+import { UPSTREAMS as PROXY_UPSTREAMS } from './proxy.config.js';
 
 // ============================================================
 // 1. 上游代理配置映射表
@@ -54,9 +65,16 @@ const UPSTREAMS = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
   },
-  // OCR 交割单识别服务代理（保留原始路径前缀，不剥离 /api/import）
+  // OCR 交割单识别服务代理（保留原始路径前缀，不剥离 /api/import；
+  // 线上固定读 PROXY_UPSTREAMS.online，与本地开发开关隔离）
   '/api/import': {
-    base: 'https://sc.oklhj.eu.org',
+    base: PROXY_UPSTREAMS.online.import,
+    headers: {},
+    stripPrefix: false,
+  },
+  // E2EE 用户服务代理（保留原始路径前缀，不剥离 /api/auth；同上）
+  '/api/auth': {
+    base: PROXY_UPSTREAMS.online.auth,
     headers: {},
     stripPrefix: false,
   },
@@ -67,6 +85,16 @@ const SORTED_PREFIXES = Object.keys(UPSTREAMS).sort((a, b) => b.length - a.lengt
 
 /** 静态代理需剔除的 Vercel 内部头前缀。 */
 const BLOCKED_PREFIXES = ['x-vercel-', 'x-forwarded-'];
+
+// --------------------------------------------------------------
+// 防呆护栏：Vercel 线上/预览环境禁止本地上游（vercel dev 除外）。
+// 若有人误把 proxy.config.js 的 UPSTREAMS.online 改成本地地址，
+// 不再返回难排查的 502 Connection refused，而是直接给出明确中文提示。
+// （仅影响 /api/import 与 /api/auth 两个受管路由，静态行情路由不受连坐）
+// --------------------------------------------------------------
+const LOCAL_ADDR_RE = /\/\/(localhost|127\.0\.0\.1|\[::1\])/;
+const IS_VERCEL_DEPLOYED =
+  process.env.VERCEL_ENV === 'production' || process.env.VERCEL_ENV === 'preview';
 
 // ============================================================
 // 2a. 标准 HTTP 方法白名单
@@ -93,6 +121,7 @@ export const config = {
     '/api-kline/:path*',
     '/api/eastmoney/:path*',
     '/api/import/:path*',
+    '/api/auth/:path*',
   ],
 };
 
@@ -154,6 +183,15 @@ export default async function middleware(request) {
   }
 
   const upstream = UPSTREAMS[matchedPrefix];
+
+  // 防呆护栏：线上部署环境解析到本地地址 → 立即报明确配置错误（不发起必然失败的转发）
+  if (IS_VERCEL_DEPLOYED && LOCAL_ADDR_RE.test(upstream.base)) {
+    return new Response(
+      `[middleware] 代理配置错误：${matchedPrefix} 上游为本地地址（${upstream.base}）。` +
+        'Vercel 线上必须使用线上地址，请检查项目根目录 proxy.config.js 的 UPSTREAMS.online',
+      { status: 502, headers: CORS_ALLOW_ORIGIN },
+    );
+  }
   const forwardHeaders = new Headers();
   const upstreamPath = upstream.stripPrefix === false
     ? pathname

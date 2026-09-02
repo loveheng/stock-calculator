@@ -2,7 +2,7 @@
  * @file vite.config.ts
  * @description Vite 构建配置：React 插件、PWA 支持（Workbox 运行时缓存）、
  *              开发服务器代理（腾讯 Smartbox 行情搜索 / 腾讯实时行情 / 东方财富搜索 API /
- *              WebDAV 代理），以及构建输出配置。
+ *              WebDAV 代理 / OCR 交割单识别 / E2EE 认证服务），以及构建输出配置。
  *
  * 【WebDAV 代理说明】
  *   开发环境下，Vite 代理 /api/webdav 请求到动态目标 URL，使用 bypass 函数
@@ -17,6 +17,16 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+// 代理上游地址统一配置（防呆版：DEV_UPSTREAM_ENV 仅影响本地开发，线上中间件只读 online）
+import { UPSTREAMS, DEV_UPSTREAM_ENV } from './proxy.config.js';
+
+// fail-fast：开关写错（非 'online' | 'local'）时 dev server 启动立即报错，而非静默回退
+const devUpstreams = UPSTREAMS[DEV_UPSTREAM_ENV];
+if (!devUpstreams) {
+  throw new Error(
+    `proxy.config.js 配置错误：DEV_UPSTREAM_ENV 必须为 'online' 或 'local'，当前为「${String(DEV_UPSTREAM_ENV)}」`,
+  );
+}
 
 // Buffer is available globally in Node.js (used by the WebDAV proxy bypass)
 declare var Buffer: any;
@@ -124,10 +134,15 @@ export default defineConfig({
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
       },
-      // OCR 解析服务代理：本地部署的证券交割单识别接口
+      // OCR 解析服务代理：证券交割单识别接口（上游由 DEV_UPSTREAM_ENV 决定）
       '/api/import': {
-        //target: 'http://localhost:18080',
-        target: 'https://sc.oklhj.eu.org',
+        target: devUpstreams.import,
+        changeOrigin: true,
+      },
+      // E2EE 认证服务代理：后端自身即服务在 /api/auth/* 路径，保留前缀转发，
+      // 与线上 Vercel Edge Middleware 的 /api/auth 条目（middleware.js）行为一致
+      '/api/auth': {
+        target: devUpstreams.auth,
         changeOrigin: true,
       },
       // WebDAV 代理：使用全局 fetch() 转发，避免动态 require

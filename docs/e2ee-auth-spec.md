@@ -811,7 +811,21 @@ create policy "Users can update own profile payload"
 
 - **docs/user_profiles.sql 不再需要**：DDL（users / user_profiles / auth_sessions /
   otp_codes 四表）由后端拥有并迁移。
-- 前端仅需配置 `VITE_AUTH_API_BASE_URL`（见 `.env.example`），
-  默认 `http://localhost:18080/api/auth`。
+- **统一代理模式部署（生产 Vercel）**：前端永不直连后端地址，统一请求同源相对路径
+  `/api/auth/*`，由代理层转发到认证服务。上游地址统一配置在项目根目录
+  **`proxy.config.js`**（防呆版）——
+  - 结构：`UPSTREAMS.online / local` 两套地址 + `DEV_UPSTREAM_ENV` 开关；
+  - 本地开发：`vite.config.ts` 读取 `UPSTREAMS[DEV_UPSTREAM_ENV]`（默认 'online'；
+    联调本机后端时改为 'local'，仅影响 vite dev server）；
+  - Vercel 线上：`middleware.js` 结构上只读 `UPSTREAMS.online`（本地开关对线上
+    零影响，忘改回来也不会污染部署）；另有运行时护栏：线上/预览环境解析到
+    本地地址时返回带明确中文提示的 502（fail-loud，非难排查的 Connection refused）；
+  - vite dev server 启动时校验开关值（fail-fast）。
+- 代理模式的价值：① 避免 HTTPS 站点直连 HTTP 后端触发浏览器混合内容拦截；
+  ② 前端与后端同源，无需 CORS 预检；③ 后端地址不暴露在前端产物中。
+- `VITE_AUTH_API_BASE_URL` 仅作为例外覆盖（直连调试），生产环境不应设置。
+  前端默认基地址为 `/api/auth`（见 `apiClient.ts`）。
+- Service Worker 导航回退已由既有 denylist 正则 `/^\/api($|\/)/` 覆盖 `/api/auth/*`，
+  不会被 SPA 缓存拦截。
 - 邮件找回依赖后端 SMTP 配置（SMTP_HOST/PORT/USERNAME/PASSWORD），
   未配置时 /recovery/request 对已知邮箱稳定 500，前端统一提示稍后重试。

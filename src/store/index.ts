@@ -20,7 +20,9 @@ import { createRoundsSlice } from './slices/roundsSlice';
 import { createPositionsSlice } from './slices/positionsSlice';
 import { createOrdersSlice } from './slices/ordersSlice';
 import { createIoSlice } from './slices/ioSlice';
+import { createCopilotSlice } from './slices/copilotSlice';
 import { getIsSyncingFromRemote } from './persistence';
+import { loadCopilotTombstones, loadCopilotConsent } from '../services/copilotService';
 import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
 
 // Re-export all types for backward compatibility
@@ -50,6 +52,9 @@ export const useAppStore = create<AppStore>()((...a) => ({
   feeConfig: { ...DEFAULT_FEE_CONFIG }, tRounds: [],
   positions: [], stocks: [], longTermRecords: [], plannedOrders: [], coreDataLoaded: false,
   persistError: null,
+  // Copilot（P0）：墓碑/知情同意从 localStorage 恢复，其余为内存态初值
+  registry: {}, threads: {}, sending: false, activeScopeId: null, lastArchived: null,
+  deletedScopes: loadCopilotTombstones(), consentAcknowledged: loadCopilotConsent(), copilotOpen: false,
 
   ...createCoreSlice(...a),
   ...createStreamsSlice(...a),
@@ -57,6 +62,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createPositionsSlice(...a),
   ...createOrdersSlice(...a),
   ...createIoSlice(...a),
+  ...createCopilotSlice(...a),
 }));
 
 /**

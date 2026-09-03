@@ -22,6 +22,8 @@ import type {
   TRoundArchive,
   LongTermRecord,
   PlannedOrder,
+  PageContextSnapshot,
+  CopilotMessage,
 } from '../types/domain';
 
 /**
@@ -128,6 +130,26 @@ export interface AppStoreActions {
   exportJSON: () => Promise<AppStoreExport>;
   importJSON: (data: AppStoreExport) => void;
   exportCSV: () => string;
+
+  // -- Copilot（AI 助手，P0） --
+  /** 页面挂载时注册上下文快照（同 scopeId 覆盖幂等，并置为激活 scope） */
+  registerContext: (snapshot: PageContextSnapshot) => void;
+  /** 页面卸载注销：仅当 registry[scopeId] === owner（引用相等）才删，防路由竞态误删新页注册 */
+  unregisterContext: (scopeId: string, owner: PageContextSnapshot) => void;
+  /** 激活会话：墓碑对账 → 缓存优先（D8）→ 远端拉尾部 20 条 */
+  ensureThreadLoaded: (scopeId: string) => Promise<void>;
+  /** 提问：乐观更新 pending → ok/failed（sending 锁防并发重复提交） */
+  sendMessage: (question: string) => Promise<void>;
+  /** 重发失败消息：同 clientMessageId 幂等 + 最新 getData() 重采快照（D7） */
+  retryMessage: (messageId: string) => Promise<void>;
+  /** 清空当前激活会话（本地 + 远端软删除 + 失败落墓碑） */
+  clearCurrentThread: () => Promise<void>;
+  /** 级联清理指定 scope（实体删除钩子调用，空 scope 幂等返回） */
+  purgeScopeOnEntityDelete: (scopeId: string) => Promise<void>;
+  /** 全局浮窗展开/折叠 */
+  setCopilotOpen: (open: boolean) => void;
+  /** 首次使用知情同意（localStorage 持久化） */
+  acknowledgeConsent: () => void;
 }
 
 /** 完整的 Store 状态 + Action */
@@ -144,6 +166,24 @@ export interface AppStore extends AppStoreActions {
   longTermRecords: LongTermRecord[];
   plannedOrders: PlannedOrder[];
   persistError: string | null;
+
+  // -- Copilot（AI 助手，P0：mock 全链路） --
+  /** 页面上下文注册表（scopeId → 快照，同 scopeId 覆盖幂等） */
+  registry: Record<string, PageContextSnapshot>;
+  /** 各会话内存缓存（每会话仅尾部 20 条，切换 scope 整段替换） */
+  threads: Record<string, CopilotMessage[]>;
+  /** 提问互斥锁（防并发提问与重复提交） */
+  sending: boolean;
+  /** 当前激活 scope（最近一次 registerContext 的页面；离开已注册页置 null） */
+  activeScopeId: string | null;
+  /** 切页归档提示：离开的 scope 存在会话时记录，浮窗展示「上一页对话已归档」 */
+  lastArchived: { scopeId: string; title: string } | null;
+  /** 离线级联删除墓碑（localStorage 持久化，ensureThreadLoaded 时对账补发 DELETE） */
+  deletedScopes: string[];
+  /** 首次使用知情同意（localStorage 持久化） */
+  consentAcknowledged: boolean;
+  /** 全局浮窗展开态 */
+  copilotOpen: boolean;
 }
 
 /** 导出数据版本号，用于跨版本导入校验 */

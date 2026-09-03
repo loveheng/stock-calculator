@@ -19,6 +19,8 @@ import { ledgerService } from '../services/ledgerService';
 import type { StreamEntry } from '../utils/tStreamEngine';
 import { searchStocks } from '../services/stockService';
 import type { StockSearchItem } from '../types/stock';
+import { usePageContext } from '../hooks/usePageContext';
+import { buildStatisticsContext } from '../utils/copilotSnapshots';
 
 type TimeFilter = 'all' | '7d' | '30d' | 'month';
 type DirectionTab = 'all' | 'long_open' | 'long_closed' | 'short_open' | 'short_closed';
@@ -94,6 +96,14 @@ export default function Statistics() {
 
   // 已归档 Round（按需懒加载，启动时不加载）
   const { archivedRounds, archivedLoading } = useArchivedRounds();
+
+  // Copilot 上下文注册（P0 试点）：与视图同源纯引擎重算，禁读组件态（timeFilter 为组件态，
+  // 快照统一 range:'all' 全量口径）；getData 在提问时才被显式执行
+  usePageContext({
+    scopeId: 'statistics',
+    title: '数据统计',
+    getData: () => buildStatisticsContext(useAppStore.getState()),
+  });
 
   const [tab, setTab] = useState<'trades' | 'positions'>('trades');
   const [searchQuery, setSearchQuery] = useState('');

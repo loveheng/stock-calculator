@@ -26,6 +26,7 @@ const GROUPS = [
   ['ledger（持仓/账本）', ['ledger', 'calculator', 'costaveraging', 'home', 'coreslice', 'positions', 'orders', 'rounds', 'reconcile', 'usearchivedrounds', 'planorder', 'recalculat', 'recomputeposition', 'roundlifecycle']],
   ['risk（风控规则）', ['risk', 'getcloseblockreason']],
   ['calc（涨跌幅计算器）', ['changerate']],
+  ['copilot（AI 助手）', ['copilot', 'pagecontext']],
   ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'usedataloader', 'bootstrap', 'persistence', 'store/index', 'store/types', 'store/utils', 'db/index', 'db/schema', 'domain', 'installprompt', 'confirmmodal', 'migration', 'cleanundefined']],
 ];
 

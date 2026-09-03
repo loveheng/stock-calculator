@@ -38,6 +38,8 @@ import type { TStreamRecord } from '../utils/tStreamEngine';
 import PlanOrderCard from '../components/PlanOrderCard';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
 import { setMarketPrices } from '../risk/priceCache';
+import { usePageContext } from '../hooks/usePageContext';
+import { buildHomeContext } from '../utils/copilotSnapshots';
 
 // ---- 时间维度 ----
 type TimeRange = '1d' | '7d' | '30d' | 'all';
@@ -79,6 +81,14 @@ export default function Home() {
   const addStreamRecord = useAppStore((s) => s.addStreamRecord);
   const markPlanExecuted = useAppStore((s) => s.markPlanExecuted);
   const cancelPlan = useAppStore((s) => s.cancelPlan);
+
+  // Copilot 上下文注册（P0 试点）：纯引擎重算持仓/计划单快照，禁读组件态（timeRange 为
+  // 组件态，快照统一 range:'now' 当前口径）；getData 在提问时才被显式执行
+  usePageContext({
+    scopeId: 'home',
+    title: '首页仪表盘',
+    getData: () => buildHomeContext(useAppStore.getState()),
+  });
 
   // ---- 时间筛选状态 ----
   const [timeRange, setTimeRange] = useState<TimeRange>('7d');

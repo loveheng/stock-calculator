@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
 import AuthGate from './components/ui/AuthGate';
+import GlobalCopilot from './components/copilot/GlobalCopilot';
 import { useLoadCoreData } from './hooks/useDataLoader';
 import { useAppStore } from './store';
 import { useAuthStore } from './store/useAuthStore';
@@ -225,6 +226,9 @@ function AppLayout() {
 
       {/* E2EE 认证门控：initSession / 锁屏 / 登录注册 / 助记词备份 / 找回密码 / 全局 Toast */}
       <AuthGate />
+
+      {/* Context-Aware Copilot 全局浮窗（P0：mock 全链路，试点页 statistics/home） */}
+      <GlobalCopilot />
 
       {/* 主内容区 */}
       <main className="main-area flex-1 min-h-screen w-full">

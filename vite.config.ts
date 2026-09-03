@@ -145,6 +145,12 @@ export default defineConfig({
         target: devUpstreams.auth,
         changeOrigin: true,
       },
+      // Copilot AI 助手代理：与 /api/auth 同源（跟随 DEV_UPSTREAM_ENV 开关，
+      // 避免登录与 Copilot 打到两个不同后端导致 token 互不相认）
+      '/api/copilot': {
+        target: devUpstreams.auth,
+        changeOrigin: true,
+      },
       // WebDAV 代理：使用全局 fetch() 转发，避免动态 require
       '/api/webdav': {
         target: 'http://localhost:5173',

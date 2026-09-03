@@ -9,6 +9,7 @@
 
 import Decimal from 'decimal.js';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig, type SecurityKind } from './mathUtils';
+import type { Position, TRoundArchive } from '../types/domain';
 import type {
   BasePosition,
   TMode,
@@ -1523,4 +1524,60 @@ export function validateStreamTrade(
     maxSellable: baseAmount,
     isFirstSell: _isFirstSell ?? false,
   };
+}
+
+// ──────────────────────────────────────────────
+// Round/Position 聚合辅助（自 store/utils.ts 下沉：utils 层消费方
+//（如 Copilot 快照重建）直接从本模块导入，store/utils re-export 保持既有路径兼容）
+// ──────────────────────────────────────────────
+
+/**
+ * 从持仓/成本摊薄账本构建 全Code -> 真实底仓（成本 + 数量）映射，
+ * 供引擎在倒T首笔卖出时继承该均价作为对冲成本基准（P_base），
+ * 并以真实底仓数量驱动移动加权成本与 shortPendingAmount 精确推导。
+ */
+export function buildBasePositionCosts(positions: Position[]): Map<string, { cost: number; quantity: number }> {
+  const map = new Map<string, { cost: number; quantity: number }>();
+  for (const pos of positions) {
+    if (pos.isClosed) continue;
+    const open = pos.batches.some((b) => b.type === 'open' || b.amount > 0);
+    if (!open) continue;
+    map.set(pos.fullCode, { cost: pos.currentCost, quantity: pos.currentAmount });
+  }
+  return map;
+}
+
+/**
+ * 从 Round 库派生「活跃流水池」：仅 OPENED Round 的 transactions 参与撮合。
+ *
+ * @description v8 核心派生函数 —— tStreams 不再独立存在，流水全部归属于 Round：
+ *  - OPENED Round 的 transactions 即进行中做T项目的全部单边流水；
+ *  - COMPLETED Round 的流水是归档明细，退出活跃池（防重复归档/跨轮污染）。
+ * @param rounds 全量 Round 库（OPENED + COMPLETED）
+ * @returns 引擎所需的 TStreamRecord[]（方向归一化为 buy/sell）
+ */
+export function activeStreamsFromRounds(rounds: TRoundArchive[]): TStreamRecord[] {
+  const streams: TStreamRecord[] = [];
+  for (const r of rounds) {
+    if ((r.status ?? 'OPENED') === 'COMPLETED') continue;
+    const stockName = r.stockName || r.fullCode;
+    for (const t of r.transactions ?? []) {
+      const rawDir = String(t.direction);
+      if (rawDir === 'merge' || rawDir === 'transfer') continue;
+      streams.push({
+        id: t.id,
+        timestamp: t.timestamp,
+        fullCode: r.fullCode,
+        stockName,
+        direction: rawDir as 'buy' | 'sell',
+        price: t.price,
+        amount: t.amount,
+        fee: t.fee,
+        note: t.note,
+        quoteId: t.quoteId,
+        selectedStock: t.selectedStock,
+      });
+    }
+  }
+  return streams;
 }

@@ -243,3 +243,145 @@ export interface PositionBatchEntity extends BaseEntity {
 // ---- 费率模板名称 ----
 /** 费率模板名称（原先定义在 store/types.ts，下沉至此供 feePresets 常量模块使用） */
 export type FeePresetName = '默认A股' | 'A股标准模板' | 'ETF模板' | '港股/美股免佣模板';
+
+// ---- Copilot（Context-Aware AI 助手）----
+/**
+ * @description Copilot 前后端共享契约（scopeId 协议 + 请求/响应 DTO）。
+ *              scopeId 格式：`页面标识[:股票代码]`（实体键统一且仅为股票代码，
+ *              round/批次/订单不得作顶层实体键）；纯页面级保持单标识（如 statistics）。
+ *              传输/存储分离（D28）：contextSummary 为 ephemeral 明细（阅后即焚，
+ *              仅内存组装 Prompt 不落库）；contextOverview/timeAnchor 为落库标量概览。
+ */
+
+/** 页面标识常量表（与路由字符串解耦的 scopeId 协议，新增页面在此登记） */
+export const COPILOT_SCOPES = [
+  'statistics',
+  'home',
+  't_calculator',
+  'cost_averaging',
+  'sandbox',
+  'change_rate',
+  'fee_config',
+  'webdav',
+  'batch_import',
+] as const;
+
+/** Copilot 页面级 scope 标识 */
+export type CopilotScopeId = (typeof COPILOT_SCOPES)[number];
+
+/**
+ * 组装 scopeId：实体级页面拼接股票代码（如 cost_averaging:600519），
+ * 纯页面级返回单标识（如 statistics）。换股即换会话（旧会话后端归档不丢失）。
+ */
+export function composeScopeId(page: CopilotScopeId, entityCode?: string): string {
+  return entityCode ? `${page}:${entityCode}` : page;
+}
+
+/** 时间截面标记（落库 time_anchor，JSON 字符串 ≤100 字符） */
+export interface CopilotTimeAnchor {
+  /** 快照采集时刻（epoch 秒） */
+  asOf: number;
+  /** 时间区间标记：all / 7d / 30d / month / today / now 等 */
+  range: string;
+}
+
+/**
+ * 快照上下文数据：builder 一次产出、两路分发（D28）。
+ * - overview/timeAnchor → 落库（历史卡片回放）
+ * - detail/units → ephemeral contextSummary（仅内存组装 Prompt）
+ */
+export interface CopilotContextData {
+  /** 落库标量概览（仅 string/number/boolean，序列化后 ≤255 字符，严禁明细数组） */
+  overview: Record<string, string | number | boolean>;
+  /** 时间截面标记 */
+  timeAnchor: CopilotTimeAnchor;
+  /** ephemeral 明细（经 applySizeGuard ≤12KB 裁剪，不落库不打日志） */
+  detail: Record<string, unknown>;
+  /** 单位字典（歧义字段口径声明，如 元/小数比例/股） */
+  units: Record<string, string>;
+}
+
+/** 区块级快照契约（V2 Click-to-Focus 预留，P0 不建 UI） */
+export interface ContextBlockSnapshot {
+  /** 区块标识（如 planned_orders） */
+  blockId: string;
+  title: string;
+  getData: () => CopilotContextData;
+}
+
+/** 页面上下文快照（usePageContext 注册契约） */
+export interface PageContextSnapshot {
+  scopeId: string;
+  title: string;
+  /** 命令式快照：实现必须 getState() + 纯引擎重算，禁闭包捕获组件态 */
+  getData: () => CopilotContextData;
+  /** 区块级快照（V2 预留） */
+  blocks?: ContextBlockSnapshot[];
+}
+
+/** Copilot 消息（前端内存态，映射后端 ai_chat_message 行） */
+export interface CopilotMessage {
+  /** 本地 id：user 行 = clientMessageId（ulid），assistant 行 = 后端消息 id 字符串 */
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  status: 'pending' | 'ok' | 'failed';
+  /** 提问轮标量概览（仅 user 行，历史卡片回显） */
+  contextOverview?: string;
+  /** 时间截面标记（仅 user 行） */
+  timeAnchor?: string;
+  /** 幂等重发键（仅 user 行，ulid） */
+  clientMessageId?: string;
+  /** 创建时间（epoch 秒） */
+  ctime: number;
+  /** 失败时的用户可读提示（subCode 映射） */
+  errorHint?: string;
+  /** 是否可重发（UPSTREAM_ERROR / SESSION_NOT_FOUND 等，同 clientMessageId 幂等） */
+  retryable?: boolean;
+}
+
+/** 提问请求（POST /api/copilot/threads/{scopeId}/messages，恒 200 信封） */
+export interface CopilotAskRequest {
+  question: string;
+  sessionTitle: string;
+  /** ulid，幂等重发键 */
+  clientMessageId: string;
+  /** ephemeral 明细 JSON 字符串（阅后即焚：不落库不打日志，仅内存组装 Prompt；
+   *  线格式 = JSON.stringify({ data, _units, capturedAt, truncated })，后端 DTO 为 String） */
+  contextSummary: string;
+  /** 落库标量概览（JSON 字符串 ≤255 字符） */
+  contextOverview: string;
+  /** 落库时间截面标记（JSON 字符串） */
+  timeAnchor: string;
+}
+
+/** 提问响应 data */
+export interface CopilotAskResponse {
+  assistantMessageId: number;
+  content: string;
+  promptTokens: number;
+  completionTokens: number;
+  channel: string;
+  userMessageId: number;
+  /** epoch 秒 */
+  ctime: number;
+}
+
+/** 历史消息分页（GET /threads/{scopeId}/messages，keyset：id < before 的前 limit 条，倒序取出后正序返回） */
+export interface CopilotThreadPage {
+  sessionId: number;
+  scopeId: string;
+  title: string;
+  messages: Array<{
+    id: number;
+    role: 'user' | 'assistant';
+    content: string;
+    contextOverview?: string;
+    timeAnchor?: string;
+    clientMessageId?: string;
+    status?: 'ok' | 'failed' | 'pending';
+    ctime: number;
+  }>;
+  hasMore: boolean;
+  oldestId: number;
+}

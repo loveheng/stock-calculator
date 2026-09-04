@@ -26,6 +26,9 @@ import { createHomeSlice } from './slices/homeSlice';
 import { getIsSyncingFromRemote } from './persistence';
 import { loadCopilotTombstones, loadCopilotConsent } from '../services/copilotService';
 import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
+import { cancelServerBackup, scheduleServerBackup } from '../services/serverSync';
+import { useAuthStore } from './useAuthStore';
+import { buildServerSyncGate, markServerPushPending } from './slices/ioSlice';
 
 // Re-export all types for backward compatibility
 export type {
@@ -65,6 +68,9 @@ export const useAppStore = create<AppStore>()((...a) => ({
   // 首页时间 Tab（视图偏好上提：区块快照经 getState() 同源读取，R2）
   homeTimeRange: '7d',
 
+  // 服务端密文同步（M3）：UI 态初值（编排状态在 services/ioSlice 模块级）
+  serverSyncing: false, serverLastVersion: null, serverLastError: null,
+
   ...createCoreSlice(...a),
   ...createStreamsSlice(...a),
   ...createRoundsSlice(...a),
@@ -84,12 +90,11 @@ export const useAppStore = create<AppStore>()((...a) => ({
  * 1. `coreDataLoaded` 守卫：冷启动加载阶段不触发，防止半载数据上传
  * 2. `isSyncingFromRemote` 守卫：远端同步导入时不触发，
  *    配合 importData 中的 setTimeout(0) 复位，防回环
- * 3. `autoSync` 配置开关：仅用户启用时生效
- * 4. 引用比较：仅 tRounds/positions/stocks/longTermRecords/feeConfig
+ * 3. 引用比较：仅 tRounds/positions/stocks/longTermRecords/feeConfig/plannedOrders
  *    真正变化时触发，避免 coreDataLoaded/persistError 等元字段误触发
- * 5. `scheduleBackup` 防抖（800ms）：连续操作合并为一次上传
- * 6. `backupToWebDAV` 冷却（10s）+ Promise 互斥锁 + 跨标签 Web Locks：
- *    不产生并发 PUT，避免远端文件损坏
+ * 4. 双通道分流：
+ *    - WebDAV：仅用户开启 autoSync 时 scheduleBackup（800ms 防抖 + 10s 冷却 + 互斥）
+ *    - 服务端密文同步：登录即备份，scheduleServerBackup（门控在管线内判定，不依赖 WebDAV 配置）
  *
  * @returns {() => void} 取消订阅函数（应用生命周期内无需调用）
  */
@@ -101,11 +106,7 @@ export function initAutoSync(): () => void {
     // ② 远端同步导入进行中，跳过（防回环）
     if (getIsSyncingFromRemote()) return;
 
-    // ③ 用户未开启自动同步，跳过
-    const config = getWebDAVConfig();
-    if (!config.autoSync) return;
-
-    // ④ 检查数据是否真的变更（避免元字段变化误触发）
+    // ③ 检查数据是否真的变更（避免元字段变化误触发）
     if (
       state.tRounds === prevState.tRounds &&
       state.positions === prevState.positions &&
@@ -117,10 +118,37 @@ export function initAutoSync(): () => void {
       return;
     }
 
-    // ⑤ 导出当前快照并调度备份
-    //    scheduleBackup 内部有 800ms 防抖，
-    //    backupToWebDAV 内部有 10s 冷却 + Promise 互斥锁 + Web Locks
+    // ④ 导出当前快照并调度双通道备份
     const snapshot = useAppStore.getState().exportData();
-    scheduleBackup(snapshot);
+
+    // 通道一：WebDAV（用户开启 autoSync 才触发，原逻辑不变）
+    if (getWebDAVConfig().autoSync) scheduleBackup(snapshot);
+
+    // 通道二：服务端密文同步（登录即备份；门控在管线内判定，D9 空快照守卫在 doPush 内）
+    markServerPushPending();
+    scheduleServerBackup(
+      snapshot,
+      buildServerSyncGate(() => useAppStore.getState().pushServerSnapshot()),
+    );
+  });
+}
+
+/**
+ * 初始化服务端密文同步的启动对账（M3）：监听 auth store，
+ * 登录完成 / MEK 解封可用（isAuthenticated && mek）时执行一次 §7.3 决策树；
+ * 登出时取消挂起中的服务端防抖推送。
+ *
+ * @returns {() => void} 取消订阅函数（应用生命周期内无需调用）
+ */
+export function initServerSync(): () => void {
+  return useAuthStore.subscribe((state, prevState) => {
+    const ready = state.isAuthenticated && !!state.mek;
+    const wasReady = prevState.isAuthenticated && !!prevState.mek;
+    if (ready && !wasReady) {
+      void useAppStore.getState().startupServerSyncCheck();
+    }
+    if (!ready && wasReady) {
+      cancelServerBackup();
+    }
   });
 }

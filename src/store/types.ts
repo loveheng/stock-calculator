@@ -145,6 +145,23 @@ export interface AppStoreActions {
   importJSON: (data: AppStoreExport) => void;
   exportCSV: () => string;
 
+  // -- 服务端密文同步（登录即备份，M3） --
+  /**
+   * 推送当前快照到服务端：exportData → serializeSnapshot → encryptText(mek) →
+   * buildBackupEnvelope → pushBackup（baseVersion = lastSeenCloudVersion，CAS）。
+   * 空快照守卫（D9）：非 force 一律跳过；409 冲突自动拉取合并重推一轮；
+   * 42901 按 retryAfter 释放锁后重调度（E9，不计失败退避）；网络失败静默退避（§8.3）。
+   */
+  pushServerSnapshot: (opts?: { force?: boolean }) => Promise<void>;
+  /** 从云端拉取密文 → 解密 → deserializeSnapshot → 智能合并进本地（不覆盖本地，isSyncingFromRemote 防回环） */
+  restoreFromServer: () => Promise<void>;
+  /** 冲突处理（§5.5）：merge-cloud = 云端合并进本地（云端暂不动）；overwrite-cloud = 合并后 force 重推 */
+  resolveServerConflict: (mode: 'merge-cloud' | 'overwrite-cloud') => Promise<void>;
+  /** 启动/前台对账（§7.3 决策树）+ visibilitychange/15min 对账监听注册（幂等） */
+  startupServerSyncCheck: () => Promise<void>;
+  /** 清除服务端同步错误提示（回退告警卡 [忽略]）；仅清 UI 态，不动云端与 lastSeen */
+  dismissServerError: () => void;
+
   // -- Copilot（AI 助手，P0） --
   /** 页面挂载时注册上下文快照（同 scopeId 覆盖幂等，并置为激活 scope） */
   registerContext: (snapshot: PageContextSnapshot) => void;
@@ -200,6 +217,14 @@ export interface AppStore extends AppStoreActions {
   longTermRecords: LongTermRecord[];
   plannedOrders: PlannedOrder[];
   persistError: string | null;
+
+  // -- 服务端密文同步（登录即备份，M3） --
+  /** 服务端推送进行中（UI 态镜像；跨标签页并发互斥由 services/serverSync 管线承担） */
+  serverSyncing: boolean;
+  /** 本设备最后确认的云端版本（lastSeenCloudVersion 镜像，UI 显示；null = 尚未对账/云端为空） */
+  serverLastVersion: number | null;
+  /** 服务端同步错误提示（冲突未解决/回退告警/拉取失败；null = 无；网络失败静默不置位） */
+  serverLastError: string | null;
 
   // -- Copilot（AI 助手，P0：mock 全链路） --
   /** 页面上下文注册表（scopeId → 快照，同 scopeId 覆盖幂等） */

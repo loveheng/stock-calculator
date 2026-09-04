@@ -13,6 +13,7 @@
 import type { AppStoreExport, TRoundArchive, Position, LongTermRecord, PlannedOrder } from '../store/types';
 import type { FeeConfig } from '../utils/mathUtils';
 import type { StockMeta } from '../types/stock';
+import { serializeSnapshot, deserializeSnapshot } from './snapshotService';
 
 // ============================================================
 // 1. WebDAV 配置类型与 localStorage 管理
@@ -578,49 +579,9 @@ export async function testWebDAVConnection(config: WebDAVConfig): Promise<{ ok: 
   }
 }
 
-/**
- * 导出完整数据快照（调用 Store 的 exportData 获取数据）。
- */
-export function serializeSnapshot(data: AppStoreExport): string {
-  const snapshot = {
-    version: data.version,
-    exportedAt: new Date().toISOString(),
-    timestamp: Date.now(),
-    feeConfig: data.feeConfig,
-    tRounds: data.tRounds,
-    positions: data.positions,
-    stocks: data.stocks,
-    longTermRecords: data.longTermRecords,
-  };
-  return JSON.stringify(snapshot, null, 2);
-}
-
-/**
- * 反序列化云端快照 JSON。
- */
-export function deserializeSnapshot(json: string): { data: AppStoreExport; timestamp: number } | null {
-  try {
-    const parsed = JSON.parse(json);
-    if (!parsed || typeof parsed !== 'object') return null;
-    const snapshot = parsed.version !== undefined ? parsed : (parsed.data ?? parsed);
-    if (!snapshot.version || !Array.isArray(snapshot.tRounds)) return null;
-
-    const data: AppStoreExport = {
-      version: snapshot.version,
-      feeConfig: snapshot.feeConfig ?? {},
-      tRounds: snapshot.tRounds ?? [],
-      positions: snapshot.positions ?? [],
-      stocks: snapshot.stocks ?? [],
-      longTermRecords: snapshot.longTermRecords ?? [],
-      plannedOrders: snapshot.plannedOrders ?? [],
-    };
-
-    const timestamp = parsed.timestamp ?? snapshot.timestamp ?? Date.now();
-    return { data, timestamp };
-  } catch {
-    return null;
-  }
-}
+// 快照序列化/反序列化已提取至 snapshotService（WebDAV 与服务端同步两通道共用）。
+// 本地 mergeSync / restoreFromCloud 仍在使用；re-export 保持既有调用方与测试兼容。
+export { serializeSnapshot, deserializeSnapshot };
 
 /**
  * 一键备份到云端：将完整数据快照 PUT 到远端。

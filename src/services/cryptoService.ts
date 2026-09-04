@@ -177,3 +177,30 @@ export async function decryptPayload<T>(cipherText: string, iv: string, mek: Cry
   );
   return JSON.parse(new TextDecoder().decode(plain)) as T;
 }
+
+/**
+ * 字符串级加密（服务端密文同步专用）：UTF-8 → AES-GCM(MEK) → Base64。
+ * 与 encryptPayload 的区别：入参已是字符串，不再 JSON.stringify（快照若再包一层会双重编码膨胀体积）。
+ */
+export async function encryptText(
+  plaintext: string,
+  mek: CryptoKey,
+): Promise<{ iv: string; ct: string }> {
+  const iv = randomIv();
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, mek, textEncode(plaintext));
+  return { iv: bytesToBase64(iv), ct: bytesToBase64(new Uint8Array(cipher)) };
+}
+
+/**
+ * 字符串级解密：Base64 → AES-GCM 解密 → UTF-8 明文。
+ * @throws OperationError 当密钥不匹配 / 密文被篡改 / IV 错误（GCM 认证失败），
+ *         调用方需语义化为「解密失败，云端数据不可用」，严禁把解密产物当有效快照使用。
+ */
+export async function decryptText(iv: string, ct: string, mek: CryptoKey): Promise<string> {
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToBytes(iv) },
+    mek,
+    base64ToBytes(ct),
+  );
+  return new TextDecoder().decode(plain);
+}

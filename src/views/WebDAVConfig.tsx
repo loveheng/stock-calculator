@@ -1,10 +1,12 @@
 /**
  * @file WebDAVConfig.tsx
- * @description WebDAV 多端同步与云端备份配置页面：支持 WebDAV 服务器连接配置、
- *              连通性测试、一键备份/恢复、智能合并同步以及同步历史查阅。
+ * @description 同步设置页面：服务端密文备份区块（登录即备份：状态行/立即备份/从云端恢复/
+ *              冲突卡/回退告警卡）+ WebDAV 服务器连接配置、连通性测试、一键备份/恢复、
+ *              智能合并同步以及同步历史查阅。
  * @layer UI
  * @storage_impact 读写 localStorage（webdav_config / webdav_last_sync / webdav_sync_history）；
- *                 通过 useAppStore.exportData / importData 读写 IndexedDB 全量数据。
+ *                 通过 useAppStore.exportData / importData 读写 IndexedDB 全量数据；
+ *                 服务端备份区块仅经 store actions 交互（不直读 server_sync_meta_v1）。
  * @author 开发团队
  */
 
@@ -12,6 +14,7 @@ import React, { useState, useCallback } from 'react';
 import {
   Cloud, CloudOff, CheckCircle, XCircle, Loader2,
   Upload, Download, RefreshCw, Link, Trash2, History, Eye, EyeOff,
+  ShieldCheck, AlertTriangle, LogIn, Lock,
 } from 'lucide-react';
 import {
   getWebDAVConfig, saveWebDAVConfig, clearWebDAVConfig,
@@ -21,6 +24,7 @@ import {
   type WebDAVConfig, type SyncHistoryEntry,
 } from '../services/webdavSync';
 import { useAppStore } from '../store';
+import { useAuthStore } from '../store/useAuthStore';
 import type { AppStoreExport } from '../store/types';
 
 type ConnectionStatus = 'unknown' | 'connected' | 'disconnected' | 'testing';
@@ -65,6 +69,155 @@ function ConfirmDialog({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 服务端备份区块（M4）：登录即备份通道的 UI。三态：
+ * - 未登录：「登录后可用」+ 登录入口（D15）
+ * - 已锁定（isLocked）：密钥未解封，提示解锁后自动恢复
+ * - 就绪：状态行 + 冲突卡/回退告警卡 + [立即备份]/[从云端恢复]
+ * 冲突/回退的识别基于 serverLastError 文案约定（ioSlice 定义的两种终态提示），
+ * 其余错误落普通错误条。D14：回退不自动动作，决策权在用户。
+ */
+function ServerBackupSection() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isLocked = useAuthStore((s) => s.isLocked);
+  const serverSyncing = useAppStore((s) => s.serverSyncing);
+  const serverLastVersion = useAppStore((s) => s.serverLastVersion);
+  const serverLastError = useAppStore((s) => s.serverLastError);
+  const pushServerSnapshot = useAppStore((s) => s.pushServerSnapshot);
+  const restoreFromServer = useAppStore((s) => s.restoreFromServer);
+  const resolveServerConflict = useAppStore((s) => s.resolveServerConflict);
+  const dismissServerError = useAppStore((s) => s.dismissServerError);
+  const setAuthModalOpen = useAuthStore((s) => s.setAuthModalOpen);
+  const [confirmRestore, setConfirmRestore] = useState(false);
+  const [resolving, setResolving] = useState(false);
+
+  const ready = isAuthenticated && !isLocked;
+  const isConflict = !!serverLastError && serverLastError.includes('持续冲突');
+  const isRollback = !!serverLastError && serverLastError.includes('版本回退');
+  const plainError = serverLastError && !isConflict && !isRollback;
+  const busy = serverSyncing || resolving;
+
+  const runResolve = (mode: 'merge-cloud' | 'overwrite-cloud') => {
+    setResolving(true);
+    void resolveServerConflict(mode).finally(() => setResolving(false));
+  };
+
+  return (
+    <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 p-5 space-y-4">
+      <ConfirmDialog
+        open={confirmRestore}
+        title="从服务端恢复"
+        message="将从云端拉取最新备份并与本地数据智能合并：双方独有数据都会保留，冲突记录按时间戳取较新版本，不会清空本地数据。"
+        onConfirm={() => { setConfirmRestore(false); void restoreFromServer(); }}
+        onCancel={() => setConfirmRestore(false)}
+        loading={busy}
+      />
+
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <ShieldCheck className="w-6 h-6 text-emerald-400" />
+          <h3 className="text-lg font-semibold text-slate-200">服务端备份</h3>
+        </div>
+        {ready && (
+          serverSyncing
+            ? <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full"><Loader2 className="w-3 h-3 animate-spin" />同步中</span>
+            : <span className="inline-flex items-center gap-1 text-xs font-medium text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full"><CheckCircle className="w-3 h-3" />已开启</span>
+        )}
+      </div>
+
+      <p className="text-sm text-slate-500 leading-relaxed">
+        登录后数据自动加密备份到服务端，多设备免配置同步。
+        端到端加密，服务器仅存储密文；云端保留最近 5 个历史版本；清空本地数据不会自动清空云端。
+      </p>
+
+      {!isAuthenticated ? (
+        <div className="flex items-center justify-between gap-3 bg-slate-900/40 border border-slate-700/50 rounded-lg px-4 py-3">
+          <span className="text-sm text-slate-400">登录后可用（无需填写服务器配置）</span>
+          <button onClick={() => setAuthModalOpen(true)}
+            className="btn tap-target text-sm flex items-center justify-center gap-1.5 py-2 px-4 bg-blue-600/20 text-blue-400 border border-blue-600/30 hover:bg-blue-600/30 rounded-lg transition-all shrink-0">
+            <LogIn className="w-4 h-4" />登录 / 注册
+          </button>
+        </div>
+      ) : isLocked ? (
+        <div className="flex items-center gap-2 bg-slate-900/40 border border-slate-700/50 rounded-lg px-4 py-3 text-sm text-slate-400">
+          <Lock className="w-4 h-4 text-slate-500 shrink-0" />
+          数据密钥已锁定，解锁会话后自动恢复同步
+        </div>
+      ) : (
+        <>
+          {/* 状态行：云端版本对账态 */}
+          <div className="flex items-center gap-2 text-sm text-slate-400">
+            <CheckCircle className="w-4 h-4 text-slate-500 shrink-0" />
+            {serverLastVersion != null
+              ? <span>云端版本 <span className="text-slate-200 font-medium">v{serverLastVersion}</span> · 已与云端对账</span>
+              : <span>尚未与云端对账（首次推送后显示版本号）</span>}
+          </div>
+
+          {/* 冲突卡：409 自动合并重推一轮后仍冲突 → 交用户决策（§5.5） */}
+          {isConflict && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 space-y-3">
+              <div className="flex items-start gap-2 text-sm text-amber-300">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{serverLastError}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => runResolve('merge-cloud')} disabled={busy}
+                  className="btn tap-target text-sm flex items-center justify-center gap-1.5 py-2 px-4 bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 rounded-lg transition-all disabled:opacity-40">
+                  {resolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  合并云端数据
+                </button>
+                <button onClick={() => runResolve('overwrite-cloud')} disabled={busy}
+                  className="btn tap-target text-sm flex items-center justify-center gap-1.5 py-2 px-4 bg-blue-600/20 text-blue-400 border border-blue-600/30 hover:bg-blue-600/30 rounded-lg transition-all disabled:opacity-40">
+                  <Upload className="w-4 h-4" />以本地覆盖云端
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 回退告警卡：云端版本 < 本机已确认（D14），不自动动作 */}
+          {isRollback && (
+            <div className="bg-red-400/10 border border-red-400/20 rounded-lg p-4 space-y-3">
+              <div className="flex items-start gap-2 text-sm text-red-300">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{serverLastError}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => runResolve('overwrite-cloud')} disabled={busy}
+                  className="btn tap-target text-sm flex items-center justify-center gap-1.5 py-2 px-4 bg-blue-600/20 text-blue-400 border border-blue-600/30 hover:bg-blue-600/30 rounded-lg transition-all disabled:opacity-40">
+                  <Upload className="w-4 h-4" />以本地覆盖云端
+                </button>
+                <button onClick={dismissServerError} disabled={busy}
+                  className="btn tap-target text-sm flex items-center justify-center gap-1.5 py-2 px-4 bg-slate-700/50 text-slate-300 border border-slate-600/50 hover:bg-slate-700 rounded-lg transition-all disabled:opacity-40">
+                  忽略
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 其他错误（拉取失败/服务端拒绝等）：普通错误条 */}
+          {plainError && (
+            <div className="text-xs px-3 py-2.5 rounded-lg bg-red-400/10 text-red-300 border border-red-400/20">
+              {serverLastError}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => void pushServerSnapshot({ force: true })} disabled={busy}
+              className="btn tap-target text-sm flex items-center justify-center gap-1.5 py-2.5 px-5 bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 hover:bg-emerald-600/30 rounded-lg transition-all disabled:opacity-40">
+              {serverSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+              立即备份
+            </button>
+            <button onClick={() => setConfirmRestore(true)} disabled={busy}
+              className="btn tap-target text-sm flex items-center justify-center gap-1.5 py-2.5 px-5 bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 rounded-lg transition-all disabled:opacity-40">
+              <Download className="w-4 h-4" />从云端恢复
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -191,6 +344,9 @@ export default function WebDAVConfigPage() {
         onCancel={() => setConfirmAction(null)}
         loading={syncStatus === 'syncing'}
       />
+
+      {/* 服务端密文备份（登录即备份，M4）：置顶展示，零配置优先于 WebDAV 手动配置 */}
+      <ServerBackupSection />
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">

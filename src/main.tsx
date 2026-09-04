@@ -13,7 +13,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles.css';
 import { initStore } from './store/bootstrap';
-import { initAutoSync } from './store';
+import { initAutoSync, initServerSync } from './store';
 import { registerSW } from 'virtual:pwa-register';
 
 /**
@@ -31,6 +31,9 @@ async function bootstrap(): Promise<void> {
 
   // 2) Initialize auto-sync (subscribes to store changes, triggers WebDAV backup when autoSync enabled)
   initAutoSync();
+
+  // 2.5) 服务端密文同步：登录完成（MEK 可用）后执行启动对账（§7.3）
+  initServerSync();
 
   // 3) Render the app (persistence is handled incrementally inside Zustand actions)
   ReactDOM.createRoot(document.getElementById('root')!).render(

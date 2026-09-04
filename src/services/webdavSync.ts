@@ -3,6 +3,9 @@
  * @description WebDAV 多端同步与云端备份服务：提供 WebDAV 配置管理、连通性测试、
  *              一键备份/恢复、智能合并同步等功能。
  *              配置信息保存在 localStorage，数据快照为格式化 JSON。
+ *              网络层约定：所有 WebDAV 请求发往同源相对路径 /api/webdav，
+ *              目标服务器根地址经 X-Webdav-Target 请求头动态注入（同源 Nginx 透明代理），
+ *              MOVE/COPY 的 Destination 始终拼为第三方服务器绝对 URL。
  * @layer Service
  * @author 开发团队
  */
@@ -194,31 +197,69 @@ export function addSyncHistory(entry: SyncHistoryEntry): void {
 }
 
 // ============================================================
-// 2. WebDAV HTTP 请求工具
+// 2. WebDAV HTTP 请求工具（同源代理 /api/webdav + X-Webdav-Target）
 // ============================================================
 
 /**
- * 构建 WebDAV 请求的目标 URL。
- * 所有请求统一通过同源代理 /api/webdav 转发，
- * 避免浏览器端跨域 CORS 限制。
- *
- * 代理 URL 格式：/api/webdav?url=<encodeURIComponent(目标地址)>
+ * 同源 WebDAV 代理基地址。
+ * 浏览器受 CORS 限制，不能直连用户填写的第三方 WebDAV 服务商（坚果云/Nextcloud 等），
+ * 所有请求统一发往同源相对路径 /api/webdav，由同源 Nginx 动态透明代理转发：
+ *   - 代理读取 X-Webdav-Target 请求头决定上游地址（动态目标）；
+ *   - Authorization（Basic Auth）等业务头原样透传。
+ * 开发环境由 vite.config.ts 的 server.proxy 承担同样职责。
  */
-function buildProxyUrl(config: WebDAVConfig, path: string): string {
-  const targetUrl = `${config.webdavUrl.replace(/\/+$/, '')}${path}`;
-  return `/api/webdav?url=${encodeURIComponent(targetUrl)}`;
+export const WEBDAV_PROXY_BASE = '/api/webdav';
+
+/** 同源代理约定的目标服务器请求头：值为用户配置的 WebDAV 根地址（绝对 URL） */
+export const WEBDAV_TARGET_HEADER = 'X-Webdav-Target';
+
+/** 规范化 WebDAV 根地址：去首尾空白与尾部斜杠（保证拼接路径不产生双斜杠） */
+function normalizeWebdavRoot(webdavUrl: string): string {
+  return webdavUrl.trim().replace(/\/+$/, '');
+}
+
+/** 对 WebDAV 路径做逐段 URI 编码（保留分隔符 /），兼容中文/空格等特殊字符 */
+function encodeWebdavPath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
 }
 
 /**
- * 构建 WebDAV 请求的 headers（含 Basic Auth）。
+ * 构建同源代理请求 URL：/api/webdav + <资源路径>。
+ * 目标服务器根地址不再拼入 URL（旧的 ?url= 方案已废弃），
+ * 而是经 X-Webdav-Target 请求头随每个请求动态注入（见 buildWebDAVHeaders）。
+ */
+function buildProxyUrl(path: string): string {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${WEBDAV_PROXY_BASE}${encodeWebdavPath(normalized)}`;
+}
+
+/**
+ * 构建 MOVE / COPY 的 Destination 请求头。
  *
- * 使用标准 `Authorization` 头，线上 Vercel Serverless Function（api/webdav.js）
- * 会严格清洗请求头，保留 authorization 并转发到上游，不再需要自定义头变通方案。
+ * 【重点避坑】Destination 必须是【第三方 WebDAV 服务器上的绝对 URL】，
+ * 例如 `https://dav.jianguoyun.com/dav/path/to/target.txt`：
+ *   - 绝不能拼成当前前端站点的域名（目标服务器无法解析）；
+ *   - 绝不能包含 /api/webdav 代理前缀（那是同源代理的路由约定，上游并不知晓）。
+ * 代理侧只需原样透传该头，由目标 WebDAV 服务器自行解析资源位置。
+ */
+export function buildDestinationUrl(config: WebDAVConfig, targetPath: string): string {
+  const root = normalizeWebdavRoot(config.webdavUrl);
+  const normalized = targetPath.startsWith('/') ? targetPath : `/${targetPath}`;
+  return `${root}${encodeWebdavPath(normalized)}`;
+}
+
+/**
+ * 构建 WebDAV 请求 headers：
+ *   - Authorization：Basic Auth 照常携带，代理原样透传给上游；
+ *   - X-Webdav-Target：目标服务器根地址（动态注入，Nginx 据此转发，
+ *     且代理白名单不含此头，不会泄漏给上游）；
+ *   - Content-Type / Depth / Overwrite / Destination 等经 extra 注入。
  */
 function buildWebDAVHeaders(config: WebDAVConfig, extra: Record<string, string> = {}): Record<string, string> {
   const credentials = btoa(`${config.username}:${config.password}`);
   return {
     Authorization: `Basic ${credentials}`,
+    [WEBDAV_TARGET_HEADER]: normalizeWebdavRoot(config.webdavUrl),
     'Content-Type': 'application/octet-stream',
     ...extra,
   };
@@ -259,10 +300,98 @@ async function withCrossTabWriteLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * 通用 WebDAV HTTP 请求。
- * 所有请求统一通过同源代理 /api/webdav 转发，
- * 无需设置 mode: 'cors'（代理 URL 与页面同源）。
+ * WebDAV 客户端请求选项。
+ */
+export interface WebDAVRequestOptions {
+  /** 请求体（PUT / PROPFIND / MKCOL 等方法携带） */
+  body?: BodyInit | null;
+  /** 额外请求头（Content-Type / Depth / Overwrite / Destination 等） */
+  extraHeaders?: Record<string, string>;
+}
+
+/**
+ * WebDAV 客户端实例：统一封装「同源代理寻址 + 请求头动态注入」。
+ *   - 所有请求发往同源相对路径 /api/webdav（见 WEBDAV_PROXY_BASE）；
+ *   - 每个请求自动注入 X-Webdav-Target（目标服务器根地址）与 Basic Auth；
+ *   - MOVE / COPY 的 Destination 由 buildDestination 保证为第三方服务器绝对 URL。
+ */
+export interface WebDAVClient {
+  /** 泛用请求：method 原样透传（GET/PUT/PROPFIND/MKCOL/DELETE/...） */
+  request(method: string, path: string, options?: WebDAVRequestOptions): Promise<Response>;
+  /** 移动/重命名资源（Destination 自动拼为第三方服务器绝对 URL） */
+  move(fromPath: string, toPath: string, overwrite?: boolean): Promise<Response>;
+  /** 复制资源（Destination 自动拼为第三方服务器绝对 URL） */
+  copy(fromPath: string, toPath: string, overwrite?: boolean): Promise<Response>;
+  /** 构建 Destination 头值（第三方服务器绝对 URL，绝不含 /api/webdav 前缀） */
+  buildDestination(toPath: string): string;
+}
+
+/**
+ * 创建 WebDAV 客户端实例（工厂函数）。
+ * 目标地址随每个请求动态注入，无全局可变状态；
+ * 切换网盘/账号等配置变更时重新创建实例即可。
  * 写方法（PUT/MKCOL/DELETE/MOVE/COPY）自动套用跨标签页互斥锁。
+ */
+export function createWebDAVClient(config: WebDAVConfig): WebDAVClient {
+  const targetRoot = normalizeWebdavRoot(config.webdavUrl);
+
+  const buildDestination = (toPath: string): string => {
+    const normalized = toPath.startsWith('/') ? toPath : `/${toPath}`;
+    return `${targetRoot}${encodeWebdavPath(normalized)}`;
+  };
+
+  const request = (
+    method: string,
+    path: string,
+    options: WebDAVRequestOptions = {},
+  ): Promise<Response> => {
+    const url = buildProxyUrl(path);
+    const headers = buildWebDAVHeaders(config, options.extraHeaders);
+
+    const fetchOptions: RequestInit = {
+      method,
+      headers,
+      body: options.body ?? null,
+      // 关键：强制绕过浏览器 HTTP 缓存与任何 Service Worker 层级的缓存/后台重试。
+      // 配合 SW 侧对 /api/webdav 的彻底放行，保证 WebDAV 的 PUT/GET/PROPFIND 等
+      // 请求直接命中网络代理，杜绝因缓存命中原生 fetch 导致的重复请求风暴 / 423 Locked。
+      cache: 'no-store',
+    };
+
+    // 写方法做跨标签页串行化：同一时刻只允许 1 个写请求在途，
+    // 阻止多标签页的重叠 PUT 把远端文件写成交替的 0B / 完整内容。
+    if (WRITE_METHODS.has(method.toUpperCase())) {
+      return withCrossTabWriteLock(() => fetch(url, fetchOptions));
+    }
+    return fetch(url, fetchOptions);
+  };
+
+  const moveOrCopy = (method: 'MOVE' | 'COPY') => (
+    fromPath: string,
+    toPath: string,
+    overwrite = true,
+  ): Promise<Response> =>
+    request(method, fromPath, {
+      extraHeaders: {
+        // Destination 必须是第三方服务器上的绝对 URL，
+        // 严禁拼成前端同源域名或带 /api/webdav 前缀（见 buildDestinationUrl 注释）
+        Destination: buildDestination(toPath),
+        Overwrite: overwrite ? 'T' : 'F',
+      },
+    });
+
+  return {
+    request,
+    buildDestination,
+    move: moveOrCopy('MOVE'),
+    copy: moveOrCopy('COPY'),
+  };
+}
+
+/**
+ * 通用 WebDAV HTTP 请求（兼容入口）。
+ * 内部委托给 createWebDAVClient 创建的客户端：所有请求统一经同源代理
+ * /api/webdav 转发并动态注入 X-Webdav-Target，与页面同源无需 mode: 'cors'。
  */
 async function webdavRequest(
   config: WebDAVConfig,
@@ -271,25 +400,7 @@ async function webdavRequest(
   body?: BodyInit | null,
   extraHeaders?: Record<string, string>,
 ): Promise<Response> {
-  const url = buildProxyUrl(config, path);
-  const headers = buildWebDAVHeaders(config, extraHeaders);
-
-  const fetchOptions: RequestInit = {
-    method,
-    headers,
-    body: body ?? null,
-    // 关键：强制绕过浏览器 HTTP 缓存与任何 Service Worker 层级的缓存/后台重试。
-    // 配合 SW 侧对 /api/webdav 的彻底放行，保证 WebDAV 的 PUT/GET/PROPFIND 等
-    // 请求直接命中网络代理，杜绝因缓存命中原生 fetch 导致的重复请求风暴 / 423 Locked。
-    cache: 'no-store',
-  };
-
-  // 写方法做跨标签页串行化：同一时刻只允许 1 个写请求在途，
-  // 阻止多标签页的重叠 PUT 把远端文件写成交替的 0B / 完整内容。
-  if (WRITE_METHODS.has(method.toUpperCase())) {
-    return withCrossTabWriteLock(() => fetch(url, fetchOptions));
-  }
-  return fetch(url, fetchOptions);
+  return createWebDAVClient(config).request(method, path, { body, extraHeaders });
 }
 
 /**
@@ -352,21 +463,15 @@ export async function ensureParentDir(config: WebDAVConfig, filePath: string): P
  *   - 网络错误/其它非致命异常 —— 忽略，后续仍按原流程执行 PUT（配合 backupToWebDAV
  *     里的 404/409 重试兜底，保证健壮性）。
  *
- * 本函数刻意使用最简实现（直接 fetch 代理 + Authorization 头），作为上传前的一步
- * “尽力而为”预检，返回值无业务含义。
+ * 本函数基于 createWebDAVClient 发出（同源代理 + X-Webdav-Target 动态注入），
+ * 作为上传前的一步“尽力而为”预检，返回值无业务含义。
  *
- * @param dirUrl     远端父级目录的完整 URL（如 https://app.koofr.net/dav/Koofr/stock-calculator）
- * @param authHeader Basic Auth 头（如 'Basic xxxxx'）
+ * @param client  WebDAV 客户端实例（自动注入 X-Webdav-Target 与 Basic Auth）
+ * @param dirPath 远端父级目录路径（如 /stock-calculator）
  */
-async function ensureDirectoryExists(dirUrl: string, authHeader: string): Promise<void> {
+async function ensureDirectoryExists(client: WebDAVClient, dirPath: string): Promise<void> {
   try {
-    const proxyUrl = `/api/webdav?url=${encodeURIComponent(dirUrl)}`;
-    await fetch(proxyUrl, {
-      method: 'MKCOL',
-      headers: {
-        'Authorization': authHeader,
-      },
-    });
+    await client.request('MKCOL', dirPath);
     // 201 Created: 创建成功；405/301/409: 目录已存在，均视为成功
   } catch (e) {
     // 忽略已存在或非致命错误
@@ -1112,31 +1217,25 @@ export async function backupToWebDAV(payload: unknown, force = false): Promise<B
       }
 
       const cleanPath = (config.remotePath || '/stock-calculator/data-backup.json').replace(/^\/+/, '');
-      const baseUrl = (config.webdavUrl || '').replace(/\/+$/, '');
-      const targetUrl = `${baseUrl}/${cleanPath}`;
-      // 统一走 buildProxyUrl 生成代理地址（/api/webdav?url=…）。
-      // 刻意不再使用旧别名 /api-webdav —— 线上没有该 /api 函数，会滑落到 SPA 静态层报 405。
-      const proxyUrl = buildProxyUrl(config, `/${cleanPath}`);
-      const authHeader = 'Basic ' + btoa(`${config.username}:${config.password}`);
+      const targetUrl = `${config.webdavUrl.replace(/\/+$/, '')}/${cleanPath}`;
+      // 统一经 WebDAV 客户端发出：请求发往同源相对路径 /api/webdav，
+      // 目标服务器根地址经 X-Webdav-Target 请求头动态注入（不再使用旧别名 /api-webdav）。
+      const client = createWebDAVClient(config);
 
       // 上传前置检查：先确保远端父目录存在（MKCOL）。
       // Koofr 等 WebDAV 服务端在目标文件的父级目录（如 stock-calculator）尚未创建时，
-      // 会直接对 PUT 返回 404 Not Found。这里提取文件所在的父级目录 URL，发起一次
+      // 会直接对 PUT 返回 404 Not Found。这里提取文件所在的父级目录路径，发起一次
       // MKCOL 请求自动创建目录（若已存在或非致命错误则忽略），随后再执行 PUT 写入。
       const parentDir = cleanPath.substring(0, cleanPath.lastIndexOf('/'));
       if (parentDir) {
-        const parentDirUrl = `${baseUrl}/${parentDir}`;
-        await ensureDirectoryExists(parentDirUrl, authHeader);
+        await ensureDirectoryExists(client, `/${parentDir}`);
       }
 
       console.log(`[WebDAV] 发起单次 PUT 上传 -> ${targetUrl}`);
 
       const putBody = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
-      const doPut = () => fetch(proxyUrl, {
-        method: 'PUT',
-        cache: 'no-store',
-        headers: {
-          Authorization: authHeader,
+      const doPut = () => client.request('PUT', `/${cleanPath}`, {
+        extraHeaders: {
           'Content-Type': 'application/json',
           Overwrite: 'T',
         },

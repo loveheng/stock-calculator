@@ -17,10 +17,18 @@
  * 【核心设计】
  *   1) 在函数【首行】为所有响应设置全量 CORS 头（含 400/502 等错误响应）。
  *   2) OPTIONS 预检直接返回 200。
- *   3) 严格白名单头转发（authorization / content-type / depth / overwrite /
- *      if-match / if-none-match），剥离浏览器特征头（host / origin / referer /
- *      cookie / …），解决上游 403。
+ *   3) 严格白名单头转发（authorization / content-type / depth / destination /
+ *      overwrite / if-match / if-none-match），剥离浏览器特征头（host / origin /
+ *      referer / cookie / …，含 X-Webdav-Target 本身），解决上游 403。
  *   4) 统一干净的 User-Agent，不携带浏览器指纹。
+ *
+ * 【目标寻址】（与同源 Nginx 透明代理约定一致）
+ *   - 新版：前端请求发往同源 /api/webdav/<path>，目标根地址由请求头
+ *     X-Webdav-Target 携带，上游 URL = 目标根 + 去除 /api/webdav 前缀后的子路径；
+ *   - 兼容：PWA 缓存的旧版客户端仍以 /api/webdav?url=<完整目标URL> 发请求，
+ *     该模式继续支持（目标即完整上游 URL，不拼接子路径）。
+ *   - MOVE/COPY 的 Destination 头由前端拼为【第三方服务器绝对 URL】并原样透传，
+ *     绝不能改写成代理侧域名。
  *
  * 【注意】Vercel Node 函数里 req.body 不会自动解析，必须读取请求流（stream）才能拿到
  *   PUT/PROPFIND 的请求体，否则上传/备份会发出空文件。
@@ -54,22 +62,37 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // 3. 提取目标 URL
-  const targetUrlStr = req.query.url;
+  // 3. 提取目标根地址：优先 X-Webdav-Target 请求头（同源代理约定），
+  //    兼容旧版 PWA 客户端的 ?url= 查询参数
+  const headerTarget = String(req.headers['x-webdav-target'] || '').trim();
+  const legacyTarget = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+  const targetUrlStr = headerTarget || legacyTarget;
   if (!targetUrlStr) {
-    return res.status(400).json({ error: 'Missing ?url= parameter' });
+    return res.status(400).json({ error: 'Missing X-Webdav-Target header (or legacy ?url= parameter)' });
   }
 
   try {
-    console.log(`[WebDAV Proxy] ${req.method} -> ${targetUrlStr}`);
+    // 上游地址：
+    //   - 头模式：目标根地址 + 去除 /api/webdav 前缀后的请求路径（编码原样透传）；
+    //   - 兼容模式（?url=）：目标即完整上游 URL，不再拼接子路径。
     const targetUrl = new URL(targetUrlStr);
+    if (headerTarget) {
+      const reqUrl = new URL(req.url, 'https://proxy.internal');
+      let subPath = reqUrl.pathname.startsWith('/api/webdav')
+        ? reqUrl.pathname.slice('/api/webdav'.length)
+        : reqUrl.pathname;
+      if (!subPath) subPath = '/';
+      targetUrl.pathname = (targetUrl.pathname.replace(/\/+$/, '') + subPath) || '/';
+    }
+    console.log(`[WebDAV Proxy] ${req.method} -> ${targetUrl.toString()}`);
 
     // 4. 清洗请求头（白名单传递，坚决剔除 host/origin/referer 杜绝 403）
     const upstreamHeaders = {
       'User-Agent': 'Stock-Calculator-WebDAV/1.0',
     };
 
-    const ALLOWED_HEADERS = ['authorization', 'content-type', 'depth', 'overwrite', 'if-match', 'if-none-match'];
+    // destination：MOVE/COPY 必需（前端已拼为第三方服务器绝对 URL，原样透传）
+    const ALLOWED_HEADERS = ['authorization', 'content-type', 'depth', 'destination', 'overwrite', 'if-match', 'if-none-match'];
     for (const [key, value] of Object.entries(req.headers)) {
       if (ALLOWED_HEADERS.includes(key.toLowerCase()) && value) {
         upstreamHeaders[key] = Array.isArray(value) ? value.join(', ') : value;

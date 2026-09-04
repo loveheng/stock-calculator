@@ -6,9 +6,13 @@
  *
  * 【WebDAV 代理说明】
  *   开发环境下，Vite 代理 /api/webdav 请求到动态目标 URL，使用 bypass 函数
- *   实现与线上 Vercel Serverless Function（api/webdav.js）完全一致的请求头清洗逻辑
- *   （剔除 host/referer/origin/cookie/x-vercel-* / x-forwarded-*，
- *   保留 authorization/content-type/depth/overwrite/if-match），
+ *   实现与线上 Vercel Serverless Function（api/webdav.js）/ 同源 Nginx 透明代理
+ *   完全一致的寻址与请求头清洗逻辑：
+ *   - 寻址：目标根地址优先取 X-Webdav-Target 请求头（上游 = 目标根 +
+ *     去除 /api/webdav 前缀后的子路径），兼容旧版客户端的 ?url= 查询参数；
+ *   - 清洗：剔除 host/referer/origin/cookie/x-vercel-* / x-forwarded-*，
+ *     保留 authorization/content-type/depth/destination/overwrite/if-match
+ *     （destination 为 MOVE/COPY 必需，前端已拼为第三方服务器绝对 URL）；
  *   确保本地开发与线上行为一致，不再出现本地 404 或 CORS 问题。
  * @layer Config
  * @storage_impact 无 IndexedDB 读写；仅影响构建产物与开发环境网络代理。
@@ -167,13 +171,29 @@ export default defineConfig({
             return '/__bypass__';
           }
           const u = new URL(req.url || '', 'http://localhost:5173');
-          const targetUrl = u.searchParams.get('url');
-          if (!targetUrl) { res.statusCode = 400; res.end('Missing url parameter'); return '/__bypass__'; }
+          // 目标根地址：优先 X-Webdav-Target 请求头（同源 Nginx 代理约定），
+          // 兼容旧版 PWA 客户端的 ?url= 查询参数
+          const headerTarget = String(req.headers['x-webdav-target'] || '').trim();
+          const targetUrlStr = headerTarget || (u.searchParams.get('url') || '').trim();
+          if (!targetUrlStr) { res.statusCode = 400; res.end('Missing X-Webdav-Target header'); return '/__bypass__'; }
+
+          // 上游地址：头模式 = 目标根 + 去除 /api/webdav 前缀后的子路径（编码原样透传）；
+          // 兼容模式（?url=）= 目标即完整上游 URL，不再拼接子路径
+          let upstreamUrl = targetUrlStr;
+          if (headerTarget) {
+            const target = new URL(targetUrlStr);
+            let subPath = u.pathname.startsWith('/api/webdav')
+              ? u.pathname.slice('/api/webdav'.length)
+              : u.pathname;
+            if (!subPath) subPath = '/';
+            target.pathname = (target.pathname.replace(/\/+$/, '') + subPath) || '/';
+            upstreamUrl = target.toString();
+          }
 
           // 请求头清洗（与 middleware.js 一致）
           const blocked = new Set(['host', 'referer', 'origin', 'cookie']);
           const blockedPrefix = ['x-vercel-', 'x-forwarded-'];
-          const allowed = new Set(['authorization', 'content-type', 'depth', 'overwrite', 'if-match']);
+          const allowed = new Set(['authorization', 'content-type', 'depth', 'destination', 'overwrite', 'if-match']);
           const isBlocked = (k: string) => {
             if (allowed.has(k)) return false;
             if (blockedPrefix.some((p) => k.startsWith(p))) return true;
@@ -195,7 +215,7 @@ export default defineConfig({
 
           try {
             // 使用全局 fetch() 转发请求
-            const upstreamRes = await fetch(targetUrl, {
+            const upstreamRes = await fetch(upstreamUrl, {
               method: req.method,
               headers: fwdHeaders,
               body: body,

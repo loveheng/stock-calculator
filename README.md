@@ -106,7 +106,7 @@ docker run -d -p 3000:3000 --name stock-calculator stock-calculator
 | `vercel.json` rewrites（SPA 回退） | 静态服务未命中文件时回退 `index.html` |
 | `vercel.json` headers（`/sw.js` 不缓存） | 同名缓存策略；哈希资源 `immutable` |
 | `middleware.js`（6 条代理路由） | `/api-gtimg` `/api-qt` `/api-kline` `/api/eastmoney` `/api/import` `/api/auth`，含 OPTIONS 预检、方法白名单、业务头注入、CORS |
-| `api/webdav.js`（Serverless Function） | `/api/webdav?url=` 全方法转发 |
+| `api/webdav.js`（Serverless Function） | `/api/webdav`（X-Webdav-Target 头寻址，兼容旧版 ?url=）全方法转发 |
 
 ### 环境变量
 

@@ -42,6 +42,8 @@ import {
   backupToWebDAV,
   scheduleBackup,
   __resetWebDAVAutoBackup,
+  createWebDAVClient,
+  buildDestinationUrl,
 } from '../services/webdavSync';
 import type { AppStoreExport, TRoundArchive, Position } from '../store/types';
 import type { FeeConfig } from '../utils/mathUtils';
@@ -318,9 +320,12 @@ describe('ensureParentDir', () => {
     const result = await ensureParentDir(mockConfig, '/dir/backup.json');
     expect(result).toBe(true);
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    const reqUrl = mockFetch.mock.calls[0][0] as string;
-    expect(reqUrl).toContain('/api/webdav?url=');
-    expect(reqUrl).toContain(encodeURIComponent('/dir'));
+    const [reqUrl, reqInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+    // 同源代理路径：/api/webdav + 资源路径；目标根地址经 X-Webdav-Target 头注入
+    expect(reqUrl).toBe('/api/webdav/dir');
+    expect((reqInit.headers as Record<string, string>)['X-Webdav-Target']).toBe(
+      'https://dav.example.com/dav',
+    );
   });
 
   it('MKCOL 返回 405 应视为已存在（成功）', async () => {
@@ -812,9 +817,12 @@ it('上传前先 MKCOL 确保父目录存在（proactive），再执行 PUT', as
     // 顺序应为：MKCOL（自动建父目录）→ PUT
     expect(methods[0]).toBe('MKCOL');
     expect(methods[1]).toBe('PUT');
-    // 前置 MKCOL 应指向文件父级目录的 URL
-    const mkcolUrl = fetchSpy.mock.calls[0][0] as string;
-    expect(mkcolUrl).toContain(encodeURIComponent('https://dav.example.com/dav/stock-calculator'));
+    // 前置 MKCOL 应发往同源代理路径，目标根地址经 X-Webdav-Target 头注入
+    const [mkcolUrl, mkcolInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(mkcolUrl).toBe('/api/webdav/stock-calculator');
+    expect((mkcolInit.headers as Record<string, string>)['X-Webdav-Target']).toBe(
+      'https://dav.example.com/dav',
+    );
   });
 
   it('PUT 返回 404/409 时兜底自动创建父目录并重试成功', async () => {
@@ -837,27 +845,100 @@ it('上传前先 MKCOL 确保父目录存在（proactive），再执行 PUT', as
     expect(methods[3]).toBe('PUT');
   });
   it('scheduleBackup 防抖：多个连续触发合并为最后一次并仅执行一次备份', async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchSpy = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response(null, { status: 201 }));
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 201 }));
 
-      scheduleBackup({ v: 1 }, 800);
-      scheduleBackup({ v: 2 }, 800);
-      scheduleBackup({ v: 3 }, 800);
-      // 防抖窗口内定时器尚未触发，应无请求
-      expect(fetchSpy).not.toHaveBeenCalled();
+    scheduleBackup({ v: 1 }, 50);
+    scheduleBackup({ v: 2 }, 50);
+    scheduleBackup({ v: 3 }, 50);
+    // 防抖窗口内定时器尚未触发，应无请求
+    expect(fetchSpy).not.toHaveBeenCalled();
 
-      vi.advanceTimersByTime(810);
-      await Promise.resolve(); // 等待内部 async 完成
-      await Promise.resolve();
+    // 等待防抖触发 + 备份链路（前置 MKCOL → PUT）真实完成，
+    // 避免在途请求泄漏到后续用例的 fetch spy
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+      interval: 20,
+    });
+  });
+});
 
-      // 防抖把 3 次触发合并为 1 次备份；该次备份 = 前置 MKCOL + PUT，共 2 个请求
-      expect(fetchSpy).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-      __resetWebDAVAutoBackup();
-    }
+// ============================================================
+// 11. WebDAV 客户端（同源代理寻址 + X-Webdav-Target 动态注入 + Destination 规则）
+// ============================================================
+
+describe('WebDAV 客户端（同源代理 + X-Webdav-Target）', () => {
+  beforeEach(() => {
+    // 隔离：清掉此前用例可能残留的 fetch spy 与 navigator 全局 stub，
+    // 避免在途请求 / 写锁桩污染本组的请求计数断言
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const buildClientConfig = () => ({
+    webdavUrl: 'https://dav.example.com/dav/',
+    username: 'test',
+    password: 'app_pass',
+    remotePath: '/stock-calculator/data-backup.json',
+    autoSync: false,
+  });
+
+  it('request 发往同源 /api/webdav，并注入 X-Webdav-Target 与 Basic Auth', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 207 }));
+    const client = createWebDAVClient(buildClientConfig());
+    await client.request('PROPFIND', '/stock-calculator', { extraHeaders: { Depth: '0' } });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    // 基地址 = 同源相对路径 /api/webdav，目标根地址不拼进 URL
+    expect(url).toBe('/api/webdav/stock-calculator');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['X-Webdav-Target']).toBe('https://dav.example.com/dav');
+    expect(headers.Authorization).toBe(`Basic ${btoa('test:app_pass')}`);
+    expect(headers.Depth).toBe('0');
+  });
+
+  it('move 的 Destination 必须是第三方服务器绝对 URL（不含 /api/webdav、不含前端域名）', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 201 }));
+    const client = createWebDAVClient(buildClientConfig());
+    await client.move('/stock-calculator/old.json', '/stock-calculator/new name.json');
+
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/webdav/stock-calculator/old.json');
+    expect(init.method).toBe('MOVE');
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Destination).toBe('https://dav.example.com/dav/stock-calculator/new%20name.json');
+    expect(headers.Destination).not.toContain('/api/webdav');
+    expect(headers.Overwrite).toBe('T');
+  });
+
+  it('copy 的 Destination 同为第三方绝对 URL，overwrite=false 时为 F', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 201 }));
+    const client = createWebDAVClient(buildClientConfig());
+    await client.copy('/a.txt', '/b/copy.txt', false);
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe('COPY');
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Destination).toBe('https://dav.example.com/dav/b/copy.txt');
+    expect(headers.Overwrite).toBe('F');
+  });
+
+  it('buildDestinationUrl 导出函数与 client.buildDestination 结果一致', () => {
+    const config = buildClientConfig();
+    expect(buildDestinationUrl(config, '/b/target.txt')).toBe(
+      'https://dav.example.com/dav/b/target.txt',
+    );
+    const client = createWebDAVClient(config);
+    expect(client.buildDestination('/b/target.txt')).toBe(
+      buildDestinationUrl(config, '/b/target.txt'),
+    );
   });
 });

@@ -10,7 +10,7 @@
 #   - /sw.js 缓存头（vercel.json headers）
 #   - 6 条静态上游代理（middleware.js）：/api-gtimg /api-qt /api-kline
 #     /api/eastmoney /api/import /api/auth
-#   - WebDAV 代理（api/webdav.js）：/api/webdav?url=
+#   - WebDAV 代理（api/webdav.js）：/api/webdav（X-Webdav-Target 头寻址，兼容旧版 ?url=）
 #
 # 构建镜像：  docker build -t stock-calculator .
 # 运行容器：  docker run -p 3000:3000 stock-calculator

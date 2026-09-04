@@ -31,6 +31,10 @@ import {
 /** 内存缓存上限：每会话仅保留尾部 20 条（更早历史经 keyset 分页从后端拉取） */
 const THREAD_TAIL_LIMIT = 20;
 
+/** 进行中的流式提问（非响应式）：面板关闭/停止按钮经 cancelCopilotStream 中断流，
+ *  服务端随连接断开取消上游 LLM 订阅（省 token）。同一时刻至多一条（sending 锁保证） */
+let activeAsk: AbortController | null = null;
+
 /** 裁剪到尾部 N 条 */
 function capThread(list: CopilotMessage[]): CopilotMessage[] {
   return list.length > THREAD_TAIL_LIMIT ? list.slice(list.length - THREAD_TAIL_LIMIT) : list;
@@ -68,6 +72,7 @@ export type CopilotSlice = Pick<
   | 'ensureThreadLoaded'
   | 'sendMessage'
   | 'retryMessage'
+  | 'cancelCopilotStream'
   | 'clearCurrentThread'
   | 'purgeScopeOnEntityDelete'
   | 'setCopilotOpen'
@@ -121,8 +126,13 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
         };
       });
     };
+    // 外部取消句柄：面板关闭/停止按钮经 cancelCopilotStream() abort（主动取消非故障，
+    // 映射 CANCELLED 子码）；finally 身份校验防迟到 cleanup 误清新一轮
+    // （controller 必须声明在 try 外：catch/finally 块访问不到 try 块内的 const）
+    const controller = new AbortController();
+    activeAsk = controller;
     try {
-      const resp = await streamQuestion(scopeId, request, upsertPlaceholder);
+      const resp = await streamQuestion(scopeId, request, upsertPlaceholder, controller.signal);
       // done：占位行 → 正式落库行（content 以 done 权威全文为准，自愈传输丢块）
       set((s) => ({
         threads: {
@@ -158,6 +168,8 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
           ),
         },
       }));
+    } finally {
+      if (activeAsk === controller) activeAsk = null;
     }
   };
 
@@ -376,6 +388,11 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
     },
 
     setCopilotOpen: (open) => set({ copilotOpen: open }),
+
+    /** 中断进行中的流式提问（面板关闭/停止按钮）：幂等，无进行中提问时空操作 */
+    cancelCopilotStream: () => {
+      activeAsk?.abort();
+    },
 
     acknowledgeConsent: () => {
       saveCopilotConsent(true);

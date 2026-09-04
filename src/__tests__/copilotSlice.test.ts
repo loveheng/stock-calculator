@@ -189,7 +189,7 @@ describe('focusBlock / unfocusBlock（V2 Click-to-Focus）', () => {
 
     await useAppStore.getState().sendMessage('做T盈亏如何？');
     expect(blockGetData).toHaveBeenCalledTimes(1);
-    expect(streamQuestion).toHaveBeenCalledWith('home', expect.objectContaining({ question: '做T盈亏如何？' }), expect.any(Function));
+    expect(streamQuestion).toHaveBeenCalledWith('home', expect.objectContaining({ question: '做T盈亏如何？' }), expect.any(Function), expect.any(AbortSignal));
     const thread = useAppStore.getState().threads.home;
     expect(thread).toHaveLength(2);
     // sessionTitle 恒页面标题（会话身份稳定）；第 5 参透传区块标识（后端 Prompt 路由）
@@ -225,7 +225,7 @@ describe('sendMessage / retryMessage（提问闭环）', () => {
     expect(thread[1].role).toBe('assistant');
     expect(thread[1].id).toBe('501');
     expect(streamQuestion).toHaveBeenCalledTimes(1);
-    expect(streamQuestion).toHaveBeenCalledWith('statistics', expect.objectContaining({ question: '你好' }), expect.any(Function));
+    expect(streamQuestion).toHaveBeenCalledWith('statistics', expect.objectContaining({ question: '你好' }), expect.any(Function), expect.any(AbortSignal));
   });
 
   it('失败分支：标 failed + errorHint + retryable（重发按钮依据）', async () => {
@@ -238,6 +238,27 @@ describe('sendMessage / retryMessage（提问闭环）', () => {
     expect(thread[0].retryable).toBe(true);
     expect(thread[0].errorHint).toBe('AI 服务暂不可用，请稍后重试');
     expect(useAppStore.getState().sending).toBe(false);
+  });
+
+  it('cancelCopilotStream：中断进行中流式提问 → user 行标 failed 可重发，sending 复位；无进行中提问时幂等空操作', async () => {
+    setActiveScope('statistics');
+    // 模拟真实 streamQuestion 的取消语义：外部 signal abort → reject
+    (streamQuestion as Mock).mockImplementation(
+      (_scopeId: string, _request: unknown, _onDelta: (t: string) => void, signal?: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+        }),
+    );
+    const askPromise = useAppStore.getState().sendMessage('会被停止的提问');
+    expect(useAppStore.getState().sending).toBe(true);
+    useAppStore.getState().cancelCopilotStream();
+    await askPromise;
+    const thread = useAppStore.getState().threads.statistics;
+    expect(thread).toHaveLength(1); // 占位行丢弃
+    expect(thread[0].status).toBe('failed');
+    expect(thread[0].retryable).toBe(true); // CANCELLED 可重发（hint 映射见 copilotStream.test）
+    expect(useAppStore.getState().sending).toBe(false);
+    expect(() => useAppStore.getState().cancelCopilotStream()).not.toThrow();
   });
 
   it('sending 互斥锁：进行中第二次 sendMessage 被忽略', async () => {

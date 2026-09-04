@@ -2,7 +2,8 @@
  * @file copilotStream.test.ts
  * @description copilotService 流式提问（V3 SSE）单测：事件块解析（delta/done/error/心跳注释）、
  *              consumeAskStream 闭环（增量回调 + 权威 done + 缺 done 报错）、
- *              旧后端 JSON 信封内容协商回落（不回调 onDelta）、请求头协商（Accept/Bearer）。
+ *              旧后端 JSON 信封内容协商回落（不回调 onDelta）、请求头协商（Accept/Bearer）、
+ *              外部取消句柄（signal abort → CANCELLED，覆盖流中/请求前/信封回落三条路径）。
  * @layer 测试
  * @author 开发团队
  */
@@ -152,5 +153,60 @@ describe('streamQuestion（SSE 内容协商）', () => {
     const deltas: string[] = [];
     await expect(streamQuestion('s', REQ, (t) => deltas.push(t))).rejects.toThrow('异常中断');
     expect(deltas).toEqual(['孤儿块']);
+  });
+});
+
+describe('streamQuestion 外部取消（signal 句柄）', () => {
+  it('流中途外部 abort → 抛 CANCELLED（已停止生成，可重发），不落入网络异常语义', async () => {
+    const fetchMock = fetch as unknown as Mock;
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    fetchMock.mockImplementation(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              streamController = c;
+              c.enqueue(new TextEncoder().encode('event: delta\ndata: {"text":"半"}\n\n'));
+              // 不 close：模拟流挂起等待外部取消
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+    );
+    const external = new AbortController();
+    const deltas: string[] = [];
+    const pending = streamQuestion('s', REQ, (t) => deltas.push(t), external.signal);
+    await vi.waitFor(() => expect(deltas).toEqual(['半']));
+    // 模拟真实 fetch 的接线：signal abort → body 流以 AbortError 拒绝
+    external.abort();
+    streamController.error(new DOMException('Aborted', 'AbortError'));
+    await expect(pending).rejects.toMatchObject({
+      subCode: 'CANCELLED',
+      hint: '已停止生成，可重发',
+      retryable: true,
+    });
+    expect(deltas).toEqual(['半']);
+  });
+
+  it('请求阶段被取消（fetch 以 AbortError 拒绝 + signal 已中止）→ 同样映射 CANCELLED', async () => {
+    const fetchMock = fetch as unknown as Mock;
+    fetchMock.mockRejectedValue(new DOMException('Aborted', 'AbortError'));
+    const external = new AbortController();
+    external.abort();
+    await expect(streamQuestion('s', REQ, () => {}, external.signal)).rejects.toMatchObject({
+      subCode: 'CANCELLED',
+    });
+  });
+
+  it('旧后端 JSON 信封回落路径被取消（信封体读取被 AbortError 打断）→ 同样映射 CANCELLED', async () => {
+    const fetchMock = fetch as unknown as Mock;
+    fetchMock.mockResolvedValue({
+      headers: { get: () => 'application/json' },
+      json: () => Promise.reject(new DOMException('Aborted', 'AbortError')),
+    } as unknown as Response);
+    const external = new AbortController();
+    const pending = streamQuestion('s', REQ, () => {}, external.signal);
+    external.abort();
+    await expect(pending).rejects.toMatchObject({ subCode: 'CANCELLED' });
   });
 });

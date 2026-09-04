@@ -160,6 +160,8 @@ export interface AppStoreActions {
   sendMessage: (question: string) => Promise<void>;
   /** 重发失败消息：同 clientMessageId 幂等 + 最新 getData() 重采快照（D7） */
   retryMessage: (messageId: string) => Promise<void>;
+  /** 中断进行中的流式提问（面板关闭/停止按钮触发；无进行中提问时空操作，幂等） */
+  cancelCopilotStream: () => void;
   /** 清空当前激活会话（本地 + 远端软删除 + 失败落墓碑） */
   clearCurrentThread: () => Promise<void>;
   /** 级联清理指定 scope（实体删除钩子调用，空 scope 幂等返回） */

@@ -38,7 +38,8 @@ export type CopilotErrorSubCode =
   | 'RATE_LIMIT_EXCEEDED'
   | 'UPSTREAM_ERROR'
   | 'SESSION_NOT_FOUND'
-  | 'UNAUTHENTICATED';
+  | 'UNAUTHENTICATED'
+  | 'CANCELLED';
 
 /** subCode → 用户可读提示与可否重发（交互指引闭环，impl §9.6） */
 const SUB_CODE_FEEDBACK: Record<CopilotErrorSubCode, { code: number; hint: string; retryable: boolean }> = {
@@ -47,6 +48,8 @@ const SUB_CODE_FEEDBACK: Record<CopilotErrorSubCode, { code: number; hint: strin
   UPSTREAM_ERROR: { code: 503, hint: 'AI 服务暂不可用，请稍后重试', retryable: true },
   SESSION_NOT_FOUND: { code: 404, hint: '会话已清理，请重新提问', retryable: true },
   UNAUTHENTICATED: { code: 401, hint: '请先登录后再使用 AI 助手', retryable: false },
+  // 499 沿用 nginx「client closed request」语义：主动取消非故障，可重发（后端 pending 续跑状态机接得住）
+  CANCELLED: { code: 499, hint: '已停止生成，可重发', retryable: true },
 };
 
 /** 无 subCode 时按信封 code 兜底映射 */
@@ -215,7 +218,8 @@ export async function sendQuestion(scopeId: string, request: CopilotAskRequest):
 // ──────────────────────────────────────────────
 
 /** 空闲超时：TTFB（阶段一事务 + LLM 首 token）与块间隔共用，每收到字节重置。
- *  服务端 LLM callTimeout 60s，前端放宽到 90s 防竞态误杀 */
+ *  服务端 LLM callTimeout=300s（OkHttp callTimeout，含流式全程）且 SSE 超时对齐 300s，
+ *  前端空闲 90s 先行中断：LLM 长时间静默时不必干等服务端超时 */
 const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
 /** SSE 事件块解析（纯函数，供单测）：事件间以空行分隔，event:/data: 行组成 */
@@ -295,11 +299,15 @@ async function consumeAskStream(
  *   CopilotAskResponse（与 sendQuestion 同形，含 actions）；
  * - 旧后端回 JSON 信封：自动回落 parseEnvelopeResponse（不回调 onDelta，行为与
  *   sendQuestion 完全一致），前端可先于后端上线。
+ * - signal：外部取消句柄（可选）——面板关闭/停止按钮时由调用方 abort，
+ *   本函数转发到内部 controller 断开连接；服务端随断开取消上游 LLM 订阅（省 token）。
+ *   外部取消抛 CANCELLED（区别于空闲超时的网络异常语义）。
  */
 export async function streamQuestion(
   scopeId: string,
   request: CopilotAskRequest,
   onDelta: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<CopilotAskResponse> {
   if (COPILOT_MOCK) return mockStreamQuestion(request, onDelta);
 
@@ -307,6 +315,27 @@ export async function streamQuestion(
   if (!token) throw new CopilotApiError(401, 'UNAUTHENTICATED', '请先登录后再使用 AI 助手');
 
   const controller = new AbortController();
+  // 外部 signal → 内部 controller 转发（fetch 只认自己的 signal）；结束/异常时摘除监听
+  let onExternalAbort: (() => void) | undefined;
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else {
+      onExternalAbort = () => controller.abort();
+      signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  const detachExternal = () => {
+    if (onExternalAbort && signal) signal.removeEventListener('abort', onExternalAbort);
+  };
+  /** 外部取消 → 规范化 CANCELLED（hint「已停止生成」）；空闲超时保留原网络异常语义 */
+  const cancelledError = () => new CopilotApiError(499, 'CANCELLED', '已停止生成');
+  const mapAbortError = (e: unknown): unknown => {
+    if (e instanceof DOMException && e.name === 'AbortError' && signal?.aborted) {
+      return cancelledError();
+    }
+    return e;
+  };
+
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   const armIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
@@ -327,9 +356,10 @@ export async function streamQuestion(
       signal: controller.signal,
     });
   } catch (e) {
+    detachExternal();
     if (idleTimer) clearTimeout(idleTimer);
     if (e instanceof DOMException && e.name === 'AbortError') {
-      throw new Error('网络异常：请求超时，请检查连接后重试');
+      throw mapAbortError(e);
     }
     throw new Error('网络异常：无法连接 AI 服务，请检查网络后重试');
   }
@@ -337,18 +367,29 @@ export async function streamQuestion(
   // 内容协商回落：非 event-stream = 旧后端 JSON 信封（或网关错误页），走既有解析
   const contentType = response.headers.get('Content-Type') ?? '';
   if (!contentType.includes('text/event-stream')) {
-    if (idleTimer) clearTimeout(idleTimer);
-    return parseEnvelopeResponse<CopilotAskResponse>(response);
+    try {
+      return await parseEnvelopeResponse<CopilotAskResponse>(response);
+    } catch (e) {
+      // parseEnvelopeResponse 会规范化信封体读取异常（AbortError 也被吞），
+      // 外部取消只能按 signal 状态判定，不能依赖异常类型
+      if (signal?.aborted) throw cancelledError();
+      throw e;
+    } finally {
+      detachExternal();
+      if (idleTimer) clearTimeout(idleTimer);
+    }
   }
 
   try {
     return await consumeAskStream(response, onDelta, armIdle);
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') {
+      if (signal?.aborted) throw mapAbortError(e);
       throw new Error('网络异常：AI 响应流超时中断，请重试');
     }
     throw e;
   } finally {
+    detachExternal();
     if (idleTimer) clearTimeout(idleTimer);
   }
 }

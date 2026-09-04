@@ -169,6 +169,7 @@ export default function GlobalCopilot() {
   const consentAcknowledged = useAppStore((s) => s.consentAcknowledged);
   const sendMessage = useAppStore((s) => s.sendMessage);
   const retryMessage = useAppStore((s) => s.retryMessage);
+  const cancelCopilotStream = useAppStore((s) => s.cancelCopilotStream);
   const clearCurrentThread = useAppStore((s) => s.clearCurrentThread);
   const ensureThreadLoaded = useAppStore((s) => s.ensureThreadLoaded);
   const acknowledgeConsent = useAppStore((s) => s.acknowledgeConsent);
@@ -207,6 +208,11 @@ export default function GlobalCopilot() {
     setArchiveDismissed(false);
   }, [activeScopeId, lastArchived?.scopeId]);
 
+  // 面板收起时中断进行中的流式提问（服务端随断开取消上游 LLM 订阅）；无进行中提问时空操作
+  useEffect(() => {
+    if (!copilotOpen) cancelCopilotStream();
+  }, [copilotOpen, cancelCopilotStream]);
+
   // 消息变化自动滚底
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
@@ -222,6 +228,11 @@ export default function GlobalCopilot() {
   const handleRetry = (messageId: string) => {
     if (sending) return;
     void retryMessage(messageId);
+  };
+
+  // 流式进行中发送按钮变「停止」（Chat 类应用标准交互）：中断流省 token，消息标可重发
+  const handleStop = () => {
+    cancelCopilotStream();
   };
 
   // ---- 折叠态：右下角悬浮按钮（未登录 → 登录弹窗，D19） ----
@@ -392,13 +403,23 @@ export default function GlobalCopilot() {
               }
               className="flex-1 resize-none bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 disabled:opacity-50"
             />
-            <button
-              onClick={handleSend}
-              disabled={!draft.trim() || sending || offline || !capsuleTitle}
-              className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium disabled:opacity-40 disabled:hover:bg-blue-600 transition-colors"
-            >
-              {sending ? '…' : '发送'}
-            </button>
+            {sending ? (
+              <button
+                onClick={handleStop}
+                title="停止生成"
+                className="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors"
+              >
+                停止
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!draft.trim() || offline || !capsuleTitle}
+                className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium disabled:opacity-40 disabled:hover:bg-blue-600 transition-colors"
+              >
+                发送
+              </button>
+            )}
           </div>
         </div>
 

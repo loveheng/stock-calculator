@@ -1,7 +1,8 @@
 /**
  * @file cryptoService.ts
  * @description E2EE 密码学核心：随机 MEK 生成、PBKDF2 派生（Auth Hash / KEK）、
- *              MEK 封装/解封、业务 JSON 加解密、Base64 工具。
+ *              MEK 封装/解封、业务 JSON 加解密、压缩级文本加解密（deflate-raw + GCM）、
+ *              Base64 工具。
  *              全部基于浏览器原生 WebCrypto（window.crypto.subtle），禁止引入第三方加解密库。
  * @layer Service
  * @storage_impact 纯内存计算；MEK raw bytes 仅经此模块导出/导入，禁止落盘、禁止进 localStorage。
@@ -27,6 +28,18 @@ export function normalizeEmail(email: string): string {
 
 function textEncode(s: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(s);
+}
+
+/** UTF-8 明文 → deflate-raw 压缩字节（encryptDeflateText 的压缩半程） */
+async function deflateUtf8(text: string): Promise<Uint8Array<ArrayBuffer>> {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** deflate-raw 压缩字节 → UTF-8 明文（decryptInflateText 的解压半程） */
+async function inflateUtf8(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new TextDecoder().decode(new Uint8Array(await new Response(stream).arrayBuffer()));
 }
 
 /** Uint8Array → Base64：分块转换，避免大缓冲区触发 btoa 调用栈溢出 */
@@ -203,4 +216,34 @@ export async function decryptText(iv: string, ct: string, mek: CryptoKey): Promi
     base64ToBytes(ct),
   );
   return new TextDecoder().decode(plain);
+}
+
+/**
+ * 压缩级字符串加密（服务端密文同步 v1 定稿专用）：UTF-8 → deflate-raw 压缩 → AES-GCM(MEK) → Base64。
+ * 必须先压缩后加密（GCM 输出为高熵密文，不可压缩）；iv/ct 返回结构与 encryptText 完全一致，
+ * 信封层无任何格式分支（spec v1.3：预发布窗口无存量数据，直接定稿单格式，原二期“加 zip 字段”方案作废）。
+ * 依赖 Blob/Response/CompressionStream（Node 18+ 与现代浏览器原生可用，零新依赖）。
+ */
+export async function encryptDeflateText(
+  plaintext: string,
+  mek: CryptoKey,
+): Promise<{ iv: string; ct: string }> {
+  const compressed = await deflateUtf8(plaintext);
+  const iv = randomIv();
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, mek, compressed);
+  return { iv: bytesToBase64(iv), ct: bytesToBase64(new Uint8Array(cipher)) };
+}
+
+/**
+ * 压缩级字符串解密：Base64 → AES-GCM 解密 → inflate-raw 解压 → UTF-8 明文。
+ * @throws OperationError 当密钥不匹配 / 密文被篡改 / IV 错误（GCM 认证失败先于解压发生）；
+ *         解压失败（数据损坏）抛 TypeError，调用方与 GCM 失败同路 catch 处理。
+ */
+export async function decryptInflateText(iv: string, ct: string, mek: CryptoKey): Promise<string> {
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToBytes(iv) },
+    mek,
+    base64ToBytes(ct),
+  );
+  return inflateUtf8(new Uint8Array(plain));
 }

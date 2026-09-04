@@ -1,7 +1,7 @@
 /**
  * @file serverSync.test.ts
  * @description 服务端密文同步服务层单元测试：信封 build/parse/校验和、pushBackup 错误码映射
- *              （含 413/E6 与 401 透传）、meta/pull 封装、encryptText 回环、
+ *              （含 413/E6 与 401 透传）、meta/pull 封装、encryptText / encryptDeflateText 回环、
  *              设备 meta 读写、防抖推送管线（防抖合并/门控/冷却/互斥/跨标签页锁）。
  *              运行环境：Node（WebCrypto 由全局 crypto 提供，Node 18+）；
  *              时序类用例沿用 webdavSync.test.ts 模式：真实定时器 + vi.waitFor。
@@ -44,6 +44,8 @@ import type { BackupEnvelopeV1 } from '../services/serverSync';
 import {
   encryptText,
   decryptText,
+  encryptDeflateText,
+  decryptInflateText,
   generateRandomMEK,
   base64ToBytes,
   bytesToBase64,
@@ -407,6 +409,52 @@ describe('encryptText / decryptText 回环', () => {
     const b = await encryptText('same-plaintext', mek);
     expect(a.iv).not.toBe(b.iv);
     expect(a.ct).not.toBe(b.ct);
+  });
+});
+
+// ============================================================
+// 5b. encryptDeflateText / decryptInflateText 回环（v1.3 定稿：信封内嵌 deflate-raw）
+// ============================================================
+
+describe('encryptDeflateText / decryptInflateText 回环', () => {
+  it('往返一致（中文 + 重复结构 JSON）且 IV 为 12 字节 base64（16 字符）', async () => {
+    const mek = await generateRandomMEK();
+    const repeat = { action: 'buy', fee: 5, note: '做T记录-测试' };
+    const plaintext = JSON.stringify({
+      hello: '世界',
+      rounds: Array.from({ length: 32 }, (_, i) => ({ ...repeat, i })),
+    });
+    const { iv, ct } = await encryptDeflateText(plaintext, mek);
+    expect(iv).toHaveLength(IV_B64_LEN);
+    await expect(decryptInflateText(iv, ct, mek)).resolves.toBe(plaintext);
+  });
+
+  it('压缩有效：重复性明文压缩后 ct 长度小于明文字符数', async () => {
+    const mek = await generateRandomMEK();
+    const rounds = Array.from({ length: 64 }, (_, i) => ({
+      action: 'buy',
+      fee: 5,
+      note: `做T记录-${i % 4}`,
+    }));
+    const plaintext = JSON.stringify({ rounds });
+    const { ct } = await encryptDeflateText(plaintext, mek);
+    // ct 为压缩字节的 base64（×4/3 膨胀）后仍应显著小于明文，验证压缩发生在加密之前
+    expect(ct.length).toBeLessThan(plaintext.length);
+  });
+
+  it('错 MEK 拒绝（GCM 认证失败）', async () => {
+    const mek = await generateRandomMEK();
+    const other = await generateRandomMEK();
+    const { iv, ct } = await encryptDeflateText('secret', mek);
+    await expect(decryptInflateText(iv, ct, other)).rejects.toThrow();
+  });
+
+  it('篡改 ct 拒绝（GCM Tag 校验先于解压）', async () => {
+    const mek = await generateRandomMEK();
+    const { iv, ct } = await encryptDeflateText('secret', mek);
+    const bytes = base64ToBytes(ct);
+    bytes[0] ^= 0xff;
+    await expect(decryptInflateText(iv, bytesToBase64(bytes), mek)).rejects.toThrow();
   });
 });
 

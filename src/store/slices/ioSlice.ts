@@ -20,7 +20,7 @@ import { EXPORT_VERSION } from '../types';
 import type { AppStore, AppStoreExport, TRoundArchive } from '../types';
 import { useAuthStore } from '../useAuthStore';
 import { loadStoredAuthSession } from '../../services/authSession';
-import { decryptText, encryptText } from '../../services/cryptoService';
+import { decryptInflateText, encryptDeflateText } from '../../services/cryptoService';
 import { deserializeSnapshot, serializeSnapshot } from '../../services/snapshotService';
 import { mergeData } from '../../services/webdavSync';
 import {
@@ -111,7 +111,7 @@ async function pushOnce(get: SliceGet, force: boolean): Promise<ServerPushResult
   const data = get().exportData();
   if (!force && isEmptySnapshot(data)) return null;
   const snapshot = serializeSnapshot(data);
-  const { iv, ct } = await encryptText(snapshot, cred.mek);
+  const { iv, ct } = await encryptDeflateText(snapshot, cred.mek);
   return pushBackup(cred.token, readServerSyncMeta().lastSeenCloudVersion, buildBackupEnvelope(iv, ct));
 }
 
@@ -141,8 +141,8 @@ async function pullDecryptMerge(
       set({ serverLastError: '云端密文信封格式异常，无法解析' });
       return null;
     }
-    // GCM 认证失败（密钥不匹配/密文被篡改）在此抛出，统一走 catch
-    const plaintext = await decryptText(env.iv, env.ct, cred.mek);
+    // GCM 认证失败（密钥不匹配/密文被篡改）在此抛出，解压失败（数据损坏）同样落此 catch
+    const plaintext = await decryptInflateText(env.iv, env.ct, cred.mek);
     const snap = deserializeSnapshot(plaintext);
     if (!snap) {
       set({ serverLastError: '云端快照解析失败（密钥不匹配或数据已损坏）' });

@@ -1,6 +1,6 @@
 # 服务端密文同步（登录即备份）· 方案设计文档
 
-> 版本：定稿 v1.2（2026-09-04；v1.1 = 后端事实核对修正 E1-E9 见 §0.2；v1.2 = §8.3 补 E9 等待不持锁的重调度约束）
+> 版本：定稿 v1.3（2026-09-05；v1.1 = 后端事实核对修正 E1-E9 见 §0.2；v1.2 = §8.3 补 E9 等待不持锁的重调度约束；v1.3 = 信封 v1 内嵌 deflate-raw 压缩定案——预发布期无存量数据、单格式无分支）
 > 范围：登录用户的零配置云端热同步通道——客户端加密快照 + 服务端哑存储 + 乐观版本号 CAS。含数据库表设计、API 契约、同步协议、触发管线、与 WebDAV 通道的关系划分。
 > 关联：`docs/e2ee-auth-spec.md`（MEK 密钥体系；本方案落实其 §1.2 预留的二期「云端密文同步」）、`docs/copilot-spec.md` / `docs/copilot-implementation.md`（恒 200 信封、apiClient 底座、后端 Modulith 约定）、`README.md`（/api 同源代理架构）
 > 状态：设计定稿，待开发启动（开发落点见 `docs/server-sync-implementation.md`）
@@ -14,7 +14,7 @@
 | D1 | 通道定位 | 服务端通道 = 登录用户的**默认热同步**（零配置：登录即备份）；WebDAV = 可选异地归档/镜像；两者独立开关、互不阻塞 |
 | D2 | 后端定位 | 零知识哑存储：只校验信封**结构**（v/alg/iv/ct 齐全），永不解析、不检索、不解密业务内容 |
 | D3 | 密钥 | 复用 E2EE 体系的 MEK（AES-GCM-256），登录会话内可得；**不新增**任何用户口令；跨设备可解（同一账号 MEK 相同） |
-| D4 | 格式 | 密文信封 v1 = `{v, alg, iv, ct}`；明文 = 现有 `serializeSnapshot()` 输出，**不新造快照格式** |
+| D4 | 格式 | 密文信封 v1 = `{v, alg, iv, ct}`；明文 = 现有 `serializeSnapshot()` 输出，**不新造快照格式**；v1.3 定案：明文先 deflate-raw 压缩再 GCM（内嵌 v1 语义，无 `zip` 字段——预发布期无存量数据，原二期「加 zip 字段」方案作废） |
 | D5 | 版本号 | 服务端单调自增（每接受一次 PUT +1）；客户端只上送 `baseVersion` 做乐观 CAS；`baseVersion=0` 语义为「云端应为空」；时间戳仅展示不参与判定 |
 | D6 | 冲突策略 | CAS 失败 → 拉取云端 → 本地智能合并（importData）→ 重推合并结果；**不提供**任何静默覆盖路径 |
 | D7 | 幂等去重 | hash 相同即不写库：(a) `version==baseVersion` 且 hash 同；(b) `version==baseVersion+1` 且 hash 同（推送成功但响应丢失后的重试）。返回 deduped=true，重试零成本 |
@@ -66,12 +66,12 @@ flowchart TD
     subgraph FE["前端 PWA（加密点在客户端）"]
         A["IndexedDB TradingLedgerDB<br/>本地编辑态唯一权威"] --> B["exportData() 快照"]
         B --> C["serializeSnapshot() 明文 JSON"]
-        C --> D["encryptText(明文, MEK)<br/>AES-GCM-256"]
+        C --> D["encryptDeflateText(明文, MEK)<br/>deflate-raw → AES-GCM-256"]
         D --> E["信封 Envelope v1"]
     end
     E -->|"PUT /api/sync/backup<br/>Bearer + baseVersion CAS"| S["Spring Boot 哑存储<br/>user_sync_data + user_sync_history"]
     E -->|"PUT /api/webdav/...<br/>X-Webdav-Target（可选）"| W["WebDAV 归档<br/>Koofr / 坚果云"]
-    S -->|"密文原样返回"| R["decryptText → deserializeSnapshot<br/>→ importData 智能合并"]
+    S -->|"密文原样返回"| R["decryptInflateText → deserializeSnapshot<br/>→ importData 智能合并"]
     R --> A
 ```
 
@@ -142,7 +142,7 @@ flowchart TD
   "v": 1,
   "alg": "A256GCM",
   "iv": "<base64, 解码后 12 字节>",
-  "ct": "<base64, AES-GCM 密文+认证标签>"
+  "ct": "<base64, AES-GCM(deflate-raw) 密文+认证标签>"
 }
 ```
 
@@ -151,10 +151,10 @@ flowchart TD
 | v | number | 恒为 1（信封格式版本，非业务版本） |
 | alg | string | 恒为 "A256GCM" |
 | iv | string | base64，解码后 12 字节 |
-| ct | string | base64 密文 |
+| ct | string | base64 密文 = AES-GCM(deflate-raw(明文))，先压缩后加密（v1.3） |
 
 - 服务端结构校验：JSON 对象 + 四字段存在 + v==1 + alg=="A256GCM" + iv/ct 非空字符串；**不**校验解码内容（D2）
-- 明文（ct 解密后）= `serializeSnapshot()` 输出字符串原样：`{version, exportedAt, timestamp, feeConfig, tRounds, positions, stocks, longTermRecords}`；恢复侧经既有 `deserializeSnapshot()` 结构校验
+- 明文（ct 解密 + inflate-raw 解压后）= `serializeSnapshot()` 输出字符串原样：`{version, exportedAt, timestamp, feeConfig, tRounds, positions, stocks, longTermRecords}`；恢复侧经既有 `deserializeSnapshot()` 结构校验。**压缩内嵌于 v1 信封语义**（v1.3 定案：deflate-raw 先压缩后加密，无 `zip` 字段、无格式分支——预发布期无存量数据，二期原方案作废）
 
 ### 4.2 校验和与体积
 
@@ -419,7 +419,7 @@ flowchart LR
 
 ## 11. 二期展望
 
-1. 压缩：明文 gzip 后再加密（信封加 `zip:"gzip"` 字段）；需 cryptoService 增加字节级 API；账本 JSON 预期压缩 70%+
+1. ~~压缩~~：已于 v1.3 提前落地——信封 v1 直接内嵌 deflate-raw（先压缩后加密，`encryptDeflateText` / `decryptInflateText`），未采用原「加 `zip` 字段」方案（预发布期无存量数据，单格式永久零分支）
 2. 历史读取 API：GET /api/sync/backup/versions、/versions/{v}（表已就位）
 3. WebDAV 密文化：同一信封格式写入 WebDAV；恢复时先探测明文 JSON（兼容旧备份）再解密
 4. 增量同步：manifest + 分片 + 服务端只存增量块（成本高，独立立项）

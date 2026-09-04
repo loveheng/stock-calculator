@@ -73,16 +73,17 @@ vi.mock('../services/serverSync', async (importOriginal) => {
   };
 });
 
-// cryptoService：仅 mock 文本加解密；ct 用 b64: 前缀约定，与云端信封 fixture 闭环
+// cryptoService：仅 mock 压缩级文本加解密；ct 用 b64: 前缀约定，与云端信封 fixture 闭环
+// （mock 层不做真 deflate，真压缩回环由 serverSync.test.ts 的 encryptDeflateText 用例覆盖）
 vi.mock('../services/cryptoService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/cryptoService')>();
   return {
     ...actual,
-    encryptText: vi.fn(async (pt: string) => ({
+    encryptDeflateText: vi.fn(async (pt: string) => ({
       iv: 'bW9ja2l2MTIzNA',
       ct: 'b64:' + utf8ToBase64(pt),
     })),
-    decryptText: vi.fn(async (_iv: string, ct: string) => {
+    decryptInflateText: vi.fn(async (_iv: string, ct: string) => {
       if (!ct.startsWith('b64:')) throw new Error('GCM 认证失败（mock）');
       return base64ToUtf8(ct.slice(4));
     }),
@@ -151,7 +152,7 @@ function createPosition(id: string): Position {
   };
 }
 
-/** 云端信封 fixture：iv/ct 与 decryptText mock 的 b64: 前缀约定闭环 */
+/** 云端信封 fixture：iv/ct 与 decryptInflateText mock 的 b64: 前缀约定闭环 */
 function buildCloudEnvelope(rounds: TRoundArchive[], positions: Position[] = []): string {
   const snap: AppStoreExport = {
     version: EXPORT_VERSION,

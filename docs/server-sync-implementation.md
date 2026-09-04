@@ -1,6 +1,6 @@
 # 服务端密文同步（登录即备份）· 开发实施文档
 
-> 版本：定稿 v1.2（2026-09-04；v1.1 = 后端事实核对修正 E1-E9；v1.2 = §5.3 补 42901 重调度约束，与 spec v1.2 对应）
+> 版本：定稿 v1.3（2026-09-05；v1.1 = 后端事实核对修正 E1-E9；v1.2 = §5.3 补 42901 重调度约束，与 spec v1.2 对应；v1.3 = 信封 v1 内嵌 deflate-raw 压缩，与 spec v1.3 对应）
 > 范围：后端领域包/表结构/CAS 写入/频控/校验实现要点、前端服务/状态/UI 落点与骨架、测试计划、里程碑与上线回滚
 > 关联：`docs/server-sync-spec.md`（设计决策 D1-D15）、`docs/e2ee-auth-spec.md`（MEK 体系）、`docs/copilot-implementation.md`（apiClient 底座与 Modulith 约定）、skill `cls-article-patterns`（后端编码模板）、skill `stock-calculator-frontend-dev`（分层护栏）
 > 状态：待开发启动
@@ -42,7 +42,7 @@ stock-calculator-main/src/main/java/com/zzh/stock_calculator/sync/
 
 | 文件 | 层 | 职责 | 护栏 |
 |---|---|---|---|
-| `src/services/cryptoService.ts` | services | 增量：`encryptText` / `decryptText`（字符串级 GCM，内部复用既有 helper；现有函数零改动） | services |
+| `src/services/cryptoService.ts` | services | 增量：`encryptText` / `decryptText`（字符串级 GCM，内部复用既有 helper）+ v1.3 压缩对 `encryptDeflateText` / `decryptInflateText`（deflate-raw → GCM，服务端同步通道专用；现有函数零改动） | services |
 | `src/services/snapshotService.ts` | services | 新增：从 webdavSync 提取 `serializeSnapshot` / `deserializeSnapshot`（webdavSync 保留 re-export 兼容既有调用与测试） | services，动态 import db |
 | `src/services/serverSync.ts` | services | 新增：syncRequest 底座 + meta/pull/push + 信封 build/parse + sha256Hex + 设备 meta 读写 + scheduleServerBackup 防抖管线 | services；**禁 import store**：mek/token 一律由调用方传参注入 |
 | `src/store/slices/ioSlice.ts` | store | 增量：serverSync 状态 + pushServerSnapshot / restoreFromServer / resolveServerConflict / startupServerSyncCheck actions | store 可 import services / db / auth store |
@@ -394,7 +394,20 @@ export async function encryptText(plaintext: string, mek: CryptoKey):
 
 /** 解密回明文字符串；篡改/错钥抛错（GCM 认证失败） */
 export async function decryptText(iv: string, ct: string, mek: CryptoKey): Promise<string>;
+
+/** v1.3 压缩级加密（服务端同步通道专用）：deflate-raw 压缩 → AES-GCM(MEK) → base64。
+ *  必须先压缩后加密（GCM 输出高熵不可压）；iv/ct 返回结构与 encryptText 完全一致，信封零格式分支。
+ *  依赖 Blob/Response/CompressionStream（Node 18+ 与现代浏览器原生可用，零新依赖）。 */
+export async function encryptDeflateText(plaintext: string, mek: CryptoKey):
+  Promise<{ iv: string; ct: string }>;
+
+/** v1.3 压缩级解密：base64 → AES-GCM 解密 → inflate-raw 解压 → 明文。
+ *  GCM 认证失败先于解压抛出；解压失败（数据损坏）抛 TypeError，调用方同路 catch。 */
+export async function decryptInflateText(iv: string, ct: string, mek: CryptoKey): Promise<string>;
 ```
+
+> 服务端同步推送/拉取管线一律使用压缩对（ioSlice 仅 import 这两个函数）；
+> `encryptText` / `decryptText` 保留为通用工具（已有单测覆盖，未来网盘备份通道可复用）。
 
 > 不用既有 `encryptPayload(data, mek)`：它接收对象并内部 JSON.stringify，
 > 而快照已是字符串，包一层会双重编码膨胀体积。字符串级 API 各加约 10 行。
@@ -467,7 +480,7 @@ startupServerSyncCheck(): Promise<void>;   // §7.3 决策树 + visibilitychange
 
 1. **MEK/Token 获取**：ioSlice 属 store 层，可 `useAuthStore.getState()` 取 token 与会话 MEK。
    ⚠️ 确认点：auth store 是否暴露会话 MEK 只读 getter；若无则补一个（不落盘、不可序列化）。
-2. **推送流程**：exportData → serializeSnapshot（经 snapshotService）→ encryptText(mek)
+2. **推送流程**：exportData → serializeSnapshot（经 snapshotService）→ encryptDeflateText(mek)
    → buildBackupEnvelope → pushBackup(token, readServerSyncMeta().lastSeenCloudVersion)
    → ok：写 lastSeen=version → 409：restoreFromServer 合并后重推一轮——重推若 42901 按 retryAfter
    等待后重试（E9，不计失败退避）→ 仍冲突则置 serverLastError 交 UI。
@@ -508,7 +521,7 @@ scheduleServerBackup(snapshot, {             // 服务端（新增）
 | 信封 | build/parse/envelopeToString 往返一致；畸形 JSON / 缺字段 / v!=1 / iv/ct 空串 → parse null |
 | sha256Hex | 已知向量；空串 |
 | pushBackup（mock fetch） | code 0→ok；40901→conflict 且 latest 正确；40902→empty-conflict；42901→rate+retryAfter；40001→invalid；fetch reject / 非信封响应→network |
-| 加密回环 | encryptText/decryptText 往返；错 MEK 拒绝（GCM）；篡改 ct 拒绝 |
+| 加密回环 | encryptText/decryptText 往返；错 MEK 拒绝（GCM）；篡改 ct 拒绝；encryptDeflateText/decryptInflateText 往返（中文+重复 JSON）、压缩有效性（ct < 明文）、错 MEK / 篡改 ct 拒绝 |
 | 设备 meta | 读写回环；默认值 {lastSeen:0, enabled:true} |
 | 推送编排（ioSlice） | 空快照跳过（force 例外）；冷却拦截；409→自动拉取合并→重推一轮；isSyncingFromRemote 期间不推送；lastSeen 更新；42901→锁已释放、按 retryAfter 重调度（不持锁等待） |
 | 决策树 | §7.3 七分支逐一覆盖（mock fetchSyncMeta） |
@@ -571,7 +584,7 @@ npm run check:arch
 | 2 | 会话过期（401） | SessionExpiredError 走既有统一处理；通道静默停 |
 | 3 | 双标签页同时推送 | Web Locks 串行；后至者走 409 合并 |
 | 4 | localStorage meta 被清 | lastSeen=0 → 云端有数据则静默合并 |
-| 5 | 明文快照 > 1.5MB | 40002 → UI 引导清理沙盘归档 |
+| 5 | 明文快照 > 1.5MB | 40002 → UI 引导清理沙盘归档。v1.3 注：40002/2MB 上限按**压缩后**信封体积判定，明文余量扩约 5-10× |
 | 6 | 推送响应丢失重试 | dedup 分支 (b) 命中（version==base+1 且 hash 同） |
 | 7 | 清空本地数据 | 不自动上传；显式清空流程推墓碑（D9） |
 | 8 | 其他设备推墓碑后本机对账 | 合并结果 = 清空，与用户意图一致 |

@@ -21,6 +21,8 @@ import { createPositionsSlice } from './slices/positionsSlice';
 import { createOrdersSlice } from './slices/ordersSlice';
 import { createIoSlice } from './slices/ioSlice';
 import { createCopilotSlice } from './slices/copilotSlice';
+import { createCopilotActionSlice } from './slices/copilotActionSlice';
+import { createHomeSlice } from './slices/homeSlice';
 import { getIsSyncingFromRemote } from './persistence';
 import { loadCopilotTombstones, loadCopilotConsent } from '../services/copilotService';
 import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
@@ -54,7 +56,14 @@ export const useAppStore = create<AppStore>()((...a) => ({
   persistError: null,
   // Copilot（P0）：墓碑/知情同意从 localStorage 恢复，其余为内存态初值
   registry: {}, threads: {}, sending: false, activeScopeId: null, lastArchived: null,
+  focusedBlock: null,
+  // Copilot 动作后处理（V1 Action Pipeline）：全内存态，刷新即失
+  copilotNotice: null, pendingCopilotActions: [],
+  // 事实数据变动提示（P2）：scope → 上次提问时快照相对上上轮是否变化
+  contextChangedScopes: {},
   deletedScopes: loadCopilotTombstones(), consentAcknowledged: loadCopilotConsent(), copilotOpen: false,
+  // 首页时间 Tab（视图偏好上提：区块快照经 getState() 同源读取，R2）
+  homeTimeRange: '7d',
 
   ...createCoreSlice(...a),
   ...createStreamsSlice(...a),
@@ -63,6 +72,8 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createOrdersSlice(...a),
   ...createIoSlice(...a),
   ...createCopilotSlice(...a),
+  ...createCopilotActionSlice(...a),
+  ...createHomeSlice(...a),
 }));
 
 /**

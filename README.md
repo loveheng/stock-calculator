@@ -63,6 +63,74 @@ npx vitest run
 
 ---
 
+## Docker 部署
+
+除 Vercel 外，项目也提供 Docker 镜像一键自托管（两者并存互不影响：`vercel.json`、`middleware.js`、`api/` 均未改动，Docker 运行时零 npm 依赖，`package.json` 保持原样）。
+
+### 构建与运行
+
+```bash
+# 直接拉取 GitHub Actions 自动构建的镜像（无需本地构建）
+docker pull ghcr.io/loveheng/stock-calculator:latest
+
+# 或本地构建（多阶段：容器内 npm ci + vite build，宿主机无需 Node）
+docker build -t stock-calculator .
+
+# 运行（或使用 docker compose up -d --build）
+docker run -d -p 3000:3000 --name stock-calculator stock-calculator
+```
+
+访问 `http://localhost:3000`，健康检查探针为 `/healthz`。
+
+### GitHub Actions 自动构建
+
+推送代码到 GitHub 后，`.github/workflows/docker-image.yml` 自动构建镜像并发布到 GHCR（免配置任何 secrets，用内置 `GITHUB_TOKEN` 鉴权）：
+
+| 触发 | 产出镜像 tag |
+|---|---|
+| push 到 `main` | `latest`、`main`、`sha-xxxxxxx` |
+| push 到 `dev` | `dev`、`sha-xxxxxxx` |
+| push 标签（如 `v1.2.0`） | `1.2.0`、`sha-xxxxxxx` |
+| Actions 页面手动触发 | 同当前分支规则 |
+
+镜像地址：`ghcr.io/loveheng/stock-calculator`。首次发布后，在 GitHub 仓库 → Packages → stock-calculator 中将可见性改为 **Public**，之后即可免登录 `docker pull`；保持 Private 时拉取需先 `docker login ghcr.io`（用 PAT）。
+
+> 海外 CI 环境构建时，workflow 会传 `--build-arg NPM_REGISTRY=https://registry.npmjs.org/` 覆盖国内镜像源；本地构建默认腾讯镜像，无需任何参数。
+
+### 与 Vercel 行为对齐
+
+镜像内运行时（`server/index.mjs`，零依赖 Node HTTP 服务）完整复刻了 Vercel 部署形态：
+
+| Vercel 组件 | Docker 内对应 |
+|---|---|
+| `vercel.json` rewrites（SPA 回退） | 静态服务未命中文件时回退 `index.html` |
+| `vercel.json` headers（`/sw.js` 不缓存） | 同名缓存策略；哈希资源 `immutable` |
+| `middleware.js`（6 条代理路由） | `/api-gtimg` `/api-qt` `/api-kline` `/api/eastmoney` `/api/import` `/api/auth`，含 OPTIONS 预检、方法白名单、业务头注入、CORS |
+| `api/webdav.js`（Serverless Function） | `/api/webdav?url=` 全方法转发 |
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `PORT` | `3000` | 监听端口 |
+| `HOST` | `0.0.0.0` | 监听地址 |
+| `AUTH_UPSTREAM` | `proxy.config.js` 线上地址 | 覆盖 `/api/auth` 上游（如自建 Spring Boot） |
+| `IMPORT_UPSTREAM` | `proxy.config.js` 线上地址 | 覆盖 `/api/import` 上游 |
+
+例如把认证/OCR 指向本机后端联调：
+
+```bash
+docker run -d -p 3000:3000 \
+  -e AUTH_UPSTREAM=http://host.docker.internal:18080 \
+  -e IMPORT_UPSTREAM=http://host.docker.internal:18080 \
+  --add-host host.docker.internal:host-gateway \
+  --name stock-calculator stock-calculator
+```
+
+> 注：podman 构建时若要保留 HEALTHCHECK，请加 `--format docker`（OCI 镜像格式不支持携带 HEALTHCHECK，Docker 无此问题）。
+
+---
+
 ## 项目阅读指南
 
 详见 [GUIDE.md](./GUIDE.md)，包含：

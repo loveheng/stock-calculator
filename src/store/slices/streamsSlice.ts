@@ -180,6 +180,18 @@ export const createStreamsSlice: StateCreator<AppStore, [], [], StreamsSlice> = 
     } else {
       set({ tRounds: finalRounds, positions: finalPositions });
     }
+    // ④ 项目结清（OPENED→COMPLETED 翻转）→ 级联清理按标的 Copilot 会话（事实已终结，
+    //    旧历史不得污染该标的的下一次项目提问）
+    const roundBefore = rounds.find((r) => r.id === updatedRound.id);
+    const roundAfter = finalRounds.find((r) => r.id === updatedRound.id);
+    if (
+      record.fullCode &&
+      roundBefore && roundAfter &&
+      (roundBefore.status ?? 'OPENED') !== 'COMPLETED' &&
+      (roundAfter.status ?? 'OPENED') === 'COMPLETED'
+    ) {
+      void get().purgeScopeOnEntityDelete(`t_calculator:${record.fullCode}`);
+    }
     safePersist(async () => {
       // 流水逐笔落库（v8 per-entry 写入）+ Round 概览更新
       await putTransaction(updatedRound.id, roundTxn);
@@ -215,11 +227,16 @@ export const createStreamsSlice: StateCreator<AppStore, [], [], StreamsSlice> = 
     const { positions: finalPositions, streams: finalStreams, results } = reconcilePositionsWithStreams(positions, activeStreams, feeConfig, nextRounds);
     let rounds = nextRounds;
     for (const r of results) { if (r.status === 'CLEARED') rounds = finalizeRoundIfCleared(r, rounds); }
+    // 空 OPENED 项目被整体删除 → 级联清理按标的 Copilot 会话
+    const roundDeleted = !!removedRound && !nextRounds.some((r) => r.id === removedRound!.id);
     set({ tRounds: rounds, positions: finalPositions });
+    if (roundDeleted && removedRound!.fullCode) {
+      void get().purgeScopeOnEntityDelete(`t_calculator:${removedRound!.fullCode}`);
+    }
     safePersist(async () => {
       await deleteTransaction(id);
-      if (removedRound && !nextRounds.some(r => r.id === removedRound!.id)) {
-        await deleteTRoundWithTransactions(removedRound.id);
+      if (roundDeleted) {
+        await deleteTRoundWithTransactions(removedRound!.id);
       } else {
         const updatedRound = rounds.find(r => r.id === removedRound?.id);
         if (updatedRound) await putTRound(updatedRound);
@@ -245,6 +262,13 @@ export const createStreamsSlice: StateCreator<AppStore, [], [], StreamsSlice> = 
       return positionChanged(old, p);
     });
     set({ tRounds: keptRounds, positions: fixedPositions });
+    // 全部 OPENED 项目被清空 → 级联清理各标的的 Copilot 会话
+    const clearedScopes = tRounds
+      .filter((r) => (r.status ?? 'OPENED') !== 'COMPLETED' && !!r.fullCode)
+      .map((r) => `t_calculator:${r.fullCode}`);
+    for (const scopeId of new Set(clearedScopes)) {
+      void get().purgeScopeOnEntityDelete(scopeId);
+    }
     safePersist(async () => { for (const id of openIds) await deleteTRoundWithTransactions(id); for (const p of changed) { await replacePositionSnapshotWithBatches(p, p.batches); } });
     // 【风控审计】记录清空流水操作
     recordAudit('clear_streams', 'system', 'all', 'success', {

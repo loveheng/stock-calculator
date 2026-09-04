@@ -10,7 +10,7 @@
  * @author 开发团队
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind, evaluateDynamicPyramid, computePositionLifecycleSummary } from '../utils/mathUtils';
@@ -19,6 +19,10 @@ import { useStreamResults } from '../hooks/useStreamResults';
 import { normalizeCode, normalizeStockName } from '../utils/dedup';
 import { recordAudit } from '../risk/auditLogger';
 import { recalculatePosition } from '../utils/calculator';
+import { setMarketPrices, getMarketPrice } from '../risk/priceCache';
+import { buildLedgerPositionContext } from '../utils/copilotSnapshots';
+import BlockFocusButton from '../components/copilot/BlockFocusButton';
+import type { PageContextSnapshot } from '../types/domain';
 import type { Position, PositionBatch } from '../store';
 import type { PositionBatchEntity } from '../types/domain';
 import type { StockSearchItem } from '../types/stock';
@@ -670,8 +674,52 @@ function PositionLedger() {
   const activePositions = positions.filter((p) => !p.isClosed);
   const closedPositions = positions.filter((p) => p.isClosed);
 
+  // ── Copilot 上下文注册（V2 推广：实盘账本按标的 scope 批量注册）──
+  // 列表渲染无法逐卡片调用 usePageContext，这里批量注册；cleanup 精确注销本次注册的
+  // 引用集合（与 usePageContext 防泄漏同一规则：严禁注销非本次挂载的对象）。
+  // fullCode 为空的存量持仓跳过（无标的身份无法构成 scope）。
+  const registerContext = useAppStore((s) => s.registerContext);
+  const unregisterContext = useAppStore((s) => s.unregisterContext);
+  const ledgerScopes = useMemo<PageContextSnapshot[]>(
+    () =>
+      positions
+        .filter((p) => !p.isClosed && !!p.fullCode)
+        .map((p) => {
+          const scopeId = `cost_averaging:${p.fullCode}`;
+          const blockTitle = `实盘账本 · ${p.stockName}`;
+          return {
+            scopeId,
+            title: blockTitle,
+            getData: () => buildLedgerPositionContext(p.fullCode, { ...useAppStore.getState(), getMarketPrice }),
+            blocks: [
+              {
+                blockId: `${scopeId}:position`,
+                title: blockTitle,
+                suggestedPrompts: [
+                  '当前保本价与现价的空间如何，回本还要涨多少？',
+                  '加仓摊薄还是减仓落袋更合理？',
+                  '做T战报对这只票的成本下降贡献如何？',
+                ],
+                getData: () => buildLedgerPositionContext(p.fullCode, { ...useAppStore.getState(), getMarketPrice }),
+              },
+            ],
+          };
+        }),
+    [positions],
+  );
+  const ledgerScopeSignature = ledgerScopes.map((s) => s.scopeId).join('\u0001');
+  useEffect(() => {
+    const registered = [...ledgerScopes];
+    registered.forEach(registerContext);
+    return () => registered.forEach((s) => unregisterContext(s.scopeId, s));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅 scope 集合签名变化时重注册（同 usePageContext 策略）
+  }, [ledgerScopeSignature, registerContext, unregisterContext]);
+
   // 实时行情：交易时段每 5 秒刷新、非交易时段打开时刷新一次、跨时段切换自动切换策略
   const { quotes, isTrading, lastUpdated } = useLiveQuotes(activePositions.map((p) => p.fullCode).filter(Boolean));
+
+  // 同步实时行情到风控价格缓存（快照 getMarketPrice 桥 + R2 价格偏离校验共用）
+  useEffect(() => { setMarketPrices(quotes); }, [quotes]);
 
   return (
     <div className="space-y-4">
@@ -924,6 +972,12 @@ function PositionLedger() {
                 </div>
               </div>
               <div className="flex items-center shrink-0 ml-2">
+                {pos.fullCode && (
+                  <BlockFocusButton
+                    scopeId={`cost_averaging:${pos.fullCode}`}
+                    blockId={`cost_averaging:${pos.fullCode}:position`}
+                  />
+                )}
                 <button
                   onClick={(e) => { e.stopPropagation(); setDeleteTickerConfirm(pos.id); }}
                   className="tap-target flex items-center justify-center w-10 h-10 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10"

@@ -127,5 +127,13 @@ export const createPositionsSlice: StateCreator<AppStore, [], [], PositionsSlice
       tags: { positionId: pid }
     });
   },
-  removePosition: (id) => { set(s => ({ positions: s.positions.filter(p => p.id !== id) })); safePersist(() => deletePositionWithBatches(id)); recordAudit('remove_position', 'position', id, 'success'); },
+  removePosition: (id) => {
+    // 删除前先取 fullCode：级联清理该标的的实盘账本 Copilot 会话（P2 #13）
+    const fullCode = get().positions.find((p) => p.id === id)?.fullCode ?? '';
+    set(s => ({ positions: s.positions.filter(p => p.id !== id) }));
+    if (fullCode) {
+      void get().purgeScopeOnEntityDelete(`cost_averaging:${fullCode}`);
+    }
+    safePersist(() => deletePositionWithBatches(id)); recordAudit('remove_position', 'position', id, 'success');
+  },
 });

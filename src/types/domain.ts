@@ -244,6 +244,9 @@ export interface PositionBatchEntity extends BaseEntity {
 /** 费率模板名称（原先定义在 store/types.ts，下沉至此供 feePresets 常量模块使用） */
 export type FeePresetName = '默认A股' | 'A股标准模板' | 'ETF模板' | '港股/美股免佣模板';
 
+/** 首页仪表盘时间筛选维度（Store 态：视图 Tab 与 Copilot 区块快照同源读取，R2 合规） */
+export type HomeTimeRange = '1d' | '7d' | '30d' | 'all';
+
 // ---- Copilot（Context-Aware AI 助手）----
 /**
  * @description Copilot 前后端共享契约（scopeId 协议 + 请求/响应 DTO）。
@@ -301,11 +304,15 @@ export interface CopilotContextData {
   units: Record<string, string>;
 }
 
-/** 区块级快照契约（V2 Click-to-Focus 预留，P0 不建 UI） */
+/** 区块级快照契约（V2 Click-to-Focus：卡片级聚焦上下文） */
 export interface ContextBlockSnapshot {
-  /** 区块标识（如 planned_orders） */
+  /** 区块标识（全局唯一，scopeId 前缀 + 区块名，如 home:short_term） */
   blockId: string;
+  /** 胶囊展示名（可随视图筛选态热更新，如 "首页 · 短线统计 (近7天)"） */
   title: string;
+  /** 推荐提问气泡（Prompt Starters，2~3 个，聚焦态渲染于输入框上方） */
+  suggestedPrompts?: string[];
+  /** 命令式快照：实现必须 getState() + 纯引擎重算，禁闭包捕获组件态 */
   getData: () => CopilotContextData;
 }
 
@@ -325,7 +332,8 @@ export interface CopilotMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  status: 'pending' | 'ok' | 'failed';
+  /** 生命周期：pending 排队/等待首块 → streaming 流式接收中（增量渲染）→ ok/failed 终态 */
+  status: 'pending' | 'streaming' | 'ok' | 'failed';
   /** 提问轮标量概览（仅 user 行，历史卡片回显） */
   contextOverview?: string;
   /** 时间截面标记（仅 user 行） */
@@ -353,6 +361,45 @@ export interface CopilotAskRequest {
   contextOverview: string;
   /** 落库时间截面标记（JSON 字符串） */
   timeAnchor: string;
+  /** 聚焦区块标识（V2 Click-to-Focus，缺省=整页口径）：后端据此路由区块级 Prompt 策略
+   *  （如 home:short_term → 做T风控顾问），未命中回落 scopeId 页面级策略；仅参与编排不落库 */
+  focusBlockId?: string;
+}
+
+/**
+ * AI 建议动作信封（V0 预留，暂无生产者/消费者）：仅固定「信封」结构，
+ * 具体动作语义待第一个真实场景落地时固化为可辨识联合（discriminated union）扩展。
+ * 刻意不预枚举 type 取值、不定义执行分发器（YAGNI）；严禁演进为空接口/纯 any。
+ * 预期动作类别：建议操作（chips）、数据请求（反向取数）、客户端动作（跳转/筛选/下单）。
+ */
+export interface CopilotAction {
+  /** 动作类型标识（如 navigate / apply_filter / data_request / create_order，当前仅为注释示例非类型约束） */
+  type: string;
+  /** 动作参数，schema 由各 type 自行定义 */
+  payload?: Record<string, unknown>;
+}
+
+// ---- Copilot 已注册动作载荷（V1 Action Pipeline）----
+// 新增动作三步：① 此处加载荷类型；② utils/copilotActions.ts 加形状守卫 + 分级；
+// ③ store/slices/copilotActionSlice.ts 执行器登记（auto 级）或确认卡落地（confirm 级）。
+
+/** notify：全局强制提醒弹窗（auto 级：仅 UI 效果，无数据写） */
+export interface CopilotNotifyPayload {
+  title: string;
+  message: string;
+  severity?: 'info' | 'warning' | 'danger';
+}
+
+/** focus_block：聚焦指定页面区块（auto 级：复用 focusBlock，未注册静默忽略） */
+export interface CopilotFocusBlockPayload {
+  scopeId: string;
+  blockId: string;
+}
+
+/** apply_filter：设置视图筛选（auto 级：白名单键值，当前仅首页时间维度） */
+export interface CopilotApplyFilterPayload {
+  filter: 'homeTimeRange';
+  value: HomeTimeRange;
 }
 
 /** 提问响应 data */
@@ -365,6 +412,10 @@ export interface CopilotAskResponse {
   userMessageId: number;
   /** epoch 秒 */
   ctime: number;
+  /** AI 建议动作（V0 预留，可选缺省）：前端当前不消费不渲染；后端未升级前缺省即向前兼容。
+   *  不落库（历史回看重载后不含），与 contextSummary 同属「在线在场态」语义，
+   *  持久化与否留待动作真实启用时决策 */
+  actions?: readonly CopilotAction[];
 }
 
 /** 历史消息分页（GET /threads/{scopeId}/messages，keyset：id < before 的前 limit 条，倒序取出后正序返回） */

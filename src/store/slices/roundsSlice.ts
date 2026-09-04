@@ -70,6 +70,13 @@ export const createRoundsSlice: StateCreator<AppStore, [], [], RoundsSlice> = (s
       // 持久化对账后的底仓差异（reconcilePositionsWithStreams 已剥离该 round 的调整批次）
       await persistPositionDiffs(positions, finalPositions);
     });
+    // 该标的已无 OPENED Round（项目实体被删）→ 级联清理按标的 Copilot 会话（P2 #13）
+    const hasOpenRound = nextRounds.some(
+      (r) => r.fullCode === round.fullCode && (r.status ?? 'OPENED') !== 'COMPLETED',
+    );
+    if (round.fullCode && !hasOpenRound) {
+      void get().purgeScopeOnEntityDelete(`t_calculator:${round.fullCode}`);
+    }
     return { ok: true };
   },
 
@@ -137,6 +144,8 @@ export const createRoundsSlice: StateCreator<AppStore, [], [], RoundsSlice> = (s
     const ltRecord: LongTermRecord = { id: generateId(), fullCode, stockName: stream.stockName, timestamp: now, type: 'merge', price: avg, amount: toTransfer, fee: txnFee, sourceReportId: roundId, note: `做T划转底仓（${formatTradeNo(now)}）` };
     set(s => ({ tRounds: [...s.tRounds.filter(r => r.id !== roundId), round], positions: newPositions, longTermRecords: [...s.longTermRecords, ltRecord] }));
     safePersist(() => completeRoundWithMerge(round, ltRecord, newPositions));
+    // 划转即项目结清（Round 翻转 COMPLETED）→ 级联清理按标的 Copilot 会话
+    void get().purgeScopeOnEntityDelete(`t_calculator:${fullCode}`);
     return { ok: true, message: `已将 ${toTransfer} 股划转至底仓（P_avg=${avg.toFixed(2)}）` };
   },
 
@@ -232,6 +241,8 @@ export const createRoundsSlice: StateCreator<AppStore, [], [], RoundsSlice> = (s
     const msg = isPartial
       ? `倒T已结算（部分结清），做T收益 ¥${result.transferProfit.toFixed(2)}，未回补 ${shortPendingAmount} 股已转为底仓卖出`
       : `倒T已结算，净收益 ¥${result.transferProfit.toFixed(2)}`;
+    // 结算即项目结清（Round 翻转 COMPLETED）→ 级联清理按标的 Copilot 会话
+    void get().purgeScopeOnEntityDelete(`t_calculator:${fullCode}`);
     return { ok: true, message: msg };
   },
 });

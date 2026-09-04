@@ -34,17 +34,22 @@ import { toShortTrialProject } from '../utils/shortTermTrial';
 import { generateId, calcBatchExecution } from '../store/utils';
 import type { StockStreamResult } from '../utils/tStreamEngine';
 import type { PlannedOrder, PositionBatch, StreamAddResult } from '../store/types';
+import type { HomeTimeRange } from '../types/domain';
 import type { TStreamRecord } from '../utils/tStreamEngine';
 import PlanOrderCard from '../components/PlanOrderCard';
+import BlockFocusButton from '../components/copilot/BlockFocusButton';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
-import { setMarketPrices } from '../risk/priceCache';
+import { setMarketPrices, getMarketPrice } from '../risk/priceCache';
 import { usePageContext } from '../hooks/usePageContext';
-import { buildHomeContext } from '../utils/copilotSnapshots';
+import {
+  buildHomeContext,
+  buildHomeShortTermContext,
+  buildHomePositionContext,
+  buildHomePlanContext,
+} from '../utils/copilotSnapshots';
 
 // ---- 时间维度 ----
-type TimeRange = '1d' | '7d' | '30d' | 'all';
-
-const timeRangeOptions: Array<{ value: TimeRange; label: string }> = [
+const timeRangeOptions: Array<{ value: HomeTimeRange; label: string }> = [
   { value: '1d', label: '1天' },
   { value: '7d', label: '近7天' },
   { value: '30d', label: '近30天' },
@@ -82,16 +87,59 @@ export default function Home() {
   const markPlanExecuted = useAppStore((s) => s.markPlanExecuted);
   const cancelPlan = useAppStore((s) => s.cancelPlan);
 
-  // Copilot 上下文注册（P0 试点）：纯引擎重算持仓/计划单快照，禁读组件态（timeRange 为
-  // 组件态，快照统一 range:'now' 当前口径）；getData 在提问时才被显式执行
-  usePageContext({
-    scopeId: 'home',
-    title: '首页仪表盘',
-    getData: () => buildHomeContext(useAppStore.getState()),
-  });
+  // ---- 时间筛选状态（自 useState 上提 Store：V2 区块快照需经 getState() 同源读取，R2 护栏） ----
+  const timeRange = useAppStore((s) => s.homeTimeRange);
+  const setHomeTimeRange = useAppStore((s) => s.setHomeTimeRange);
 
-  // ---- 时间筛选状态 ----
-  const [timeRange, setTimeRange] = useState<TimeRange>('7d');
+  // Copilot 上下文注册（P0 整页 + V2 区块聚焦试点）：getData 均为 getState() + 纯引擎重算
+  // （R2：禁读组件闭包）。整页快照维持 range:'now' 当前口径；短线区块快照读取 store 态
+  // homeTimeRange 反映当前时间 Tab。快照对象按 Tab 标签记忆化 —— Tab 切换触发
+  // usePageContext 签名重注册，浮窗胶囊标题热更新（如「首页 · 短线统计 (近7天)」）
+  const shortTermRangeLabel =
+    timeRangeOptions.find((o) => o.value === timeRange)?.label ?? '全部';
+  const pageSnapshot = useMemo(
+    () => ({
+      scopeId: 'home',
+      title: '首页仪表盘',
+      getData: () => buildHomeContext(useAppStore.getState()),
+      blocks: [
+        {
+          blockId: 'home:short_term',
+          title: `首页 · 短线统计 (${shortTermRangeLabel})`,
+          suggestedPrompts: [
+            '当前筛选区间内做T整体盈亏与胜率如何？',
+            '倒T待回补的标的存在什么风险？',
+            '摩擦成本对短线收益的侵蚀有多严重？',
+          ],
+          getData: () => buildHomeShortTermContext(useAppStore.getState()),
+        },
+        {
+          blockId: 'home:position',
+          title: '首页 · 仓位统计',
+          suggestedPrompts: [
+            '单一标的集中度是否过高，有哪些分散建议？',
+            '资金占用最大的仓位风险敞口如何？',
+            '持仓时间最长的标的是否该考虑处理？',
+          ],
+          getData: () => buildHomePositionContext(useAppStore.getState()),
+        },
+        {
+          blockId: 'home:plan_orders',
+          title: '首页 · 计划单待办',
+          suggestedPrompts: [
+            '各挂单与现价的偏离度如何，哪些更接近成交？',
+            '是否有计划单临近过期仍未执行，该如何处理？',
+            '现在执行买入/卖出计划是否存在追高杀跌风险？',
+          ],
+          // 行情价桥注入：现价不在 store 态（useLiveQuotes 组件态），从本视图 useEffect
+          // 已同步的 risk/priceCache 读取（与风控 R2 校验同源）；无行情时快照自动降级
+          getData: () => buildHomePlanContext({ ...useAppStore.getState(), getMarketPrice }),
+        },
+      ],
+    }),
+    [shortTermRangeLabel],
+  );
+  usePageContext(pageSnapshot);
 
   // ---- 计算时间范围边界 ----
   const timeBoundary = useMemo(() => {
@@ -546,6 +594,8 @@ export default function Home() {
               短线统计
             </span>
           </div>
+          {/* V2 Click-to-Focus 试点：区块聚焦入口（聚焦后浮窗胶囊显示当前时间 Tab 口径） */}
+          <BlockFocusButton scopeId="home" blockId="home:short_term" />
         </div>
 
         {/* 时间维度切换器 */}
@@ -555,7 +605,7 @@ export default function Home() {
               <button
                 key={opt.value}
                 type="button"
-                onClick={() => setTimeRange(opt.value)}
+                onClick={() => setHomeTimeRange(opt.value)}
                 className={`flex-1 rounded-lg py-2 text-xs font-medium transition-all duration-200 ${
                   timeRange === opt.value
                     ? 'bg-blue-600 text-white shadow-sm'
@@ -762,17 +812,20 @@ export default function Home() {
       {/* 模块 2：开启仓位统计 (Active Position Metrics) */}
       {/* ============================ */}
       <div className="card !p-0 overflow-hidden border-slate-700/80 bg-gradient-to-br from-slate-900 to-slate-950">
-        {/* 卡片标题 */}
-        <div className="flex items-center gap-2.5 px-5 pt-5 pb-0">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-600/20">
-            <Wallet className="h-4 w-4 text-slate-400" />
+        {/* 卡片标题（V2：右侧区块聚焦入口） */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-0">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-600/20">
+              <Wallet className="h-4 w-4 text-slate-400" />
+            </div>
+            <span className="text-sm font-semibold text-slate-200">
+              仓位统计
+            </span>
+            <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
+              全量统计
+            </span>
           </div>
-          <span className="text-sm font-semibold text-slate-200">
-            仓位统计
-          </span>
-          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
-            全量统计
-          </span>
+          <BlockFocusButton scopeId="home" blockId="home:position" />
         </div>
 
         {/* 核心数据网格：6 cells, 2-col mobile / 4-col sm, last 2 span-2 */}
@@ -933,14 +986,18 @@ export default function Home() {
                 </span>
               )}
             </h3>
-            {homePlans.length > 3 && (
-              <button
-                onClick={() => navigate('/t-calculator')}
-                className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
-              >
-                查看全部 →
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {homePlans.length > 3 && (
+                <button
+                  onClick={() => navigate('/t-calculator')}
+                  className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                >
+                  查看全部 →
+                </button>
+              )}
+              {/* V2 Click-to-Focus：区块聚焦入口（section 布局与「查看全部」并排） */}
+              <BlockFocusButton scopeId="home" blockId="home:plan_orders" />
+            </div>
           </div>
           <div className="space-y-3">
             {homePlans.slice(0, 10).map((p) => {

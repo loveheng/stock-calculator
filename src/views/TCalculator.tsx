@@ -22,7 +22,10 @@ import { useStreamResults } from '../hooks/useStreamResults';
 import { ledgerService } from '../services/ledgerService';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
-import { setMarketPrices } from '../risk/priceCache';
+import { setMarketPrices, getMarketPrice } from '../risk/priceCache';
+import { usePageContext } from '../hooks/usePageContext';
+import { buildTProjectContext } from '../utils/copilotSnapshots';
+import BlockFocusButton from '../components/copilot/BlockFocusButton';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
 import { toShortTrialProject } from '../utils/shortTermTrial';
 import {
@@ -509,6 +512,35 @@ function CurrentProjectCard({
 
   const baseHolding = basePosition?.currentAmount ?? 0;
 
+  // ── Copilot 上下文注册（V2 推广：按标的 scope，随卡片挂载/结清自动注册/注销）──
+  // fullCode/stockName 是 scope 身份（注册签名，非易变 UI 态）；getData 全部来自
+  // getState() + 撮合管线重算，现价经 getMarketPrice 桥读取（父组件 useEffect 已同步 priceCache）。
+  // 快照对象按 scope 身份记忆化：行情/流水变化不重建，不触发 usePageContext 签名重注册。
+  const projectScopeId = `t_calculator:${result.fullCode}`;
+  const projectTitle = `短线项目 · ${result.stockName}`;
+  usePageContext(
+    useMemo(
+      () => ({
+        scopeId: projectScopeId,
+        title: projectTitle,
+        getData: () => buildTProjectContext(result.fullCode, { ...useAppStore.getState(), getMarketPrice }),
+        blocks: [
+          {
+            blockId: `${projectScopeId}:project`,
+            title: projectTitle,
+            suggestedPrompts: [
+              '这笔正T/倒T当前处于什么状态，有哪些风险？',
+              '待平/待回补的部分现在操作还是再等一等？',
+              '本轮摩擦成本与已落袋利润是否匹配？',
+            ],
+            getData: () => buildTProjectContext(result.fullCode, { ...useAppStore.getState(), getMarketPrice }),
+          },
+        ],
+      }),
+      [projectScopeId, projectTitle, result.fullCode],
+    ),
+  );
+
   // ── 决策辅助派生量（仅 UI 展示，不参与底层撮合/状态机） ──
   const remainingQty = Math.max(0, result.netPendingAmount);
   const hasLivePrice = !!quote && quote.currentPrice > 0;
@@ -591,6 +623,8 @@ function CurrentProjectCard({
             底仓 <b className="text-slate-200">{baseHolding}</b> 股
           </span>
         ) : null}
+        {/* V2 Click-to-Focus：按标的区块聚焦入口（聚焦后浮窗胶囊显示该标的短线项目） */}
+        <BlockFocusButton scopeId={projectScopeId} blockId={`${projectScopeId}:project`} />
       </div>
 
       {/* 当前项目指标（移动端 2×2 紧凑布局） */}

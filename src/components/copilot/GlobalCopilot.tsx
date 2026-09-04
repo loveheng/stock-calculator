@@ -1,11 +1,14 @@
 /**
  * @file GlobalCopilot.tsx
- * @description Context-Aware Copilot 全局浮窗（P0）：折叠态悬浮按钮 + 展开态对话面板。
+ * @description Context-Aware Copilot 全局浮窗：折叠态悬浮按钮 + 展开态对话面板。
  *              - 折叠态：右下角常驻按钮；未登录点击转登录弹窗（D19，不静默）；
  *              - 展开态：顶部上下文胶囊（已关联页面标题）+ 清空会话（ConfirmModal 二次确认 D18）
  *                + 折叠按钮；切页归档指示条（§7.3）与离线指示条；
+ *              - 区块聚焦（V2 Click-to-Focus）：胶囊切换为区块名（紫色调）+ [返回整页 ✕]，
+ *                输入框上方渲染聚焦区块的快捷提问气泡（Prompt Starters，点击填入草稿）；
  *              - 消息列表：纯文本渲染（whitespace-pre-wrap）、失败红框 + subCode 提示 + 可重发、
- *                user 行底部回显 contextOverview 概览与 timeAnchor 标签（D32：V1 仅概览，不做明细重放）；
+ *                user 行底部回显 contextOverview 概览与 timeAnchor 标签（D32：V1 仅概览，不做明细重放）、
+ *                事实数据变动提示条（P2：本轮快照 vs 上轮落库概览，变化即提示「基于最新快照」）；
  *              - 输入区：Enter 发送 / Shift+Enter 换行（含 IME 组合输入守卫），sending/离线禁用；
  *              - 首次使用知情同意弹窗（localStorage 持久化）。
  * @layer UI
@@ -27,6 +30,7 @@ import {
 import { useAppStore } from '../../store';
 import { useAuthStore } from '../../store/useAuthStore';
 import ConfirmModal from '../ui/ConfirmModal';
+import CopilotActionCards from './CopilotActionCards';
 import type { CopilotMessage } from '../../types/domain';
 
 /** 空数组常量：避免 zustand selector 每次返回新引用触发多余重渲染 */
@@ -107,6 +111,10 @@ function MessageBubble({ message, sending, onRetry }: {
         }`}
       >
         {message.content}
+        {/* V3 流式接收中：增量渲染 + 光标闪烁（pending 排队态仍走整泡 pulse） */}
+        {message.status === 'streaming' && (
+          <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-0.5 bg-blue-400 animate-pulse" />
+        )}
       </div>
 
       {/* 失败提示 + 重发（subCode 交互指引闭环） */}
@@ -142,11 +150,22 @@ export default function GlobalCopilot() {
   const copilotOpen = useAppStore((s) => s.copilotOpen);
   const setCopilotOpen = useAppStore((s) => s.setCopilotOpen);
   const activeScopeId = useAppStore((s) => s.activeScopeId);
-  const capsuleTitle = useAppStore((s) => (s.activeScopeId ? s.registry[s.activeScopeId]?.title : undefined));
+  // 区块聚焦态（V2 Click-to-Focus）：选择器返回 registry 内的区块对象引用（引用稳定）
+  const focusedBlockSnap = useAppStore((s) => {
+    const focus = s.focusedBlock;
+    if (!focus) return undefined;
+    return s.registry[focus.scopeId]?.blocks?.find((b) => b.blockId === focus.blockId);
+  });
+  const unfocusBlock = useAppStore((s) => s.unfocusBlock);
+  // 生效胶囊标题：区块聚焦优先，回落整页标题
+  const pageTitle = useAppStore((s) => (s.activeScopeId ? s.registry[s.activeScopeId]?.title : undefined));
+  const capsuleTitle = focusedBlockSnap?.title ?? pageTitle;
   const thread = useAppStore((s) => (s.activeScopeId ? s.threads[s.activeScopeId] : undefined));
   const messages = thread ?? EMPTY_MESSAGES;
   const sending = useAppStore((s) => s.sending);
   const lastArchived = useAppStore((s) => s.lastArchived);
+  // 事实数据变动提示（P2）：当前 scope 上次提问时快照相对上上轮是否变化
+  const contextChanged = useAppStore((s) => (s.activeScopeId ? (s.contextChangedScopes[s.activeScopeId] ?? false) : false));
   const consentAcknowledged = useAppStore((s) => s.consentAcknowledged);
   const sendMessage = useAppStore((s) => s.sendMessage);
   const retryMessage = useAppStore((s) => s.retryMessage);
@@ -226,7 +245,11 @@ export default function GlobalCopilot() {
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-slate-700 bg-slate-800/60">
           <div
             className={`flex items-center gap-1.5 min-w-0 px-2 py-1 rounded-full text-xs ${
-              capsuleTitle ? 'bg-blue-600/20 text-blue-300' : 'bg-slate-700/60 text-slate-400'
+              focusedBlockSnap
+                ? 'bg-violet-600/20 text-violet-300'
+                : capsuleTitle
+                  ? 'bg-blue-600/20 text-blue-300'
+                  : 'bg-slate-700/60 text-slate-400'
             }`}
             title={capsuleTitle ? `当前上下文：${capsuleTitle}` : '当前页面未注册 AI 上下文'}
           >
@@ -234,6 +257,15 @@ export default function GlobalCopilot() {
             <span className="truncate">
               {capsuleTitle ? `已关联： ${capsuleTitle}` : '当前页面未接入 AI 上下文'}
             </span>
+            {focusedBlockSnap && (
+              <button
+                onClick={unfocusBlock}
+                title="返回整页上下文"
+                className="flex-shrink-0 rounded-full p-0.5 hover:bg-violet-500/25 transition-colors"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
           <div className="ml-auto flex items-center gap-1">
             <button
@@ -278,18 +310,26 @@ export default function GlobalCopilot() {
           </div>
         )}
 
+        {/* 事实数据变动提示条（P0 时间隔离配套 UX）：本轮回答基于最新快照，历史轮次为当时状态 */}
+        {contextChanged && !offline && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 border-b border-blue-500/20 text-[11px] text-blue-300">
+            <RefreshCw className="w-3 h-3 flex-shrink-0" />
+            数据自上轮提问后已更新，本次回答基于最新快照
+          </div>
+        )}
+
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
           {!activeScopeId || !capsuleTitle ? (
             <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 text-sm gap-2 px-6">
               <Sparkles className="w-8 h-8 text-slate-600" />
               <p>当前页面暂未接入 AI 上下文</p>
-              <p className="text-xs text-slate-600">P0 已支持：首页仪表盘、数据统计</p>
+              <p className="text-xs text-slate-600">已支持：首页仪表盘 · 数据统计 · 短线项目（按标的）· 实盘账本（按标的）</p>
             </div>
           ) : messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 text-sm gap-2 px-6">
               <Sparkles className="w-8 h-8 text-slate-600" />
-              <p>询问当前页面的任何数据</p>
+              <p>{focusedBlockSnap ? `询问「${capsuleTitle}」的任何数据` : '询问当前页面的任何数据'}</p>
               <p className="text-xs text-slate-600">
                 例如：「总结近期做T胜率」「市值变化如何？」
               </p>
@@ -299,7 +339,8 @@ export default function GlobalCopilot() {
               {messages.map((m) => (
                 <MessageBubble key={m.id} message={m} sending={sending} onRetry={handleRetry} />
               ))}
-              {sending && (
+              {/* 排队/等待首块（V3 流式）：首 delta 到达后 streaming 占位行已可见，不再叠显思考中 */}
+              {sending && !messages.some((m) => m.status === 'streaming') && (
                 <div className="flex justify-start">
                   <div className="px-3 py-2 rounded-2xl rounded-bl-sm bg-slate-800 border border-slate-700 text-slate-400 text-sm animate-pulse">
                     正在思考…
@@ -311,8 +352,27 @@ export default function GlobalCopilot() {
           )}
         </div>
 
+        {/* 待确认动作卡（confirm 级动作队列：AI 只建议，用户拍板） */}
+        <CopilotActionCards />
+
         {/* 输入区 */}
         <div className="p-2.5 border-t border-slate-700">
+          {/* 区块聚焦快捷提问气泡（V2 Click-to-Focus）：点击填入草稿，可编辑后发送 */}
+          {focusedBlockSnap?.suggestedPrompts && focusedBlockSnap.suggestedPrompts.length > 0 && (
+            <div className="mb-2 flex gap-1.5 overflow-x-auto pb-0.5">
+              {focusedBlockSnap.suggestedPrompts.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => setDraft(prompt)}
+                  disabled={sending}
+                  className="whitespace-nowrap flex-shrink-0 rounded-full border border-slate-600/70 bg-slate-800/60 px-2.5 py-1 text-[11px] text-slate-300 transition-colors hover:border-blue-500/60 hover:text-blue-300 disabled:opacity-50"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex items-end gap-2">
             <textarea
               value={draft}

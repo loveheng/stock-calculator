@@ -30,6 +30,7 @@ import {
 import InstallPrompt from './components/ui/InstallPrompt';
 import AuthGate from './components/ui/AuthGate';
 import GlobalCopilot from './components/copilot/GlobalCopilot';
+import CopilotNoticeModal from './components/copilot/CopilotNoticeModal';
 import { useLoadCoreData } from './hooks/useDataLoader';
 import { useAppStore } from './store';
 import { useAuthStore } from './store/useAuthStore';
@@ -229,6 +230,9 @@ function AppLayout() {
 
       {/* Context-Aware Copilot 全局浮窗（P0：mock 全链路，试点页 statistics/home） */}
       <GlobalCopilot />
+
+      {/* AI 动作全局强制提醒弹窗（V1 Action Pipeline：notify 动作落地态） */}
+      <CopilotNoticeModal />
 
       {/* 主内容区 */}
       <main className="main-area flex-1 min-h-screen w-full">

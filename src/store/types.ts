@@ -24,6 +24,8 @@ import type {
   PlannedOrder,
   PageContextSnapshot,
   CopilotMessage,
+  CopilotAction,
+  HomeTimeRange,
 } from '../types/domain';
 
 /**
@@ -62,6 +64,18 @@ export interface AppStoreExport {
   stocks: StockMeta[];
   longTermRecords: LongTermRecord[];
   plannedOrders: PlannedOrder[];
+}
+
+/** Copilot 待确认动作（confirm 级入队，用户在浮窗中执行/忽略后出队；不持久化，刷新即失） */
+export interface PendingCopilotAction {
+  /** 队列内唯一标识（自增序列） */
+  id: string;
+  /** 动作类型（已过白名单，具体业务语义见 copilotActionSlice 执行器注册表） */
+  type: string;
+  /** 卡片展示文案（入队时生成的人话摘要） */
+  label: string;
+  /** 动作参数（sanitize 阶段原样保留，执行器落地前按类型二次校验） */
+  payload: Record<string, unknown>;
 }
 
 /** Store Action 接口：汇总所有可以操作的函数签名 */
@@ -136,6 +150,10 @@ export interface AppStoreActions {
   registerContext: (snapshot: PageContextSnapshot) => void;
   /** 页面卸载注销：仅当 registry[scopeId] === owner（引用相等）才删，防路由竞态误删新页注册 */
   unregisterContext: (scopeId: string, owner: PageContextSnapshot) => void;
+  /** 聚焦区块（V2 Click-to-Focus）：校验区块已注册 → 展开浮窗并激活对应 scope；未注册静默忽略 */
+  focusBlock: (scopeId: string, blockId: string) => void;
+  /** 退出区块聚焦，回到整页上下文 */
+  unfocusBlock: () => void;
   /** 激活会话：墓碑对账 → 缓存优先（D8）→ 远端拉尾部 20 条 */
   ensureThreadLoaded: (scopeId: string) => Promise<void>;
   /** 提问：乐观更新 pending → ok/failed（sending 锁防并发重复提交） */
@@ -150,6 +168,20 @@ export interface AppStoreActions {
   setCopilotOpen: (open: boolean) => void;
   /** 首次使用知情同意（localStorage 持久化） */
   acknowledgeConsent: () => void;
+
+  // -- Copilot 动作后处理（V1 Action Pipeline：LLM 返回 actions 的前端执行管线） --
+  /** 响应动作入口：白名单过滤 → 分级路由（auto 立即执行 / confirm 入队等确认）；仅在响应返回时执行一次 */
+  handleCopilotActions: (actions?: readonly CopilotAction[]) => void;
+  /** 关闭全局提醒弹窗（notify 动作落地态） */
+  dismissCopilotNotice: () => void;
+  /** 忽略待确认动作（出队） */
+  dismissPendingCopilotAction: (id: string) => void;
+  /** 执行待确认动作（按执行器注册表分发业务 action；未登记类型出队并忽略） */
+  executePendingCopilotAction: (id: string) => void;
+
+  // -- 首页仪表盘（视图偏好上提 Store：Copilot 区块快照需经 getState() 同源重算，R2） --
+  /** 设置首页时间筛选维度（1d/7d/30d/all） */
+  setHomeTimeRange: (range: HomeTimeRange) => void;
 }
 
 /** 完整的 Store 状态 + Action */
@@ -184,6 +216,23 @@ export interface AppStore extends AppStoreActions {
   consentAcknowledged: boolean;
   /** 全局浮窗展开态 */
   copilotOpen: boolean;
+  /** 区块聚焦态（V2 Click-to-Focus）：null = 整页上下文；聚焦后提问/重发取区块快照 */
+  focusedBlock: { scopeId: string; blockId: string } | null;
+
+  // -- Copilot 动作后处理（V1 Action Pipeline） --
+  /** AI 动作强制提醒（notify 落地态，全局弹窗读取；null = 无；后到覆盖先到） */
+  copilotNotice: { title: string; message: string; severity: 'info' | 'warning' | 'danger' } | null;
+  /** 待确认动作队列（confirm 级，仅内存态，用户执行/忽略后出队） */
+  pendingCopilotActions: PendingCopilotAction[];
+
+  // -- 事实数据变动提示（P0 时间隔离配套 UX） --
+  /** 各 scope 上次提问时快照概览相对上上轮是否变化（提问时由 copilotSlice 重算；
+   *  true = 浮窗展示「数据自上轮已更新」提示条；清会话时随删） */
+  contextChangedScopes: Record<string, boolean>;
+
+  // -- 首页仪表盘（视图偏好） --
+  /** 首页时间筛选维度（自 Home useState 上提；V2 区块级快照同源读取，R2） */
+  homeTimeRange: HomeTimeRange;
 }
 
 /** 导出数据版本号，用于跨版本导入校验 */

@@ -6,9 +6,29 @@
  *              验证「单标的单 OPENED Round」规则与活跃流水派生。
  */
 
-import { describe, test, expect, beforeEach } from 'vitest';
+import 'fake-indexeddb/auto';
+import { describe, test, expect, vi, beforeEach } from 'vitest';
+
+// purge 钩子集成测试需要确定性的 clearThread 结果：mock 为固定失败（落墓碑分支），
+// 避免依赖真实网络环境（本机若跑着后端会导致墓碑分支不稳定）
+vi.mock('../services/copilotService', () => ({
+  newClientMessageId: () => 'cmid-test',
+  buildAskRequest: vi.fn(),
+  streamQuestion: vi.fn(),
+  fetchMessages: vi.fn(),
+  clearThread: vi.fn(async () => {
+    throw new Error('offline');
+  }),
+  toCopilotError: vi.fn(() => ({ message: 'err', hint: 'h', retryable: true })),
+  loadCopilotTombstones: vi.fn(() => []),
+  saveCopilotTombstones: vi.fn(),
+  loadCopilotConsent: vi.fn(() => true),
+  saveCopilotConsent: vi.fn(),
+}));
+
 import { useAppStore, DEFAULT_FEE_CONFIG, activeStreamsFromRounds, type Position, type PositionBatch } from '../store';
 import type { TStreamRecord } from '../types/tStrategy';
+import type { CopilotMessage } from '../types/domain';
 
 function basePosition(): Position {
   return {
@@ -161,5 +181,73 @@ describe('v8 Round 生命周期（tRounds + tTransactions，无 tStreams）', ()
     expect(pos?.currentAmount).toBe(900);
     expect(pos?.batches.every((b) => b.kind !== 'borrow')).toBe(true);
     expect(activeStreamsFromRounds(after)).toHaveLength(0);
+  });
+});
+
+describe('Copilot 按标的 scope 级联清理（V2 推广 purge 钩子）', () => {
+  beforeEach(() => {
+    useAppStore.setState({
+      feeConfig: { ...DEFAULT_FEE_CONFIG },
+      tRounds: [],
+      positions: [],
+      longTermRecords: [],
+      coreDataLoaded: true,
+      threads: {},
+      deletedScopes: [],
+      contextChangedScopes: {},
+    });
+  });
+
+  test('首笔流水建仓不误删；项目结清（CLEARED 翻转）→ 清空 t_calculator 线程并落墓碑', async () => {
+    useAppStore.setState({
+      positions: [basePosition()],
+      threads: { 't_calculator:sh600000': [{ id: 'm1' } as unknown as CopilotMessage] },
+      contextChangedScopes: { 't_calculator:sh600000': true },
+    });
+
+    useAppStore.getState().addStreamRecord(makeStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200 }));
+    // 项目仍活跃 → 线程保留
+    expect(useAppStore.getState().threads['t_calculator:sh600000']).toHaveLength(1);
+
+    const res = useAppStore.getState().addStreamRecord(makeStream({ id: 'b1', direction: 'buy', price: 16, amount: 200 }));
+    expect(res.cleared).toBe(true);
+    // 本地线程立即清空（不等网络），变动提示随会话一并清除
+    expect(useAppStore.getState().threads['t_calculator:sh600000']).toBeUndefined();
+    expect(useAppStore.getState().contextChangedScopes['t_calculator:sh600000']).toBeUndefined();
+    // DELETE 失败（mock offline）→ 落墓碑待对账补发
+    await vi.waitFor(() =>
+      expect(useAppStore.getState().deletedScopes).toContain('t_calculator:sh600000'),
+    );
+  });
+
+  test('删除项目末笔流水（空 OPENED 项目整体删除）→ 级联清理', async () => {
+    useAppStore.setState({
+      positions: [basePosition()],
+      threads: { 't_calculator:sh600000': [{ id: 'm1' } as unknown as CopilotMessage] },
+    });
+    useAppStore.getState().addStreamRecord(makeStream({ id: 's1', direction: 'sell', price: 17, amount: 100 }));
+
+    useAppStore.getState().removeStreamRecord('s1');
+    expect(useAppStore.getState().tRounds).toHaveLength(0);
+    expect(useAppStore.getState().threads['t_calculator:sh600000']).toBeUndefined();
+    await vi.waitFor(() =>
+      expect(useAppStore.getState().deletedScopes).toContain('t_calculator:sh600000'),
+    );
+  });
+
+  test('倒T结算（settleShortRound）→ 级联清理 t_calculator 线程', async () => {
+    useAppStore.setState({
+      positions: [basePosition()],
+      threads: { 't_calculator:sh600000': [{ id: 'm1' } as unknown as CopilotMessage] },
+    });
+    useAppStore.getState().addStreamRecord(makeStream({ id: 's1', direction: 'sell', price: 17.43, amount: 200 }));
+    useAppStore.getState().addStreamRecord(makeStream({ id: 'b1', direction: 'buy', price: 16, amount: 100 }));
+
+    const res = useAppStore.getState().settleShortRound('sh600000');
+    expect(res.ok).toBe(true);
+    expect(useAppStore.getState().threads['t_calculator:sh600000']).toBeUndefined();
+    await vi.waitFor(() =>
+      expect(useAppStore.getState().deletedScopes).toContain('t_calculator:sh600000'),
+    );
   });
 });

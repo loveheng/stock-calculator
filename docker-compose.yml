@@ -1,0 +1,32 @@
+# =====================================================================
+# stock-calculator PWA · Docker Compose（可选，方便一键启动）
+#
+# 启动：   docker compose up -d --build
+# 访问：   http://localhost:3000
+# 健康检查：docker compose ps（healthy 即正常）
+#
+# 如需把认证/OCR 上游指向本机 Spring Boot（stock-calculator-service），
+# 取消 environment 中两行注释（Linux 下 host.docker.internal 需追加
+# extra_hosts: ["host.docker.internal:host-gateway"]）。
+# =====================================================================
+
+services:
+  stock-calculator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stock-calculator:latest
+    container_name: stock-calculator
+    ports:
+      - '3000:3000'
+    environment:
+      PORT: 3000
+      # AUTH_UPSTREAM: http://host.docker.internal:18080
+      # IMPORT_UPSTREAM: http://host.docker.internal:18080
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

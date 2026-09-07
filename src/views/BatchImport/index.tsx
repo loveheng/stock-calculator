@@ -1,3 +1,11 @@
+/**
+ * @file index.tsx
+ * @description 批量导入工作台主视图：手动填表 / 剪贴板粘贴 / OCR 图片三条录入路径，
+ *              草稿表编辑 → 指纹去重校验 → 分组风控（RiskController）→ 按标的分组执行导入。
+ * @layer View
+ * @storage_impact 无直接 IndexedDB 读写（写路径经 store action 与 importAdapter）。
+ * @author 开发团队
+ */
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useAppStore } from '../../store';
 import { generateId, calcBatchExecution } from '../../store/utils';

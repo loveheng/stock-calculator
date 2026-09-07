@@ -13,17 +13,14 @@
 // ============================================================
 
 import { ulid } from 'ulid';
-import { db } from '../db/index';
 import type {
   PositionAdjustmentEntity,
   PositionEventEntity,
   PositionBatchEntity,
-} from '../db/schema';
-import { cleanUndefined } from '../db/cleanUndefined';
+} from '../types/domain';
 import type { Position, PositionBatch, RoundTxn, TRoundArchive } from '../store/types';
 import { calcTradeFees, matchSecurityKind, roundTo, type FeeConfig } from '../utils/mathUtils';
 import { recomputePositionSnapshot } from '../utils/calculator';
-import { putTRound } from '../db/index';
 /**
  * 命令 id 格式：`${roundId}-${seq}`
  * 幂等去重与回滚定位。
@@ -236,6 +233,9 @@ export async function applyRoundAdjustments(
   feeConfig: FeeConfig,
 ): Promise<ApplyResult> {
   if (cmds.length === 0) return { ok: true };
+
+  // 惰性加载 db 桶（services 层约定：不静态依赖 Dexie 实例）
+  const { db, putTRound, cleanUndefined } = await import('../db/index');
 
   const fullCode = round.fullCode;
   const securityKind = matchSecurityKind('', fullCode.replace(/^sh|sz|bj/, ''));
@@ -450,6 +450,9 @@ export async function rollbackRound(
 ): Promise<ApplyResult> {
   const capacityConflict = options?.capacityConflict ?? 'reject';
 
+  // 惰性加载 db 桶（services 层约定：不静态依赖 Dexie 实例）
+  const { db, cleanUndefined } = await import('../db/index');
+
   return db.transaction(
     'rw',
     [db.positions, db.positionBatches, db.tRounds, db.tTransactions,
@@ -591,6 +594,7 @@ export async function rollbackRound(
  * 做T侧借仓/超卖校验用。
  */
 export async function getBasePosition(fullCode: string): Promise<BasePositionView> {
+  const { db } = await import('../db/index');
   const pos = await db.positions
     .where('[isClosed+isDeleted]').equals([0, 0])
     .and((p) => p.fullCode === fullCode)
@@ -615,6 +619,7 @@ export async function getBasePosition(fullCode: string): Promise<BasePositionVie
  * 读取 Round 状态（中长线侧结仓拦截用）。
  */
 export async function getTRoundStatus(fullCode: string): Promise<TRoundStatusView> {
+  const { db } = await import('../db/index');
   const openRound = await db.tRounds
     .where('[status+isDeleted]').equals(['OPENED', 0])
     .and((r) => r.fullCode === fullCode)

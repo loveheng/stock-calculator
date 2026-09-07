@@ -17,7 +17,7 @@ import { generateId, formatTradeNo, buildBasePositionCosts } from './utils';
 import { recomputePositionSnapshot } from '../utils/calculator';
 import { positionAdjustmentPort } from '../services/positionAdjustmentPort';
 import { replacePositionSnapshotWithBatches } from '../db/index';
-import { safePersist } from './persistence';
+import { safePersist } from '../utils/persistence';
 import { validate, type RiskRule } from '../risk/validator';
 import { getMarketPrice } from '../risk/priceCache';
 import type { RiskValidationContext, RiskValidationReport } from '../risk/types';

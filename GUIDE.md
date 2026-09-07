@@ -219,10 +219,11 @@ export async function safePersist(fn: () => Promise<void>) {
 | stock（股票元数据） | — | stockService | StockAutocomplete（components/ui/） | Smartbox 搜索/实时行情/选股元数据落库 |
 | import（批量导入） | — | importAdapter · ocrService · importMerger · dedup | views/BatchImport/* | 手动填表/剪贴板/OCR 原始数据归一化导入 |
 | sync（WebDAV 同步/备份） | ioSlice | webdavSync | WebDAVConfig | 多端同步与云端备份 + 全量导入导出 |
+| serversync（服务端密文同步） | ioSlice（编排/gate） | serverSync · snapshotService（双通道共用快照格式） | —（initServerSync 启动对账，无专属视图） | 登录即备份：meta 对账/拉取密文/CAS 上传 + 防抖推送管线 |
 | fee（费率） | — | feePresets · mathUtils（calcTradeFees） | FeeConfig | 规费预设与统一费率计算 |
 | risk（风控规则） | — | riskController · validator · auditLogger（src/risk/） | — | 平仓阻断/规则校验/审计落库；views 直调属有意设计 |
 | calc（涨跌幅计算器） | — | —（mathUtils 纯函数） | ChangeRate | 涨跌幅⇄目标价换算 + 涨跌停阶梯推算 |
-| app（应用骨架/通用） | index（组装）· bootstrap · persistence · types · utils | db/index+schema · useDataLoader(hooks) | App · main · ConfirmModal · InstallPrompt | Store 组装/冷启动/落库队列/schema 迁移/domain 权威类型 |
+| app（应用骨架/通用） | index（组装）· bootstrap · types · utils | db/index+schema · persistence（落库队列，utils/ 中立叶子）· idGenerator（utils/ 中立叶子）· useDataLoader(hooks) | App · main · ConfirmModal · InstallPrompt | Store 组装/冷启动/落库队列/schema 迁移/domain 权威类型 |
 
 ---
 
@@ -551,7 +552,7 @@ npm install          # 安装依赖
 npm run dev          # 开发服务器 (http://localhost:5173)，HMR 热更新
 npm run build        # 生产构建 → dist/（vite build + scripts/postbuild.js）
 npm run preview      # 预览生产构建
-npm test             # 运行单元测试（pretest 自动先跑 check:arch 架构护栏；基线 472/472）
+npm test             # 运行单元测试（pretest 自动先跑 check:arch 架构护栏，要求全绿；用例数随功能增长，不硬编码）
 npm run test:watch   # 监听模式，文件变化自动重跑
 npx tsc --noEmit     # TypeScript 类型检查（tsconfig 排除了 src/__tests__）
 npm run check:arch   # 手动单跑架构护栏：check:layers（R1/R2/R3 分层依赖）+ check:circular（madge 循环依赖）

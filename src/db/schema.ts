@@ -7,10 +7,11 @@
  */
 
 import Dexie, { type Table } from 'dexie';
-import type { BaseEntity, PositionEntity, PositionBatchEntity, CustomStatsResult } from '../types/domain';
+import type { BaseEntity, PositionEntity, PositionBatchEntity, PositionAdjustmentEntity, PositionEventEntity, CustomStatsResult } from '../types/domain';
 
-// 持仓相关实体（行级契约）已下沉 types/domain.ts 零依赖叶子；此处 re-export 保持既有导入路径兼容
-export type { BaseEntity, PositionEntity, PositionBatchEntity };
+// 持仓相关实体（行级契约）已下沉 types/domain.ts 零依赖叶子；此处 re-export 保持既有导入路径兼容。
+// v9：positionAdjustments/positionEvents 两表实体同规则下沉（被 services/positionAdjustmentPort 引用，权威定义必须在 domain）
+export type { BaseEntity, PositionEntity, PositionBatchEntity, PositionAdjustmentEntity, PositionEventEntity };
 // 自定义统计定义（权威定义在 types/domain.ts；实体为本文件 CustomStatEntity，行级时间戳为 epoch 数字）
 export type { CustomStatDefinition } from '../types/domain';
 
@@ -236,42 +237,6 @@ export interface LongTermRecordEntity extends BaseEntity {
 }
 
 /**
- * 中间表实体（positionAdjustments 表）：命令登记簿 + 占用视图 + 物化快照三职责合一。
- * 中长线侧独占维护，做T侧只经端口读。
- * @see docs/position-ledger-spec.md §1.4
- */
-export interface PositionAdjustmentEntity extends BaseEntity {
-  /** 命令 id = `${roundId}-${seq}` */
-  id: string;
-  /** 关联做T轮次 */
-  roundId: string;
-  /** 序号（0 起）：同一 round 内命令全序 */
-  seq: number;
-  /** 命令种类 */
-  kind: 'borrow' | 'return-borrow' | 'finalize-sell' | 'merge-buy';
-  /** 股票完整代码 */
-  fullCode: string;
-  /** 数量 */
-  qty: number;
-  /** 参考成交价 */
-  price?: number;
-  /** 归档落定命令产生的真实批次 id（回滚时按此精确删除批次） */
-  batchId?: string;
-  /** 在途占用 / 已归档落定 */
-  status: 'in-flight' | 'settled';
-  /** 应用时间戳 */
-  appliedAt: number;
-}
-
-/**
- * 底仓变动痕迹实体（positionEvents 表）：append-only 事件流。
- * 凡动底仓必记（出借/归还/落定/回滚/手工），删除战报追加 rollback 事件。
- * 可推导事件（borrow/return/finalize-sell/merge-buy）可从流水重推导，
- * 但**不参与重放重建**；不可推导事件（rollback/manual-add/manual-reduce）是独立事实记录。
- * @see docs/position-ledger-spec.md §1.5
- */
-
-/**
  * 计划单实体（plannedOrders 表）。
  * 用户记录交易意图的备忘录，创建时填写计划价格/数量/有效期，
  * 执行时改写实际值并调用 addBatch/addStreamRecord 触发真实交易。
@@ -313,28 +278,6 @@ export interface PlannedOrderEntity extends BaseEntity {
   /** 短线执行结果 */
   avgPrice?: number;
   netProfit?: number;
-}
-export interface PositionEventEntity extends BaseEntity {
-  /** 全局唯一 ID */
-  id: string;
-  /** 股票完整代码 */
-  fullCode: string;
-  /** 做T驱动时关联轮次 */
-  roundId?: string;
-  /** 事件类型 */
-  eventType: 'borrow' | 'return' | 'finalize-sell' | 'merge-buy' | 'manual-add' | 'manual-reduce' | 'rollback';
-  /** 数量 */
-  qty: number;
-  /** 参考价格 */
-  price?: number;
-  /** 手续费 */
-  fee?: number;
-  /** 真实批次 id（若有） */
-  batchId?: string;
-  /** 事件发生时间戳 */
-  timestamp: number;
-  /** 备注 */
-  note?: string;
 }
 
 /**

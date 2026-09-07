@@ -25,7 +25,7 @@ import {
   completeRoundClear,
   putLongTermRecord,
 } from '../../db/index';
-import { safePersist } from '../persistence';
+import { safePersist } from '../../utils/persistence';
 import { reconcilePositionsWithStreams, persistPositionDiffs } from '../reconcile';
 import type { AppStore } from '../types';
 import type { PositionBatch, TRoundArchive, LongTermRecord } from '../types';

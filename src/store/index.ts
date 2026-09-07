@@ -24,7 +24,7 @@ import { createCopilotSlice } from './slices/copilotSlice';
 import { createCopilotActionSlice } from './slices/copilotActionSlice';
 import { createHomeSlice } from './slices/homeSlice';
 import { createCustomStatsSlice } from './slices/customStatsSlice';
-import { getIsSyncingFromRemote } from './persistence';
+import { getIsSyncingFromRemote } from '../utils/persistence';
 import { loadCopilotTombstones, loadCopilotConsent } from '../services/copilotService';
 
 /** 自定义统计 NEW 角标基准恢复（localStorage 不可用时静默降级为空） */
@@ -59,7 +59,7 @@ export { recomputePositionSnapshot } from '../utils/calculator';
 // useStreamResults 已迁移至 hooks/useStreamResults.ts：Hook 依赖 useAppStore，
 // 不能经本桶 re-export（否则 store/index → hooks → store/index 循环），消费方请直接从 hooks 导入
 export { DEFAULT_FEE_CONFIG, FEE_PRESETS, FEE_TEMPLATES } from '../utils/feePresets';
-export { getPersistError, clearPersistError, getIsSyncingFromRemote } from './persistence';
+export { getPersistError, clearPersistError, getIsSyncingFromRemote } from '../utils/persistence';
 export type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 export { reconcilePositionsWithStreams } from './reconcile';
 

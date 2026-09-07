@@ -27,7 +27,7 @@ import {
   deleteTRoundWithTransactions,
   replacePositionSnapshotWithBatches,
 } from '../../db/index';
-import { safePersist } from '../persistence';
+import { safePersist } from '../../utils/persistence';
 import {
   reconcilePositionsWithStreams,
   persistPositionDiffs,

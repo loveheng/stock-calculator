@@ -55,13 +55,15 @@ export interface PageResult<T> {
 }
 
 import type { AuditActionType, AuditEntry } from '../risk/types';
-import type { LongTermRecord, PlannedOrder } from '../types/domain';
+import type { LongTermRecord, PlannedOrder, TRoundRow } from '../types/domain';
 import type { CustomStatDefinition, CustomStatTxn } from '../types/domain';
 import type { KlineItem, SandboxBranch, SandboxOrder, CashInjection } from '../types/sandbox';
 export type { FeeConfig } from '../utils/mathUtils';
 export type { Position, PositionBatch, TRoundArchive, RoundTxn, LongTermRecord, PlannedOrder } from '../types/domain';
 export type { CustomStatDefinition } from '../types/domain';
 export type { StockMeta } from '../types/stock';
+// 纯函数叶子随桶导出：services 惰性 import 桶时可取用（如 positionAdjustmentPort）
+export { cleanUndefined } from './cleanUndefined';
 
 /** 费率配置的行级视图模型（用于 UI 展示，非实体） */
 export interface FeeConfigRow {
@@ -92,8 +94,8 @@ export interface FeeConfigRow {
 /** 持仓的行级视图模型 = Store 层 Position 类型（两者完全一致，统一为单一定义） */
 export type PositionRow = Position;
 
-/** 做T Round 的行级视图模型 = Store 层 TRoundArchive 类型（统一为单一定义） */
-export type TRoundRow = TRoundArchive;
+/** 做T Round 的行级视图模型：权威定义在 types/domain（hooks 等非 db 模块从 domain 导入，不再知晓 db 行结构）；此处 re-export 保持桶 API 兼容 */
+export type { TRoundRow } from '../types/domain';
 
 /** 股票行视图模型 = StockMeta（行情搜索返回结构） */
 export type StockRow = StockMeta;

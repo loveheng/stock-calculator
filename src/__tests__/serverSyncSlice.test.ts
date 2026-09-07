@@ -106,7 +106,7 @@ import {
   markServerPushPending,
   __resetServerSyncSlice,
 } from '../store/slices/ioSlice';
-import { setIsSyncingFromRemote } from '../store/persistence';
+import { setIsSyncingFromRemote } from '../utils/persistence';
 import { AUTH_SESSION_STORAGE_KEY } from '../services/authSession';
 import { serializeSnapshot } from '../services/snapshotService';
 import { EXPORT_VERSION } from '../store/types';

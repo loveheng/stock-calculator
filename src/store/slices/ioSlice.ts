@@ -11,7 +11,7 @@
  */
 
 import type { StateCreator } from 'zustand';
-import { getIsSyncingFromRemote, safePersist, setIsSyncingFromRemote } from '../persistence';
+import { getIsSyncingFromRemote, safePersist, setIsSyncingFromRemote } from '../../utils/persistence';
 import { recordAudit } from '../../risk/auditLogger';
 import { importDataIntegrityRule } from '../../risk/validator';
 import { safeImportAllData } from '../../db/index';

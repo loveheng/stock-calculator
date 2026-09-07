@@ -1,12 +1,11 @@
 /**
  * @file persistence.ts
- * @description Store 持久化军械：带指数退避重试的落库队列（safePersist）、失败重放队列、
+ * @description 持久化军械（中立基础设施叶子）：带指数退避重试的落库队列（safePersist）、失败重放队列、
  *              持久化错误状态（persistError）、远端同步标记（isSyncingFromRemote）
  *              与首载完成标记（initialLoadDone）。
- *              从 store/index.ts 拆出，供各 slice 与 roundService 共用。
- *              v8.1 解耦：initialLoadDone 标志从 db/storeInit 迁入 —— 本模块因此成为
- *              零项目内依赖的叶子模块，risk/auditLogger 可安全依赖而不产生循环。
- * @layer Store (Persistence)
+ *              原居 store/（v9 前为 store/persistence.ts）；因 risk/auditLogger 也需复用落库管道，
+ *              下沉至 utils/ —— 零项目内依赖叶子，store 与 risk 均可安全依赖（R2：不 import store/db）。
+ * @layer Utils (Persistence 中立基础设施)
  * @author 开发团队
  */
 

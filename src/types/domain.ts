@@ -109,6 +109,9 @@ export interface TRoundArchive {
   transactions?: RoundTxn[];
 }
 
+/** 做T Round 的行级视图模型 = TRoundArchive（单一定义；db 桶 re-export 保持兼容，非 db 模块一律从此处导入） */
+export type TRoundRow = TRoundArchive;
+
 // ---- 中长期操作记录 ----
 export interface LongTermRecord {
   id: string;
@@ -238,6 +241,64 @@ export interface PositionBatchEntity extends BaseEntity {
   costPrice?: number;
   /** 关联做T轮次 id：做T归档产生的批次用于回滚定位 */
   sourceRoundId?: string;
+}
+
+/**
+ * 中间表实体（positionAdjustments 表）：命令登记簿 + 占用视图 + 物化快照三职责合一。
+ * 中长线侧独占维护，做T侧只经端口读。
+ * @see docs/position-ledger-spec.md §1.4
+ */
+export interface PositionAdjustmentEntity extends BaseEntity {
+  /** 命令 id = `${roundId}-${seq}` */
+  id: string;
+  /** 关联做T轮次 */
+  roundId: string;
+  /** 序号（0 起）：同一 round 内命令全序 */
+  seq: number;
+  /** 命令种类 */
+  kind: 'borrow' | 'return-borrow' | 'finalize-sell' | 'merge-buy';
+  /** 股票完整代码 */
+  fullCode: string;
+  /** 数量 */
+  qty: number;
+  /** 参考成交价 */
+  price?: number;
+  /** 归档落定命令产生的真实批次 id（回滚时按此精确删除批次） */
+  batchId?: string;
+  /** 在途占用 / 已归档落定 */
+  status: 'in-flight' | 'settled';
+  /** 应用时间戳 */
+  appliedAt: number;
+}
+
+/**
+ * 底仓变动痕迹实体（positionEvents 表）：append-only 事件流。
+ * 凡动底仓必记（出借/归还/落定/回滚/手工），删除战报追加 rollback 事件。
+ * 可推导事件（borrow/return/finalize-sell/merge-buy）可从流水重推导，
+ * 但**不参与重放重建**；不可推导事件（rollback/manual-add/manual-reduce）是独立事实记录。
+ * @see docs/position-ledger-spec.md §1.5
+ */
+export interface PositionEventEntity extends BaseEntity {
+  /** 全局唯一 ID */
+  id: string;
+  /** 股票完整代码 */
+  fullCode: string;
+  /** 做T驱动时关联轮次 */
+  roundId?: string;
+  /** 事件类型 */
+  eventType: 'borrow' | 'return' | 'finalize-sell' | 'merge-buy' | 'manual-add' | 'manual-reduce' | 'rollback';
+  /** 数量 */
+  qty: number;
+  /** 参考价格 */
+  price?: number;
+  /** 手续费 */
+  fee?: number;
+  /** 真实批次 id（若有） */
+  batchId?: string;
+  /** 事件发生时间戳 */
+  timestamp: number;
+  /** 备注 */
+  note?: string;
 }
 
 // ---- 费率模板名称 ----

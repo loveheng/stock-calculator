@@ -9,7 +9,7 @@
 
 import type { StateCreator } from 'zustand';
 import { loadPositionsFromDB, loadTRoundsFromDB, putFeeConfig } from '../../db/index';
-import { safePersist } from '../persistence';
+import { safePersist } from '../../utils/persistence';
 import { recordAudit } from '../../risk/auditLogger';
 import type { AppStore } from '../types';
 

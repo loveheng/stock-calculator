@@ -7,7 +7,7 @@
  * @author 开发团队
  */
 
-import { generateId } from '../store/utils';
+import { generateId } from '../utils/idGenerator';
 import { generateTxFingerprint, classifyDraft, dateKey, type PreparedHistory } from '../utils/dedup';
 import { normalizeCode, canonicalizeFullCode } from '../utils/dedup';
 export { normalizeCode, canonicalizeFullCode };

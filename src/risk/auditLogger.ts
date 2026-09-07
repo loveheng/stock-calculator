@@ -10,7 +10,7 @@
 
 import { ulid } from 'ulid';
 import type { AuditEntry, AuditActionType } from './types';
-import { safePersist } from '../store/persistence';
+import { safePersist } from '../utils/persistence';
 
 /** 简化的上下文快照，用于记录 before/after */
 export interface AuditSnapshot {

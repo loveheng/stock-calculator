@@ -14,7 +14,6 @@
  */
 
 import type { StockQuoteSummary, StockSearchItem, StockMeta } from '../types/stock';
-import { putStock } from '../db';
 
 /** 行情摘要类型同时从服务层导出，便于 UI 侧统一从服务模块引用。 */
 export type { StockQuoteSummary };
@@ -151,6 +150,8 @@ export async function searchStocks(input: string): Promise<StockSearchItem[]> {
  * @param {StockMeta} stock - 规范化股票元数据
  */
 export async function persistStockMeta(stock: StockMeta): Promise<void> {
+  // 惰性加载 db 桶（services 层约定：不静态依赖 Dexie 实例）
+  const { putStock } = await import('../db/index');
   await putStock(stock);
 }
 

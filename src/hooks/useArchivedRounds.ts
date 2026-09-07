@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ledgerService } from '../services/ledgerService';
 import { useAppStore } from '../store';
-import type { TRoundRow } from '../db/index';
+import type { TRoundRow } from '../types/domain';
 
 /**
  * 按需加载已完成 Round 的 Hook。
@@ -14,6 +14,9 @@ import type { TRoundRow } from '../db/index';
  *              同时实时订阅 Store 中 tRounds 的变化：当日做T完结自动归档、
  *              删除战报、结算倒T、划转底仓等动作发生后，立即静默重新拉取
  *              归档摘要，使「今日战报归档库」无需刷新页面即可展示最新战报。
+ *
+ * @layer Hooks
+ * @storage_impact 无直接持久化（读路径经 ledgerService，实时订阅走 Store）。
  *
  * @note 一次性加载全部摘要而非真分页：Statistics 与 TCalculator 的胜率/累计
  *       净收益等指标需要对全量轮次做汇总；轮次摘要行数据量远小于明细，

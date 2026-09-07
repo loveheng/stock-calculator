@@ -22,13 +22,14 @@ const GROUPS = [
   ['stock（股票元数据/行情源）', ['stockservice', 'stockautocomplete', 'types/stock']],
   ['import（批量导入）', ['import', 'ocr', 'dedup']],
   ['sync（WebDAV 同步/备份）', ['webdav', 'ioslice']],
+  ['serversync（服务端密文同步）', ['serversync', 'snapshotservice']],
   ['fee（费率）', ['feepresets', 'feeconfig', 'mathutils']],
   ['ledger（持仓/账本）', ['ledger', 'calculator', 'costaveraging', 'home', 'coreslice', 'positions', 'orders', 'rounds', 'reconcile', 'usearchivedrounds', 'planorder', 'recalculat', 'recomputeposition', 'roundlifecycle']],
   ['risk（风控规则）', ['risk', 'getcloseblockreason']],
   ['calc（涨跌幅计算器）', ['changerate']],
   ['copilot（AI 助手）', ['copilot', 'pagecontext']],
   ['customstat（自定义统计）', ['customstat']],
-  ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'usedataloader', 'bootstrap', 'persistence', 'store/index', 'store/types', 'store/utils', 'db/index', 'db/schema', 'domain', 'installprompt', 'confirmmodal', 'migration', 'cleanundefined']],
+  ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'usedataloader', 'bootstrap', 'persistence', 'store/index', 'store/types', 'store/utils', 'db/index', 'db/schema', 'domain', 'installprompt', 'confirmmodal', 'migration', 'cleanundefined', 'idgenerator']],
 ];
 
 const ROLES = [

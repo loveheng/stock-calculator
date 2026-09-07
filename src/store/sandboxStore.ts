@@ -32,7 +32,7 @@ import { create } from 'zustand';
 import type { Position } from './types';
 import { generateId } from './utils';
 import { useAppStore } from './index';
-import { safePersist } from './persistence';
+import { safePersist } from '../utils/persistence';
 import { recordAudit } from '../risk/auditLogger';
 import { matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
 import { extractBaseline } from '../utils/baselineExtractor';

@@ -1,10 +1,12 @@
 /**
  * @file utils.ts
- * @description Store 层纯工具函数：ID 生成、底仓成本映射、Round 结清（finalizeRoundIfCleared）、
+ * @description Store 层纯工具函数：底仓成本映射、Round 结清（finalizeRoundIfCleared）、
  *              结仓资格校验、撮合结果派生等。均为纯函数，不直接写 IndexedDB，
  *              且不 import useAppStore —— 依赖 store 的派生 Hook 已迁移至 hooks/useStreamResults.ts，
  *              快照重建纯计算已迁移至 utils/calculator.ts（两者原本使本模块与 store/index
  *              形成循环依赖）。
+ *              v9：ID 生成（generateId）下沉 utils/idGenerator.ts —— services 层也需要生成 ID，
+ *              下沉后 services → utils 合法，避免 services → store 值依赖；此处 re-export 兼容。
  * @layer Store (Utils)
  * @author 开发团队
  */
@@ -15,13 +17,12 @@ import type { FeeConfig } from '../utils/mathUtils';
 import { calcTradeFees, matchSecurityKind } from '../utils/mathUtils';
 import { RiskController } from '../risk';
 import { recomputePositionSnapshot } from '../utils/calculator';
+import { generateId } from '../utils/idGenerator';
 
 /**
- * 生成全局唯一 ID。
+ * 生成全局唯一 ID（实现在 utils/idGenerator.ts，此处 re-export 兼容）。
  */
-export function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
+export { generateId } from '../utils/idGenerator';
 
 /**
  * 格式化时间戳为做T战报业务流水号格式：#YYYYMMDD-HHmm。

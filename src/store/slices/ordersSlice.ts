@@ -9,7 +9,7 @@
 
 import type { StateCreator } from 'zustand';
 import { loadPlannedOrdersFromDB, putPlannedOrder, deletePlannedOrder } from '../../db/index';
-import { safePersist } from '../persistence';
+import { safePersist } from '../../utils/persistence';
 import type { AppStore } from '../types';
 
 export type OrdersSlice = Pick<

@@ -21,7 +21,7 @@
  * @author 开发团队
  */
 
-import { loadKlineCache, putKlineCache, type KlineCachePayload } from '../db';
+import type { KlineCachePayload } from '../db';
 import type { KlineItem } from '../types/sandbox';
 
 /** 复权系数表：日期（YYYY-MM-DD）→ qfq收盘 / raw收盘 */
@@ -269,6 +269,9 @@ async function refreshFromCache(
     return baseBundle;
   }
 
+  // 惰性加载 db 桶（services 层约定：不静态依赖 Dexie 实例）
+  const { putKlineCache } = await import('../db/index');
+
   try {
     // 增量窗口含边界日（用于漂移检测），去重时边界日以缓存为准
     const delta = await fetchKlineFromNetwork(fullCode, {
@@ -328,6 +331,8 @@ export async function getKline(
   if (inflight) return inflight;
 
   const promise = (async () => {
+    // 惰性加载 db 桶（services 层约定：不静态依赖 Dexie 实例）
+    const { loadKlineCache, putKlineCache } = await import('../db/index');
     const cached = await loadKlineCache(fullCode);
     if (cached && cached.klines.length > 0) {
       const bundle = await refreshFromCache(fullCode, cached, options.startDate);

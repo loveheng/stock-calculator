@@ -31,6 +31,8 @@ import { useAppStore } from '../../store';
 import { useAuthStore } from '../../store/useAuthStore';
 import ConfirmModal from '../ui/ConfirmModal';
 import CopilotActionCards from './CopilotActionCards';
+import CustomStatResultPanel from '../customStats/CustomStatResultPanel';
+import { prewarmSandbox } from '../../utils/customStats/client';
 import type { CopilotMessage } from '../../types/domain';
 
 /** 空数组常量：避免 zustand selector 每次返回新引用触发多余重渲染 */
@@ -203,6 +205,11 @@ export default function GlobalCopilot() {
     void ensureThreadLoaded(activeScopeId);
   }, [copilotOpen, isAuthenticated, activeScopeId, ensureThreadLoaded]);
 
+  // 沙箱预热（D16/§4.1）：浮窗打开即触发 wasm 懒加载与 VM 初始化，首次生成时已就绪
+  useEffect(() => {
+    if (copilotOpen) prewarmSandbox();
+  }, [copilotOpen]);
+
   // 切页或归档提示变化时重置关闭态
   useEffect(() => {
     setArchiveDismissed(false);
@@ -362,6 +369,9 @@ export default function GlobalCopilot() {
             </>
           )}
         </div>
+
+        {/* 自定义统计结果面板（run_custom_stat 草稿单槽位：保存/迭代/丢弃，FR3/FR4） */}
+        <CustomStatResultPanel />
 
         {/* 待确认动作卡（confirm 级动作队列：AI 只建议，用户拍板） */}
         <CopilotActionCards />

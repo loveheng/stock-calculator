@@ -169,15 +169,25 @@ export function newClientMessageId(): string {
   return ulid();
 }
 
-/** 组装提问请求：ephemeral 明细过 applySizeGuard 护栏（D5④），标量概览/时间锚点落库字段 */
+/**
+ * 组装提问请求：ephemeral 明细过 applySizeGuard 护栏（D5④），标量概览/时间锚点落库字段。
+ *
+ * @param opts.taskType 任务类型（可选；'custom_stat' → 后端路由自定义统计生成模板）
+ * @param opts.extraDetail 追加进 detail 的临时键（如自定义统计的 sampleRows/draftContext），
+ *                         同样受 applySizeGuard 体积护栏约束
+ */
 export function buildAskRequest(
   sessionTitle: string,
   question: string,
   clientMessageId: string,
   data: CopilotContextData,
   focusBlockId?: string,
+  opts?: { taskType?: string; extraDetail?: Record<string, unknown> },
 ): CopilotAskRequest {
-  const guarded = applySizeGuard(data, COPILOT_MAX_BYTES);
+  const merged: CopilotContextData = opts?.extraDetail
+    ? { ...data, detail: { ...data.detail, ...opts.extraDetail } }
+    : data;
+  const guarded = applySizeGuard(merged, COPILOT_MAX_BYTES);
   return {
     question,
     sessionTitle,
@@ -189,6 +199,7 @@ export function buildAskRequest(
     // V2 Click-to-Focus：区块级 Prompt 路由（缺省 = 整页策略）；
     // Spring Boot 默认忽略未知字段，后端未升级前向后兼容
     ...(focusBlockId ? { focusBlockId } : {}),
+    ...(opts?.taskType ? { taskType: opts.taskType } : {}),
   };
 }
 

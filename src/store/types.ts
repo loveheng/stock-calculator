@@ -25,8 +25,29 @@ import type {
   PageContextSnapshot,
   CopilotMessage,
   CopilotAction,
+  CopilotRunStatPayload,
+  CustomStatDefinition,
+  CustomStatsResult,
   HomeTimeRange,
 } from '../types/domain';
+
+/** 自定义统计草稿（内存态单槽位，刷新即失；attempt = 第 N 版） */
+export interface CustomStatsDraft {
+  code: string;
+  name: string;
+  description: string;
+  /** 原始需求锚点（迭代协议组成部分，保存时随定义留存） */
+  prompt: string;
+  /** 重新生成来源（保存弹层「替换」选项依据；无来源 = 首次生成只可另存） */
+  originDefId?: string;
+  /** 第 N 版（每次 run_custom_stat 落草稿 +1） */
+  attempt: number;
+  lastResult?: CustomStatsResult;
+  running: boolean;
+  error?: string;
+  /** 沙箱错误行号（「AI 修复」提示词携带） */
+  errorLine?: number;
+}
 
 /**
  * 领域类型下沉：持仓/批次/Round/中长期记录/计划单等纯数据契约已迁移至
@@ -76,6 +97,14 @@ export interface PendingCopilotAction {
   label: string;
   /** 动作参数（sanitize 阶段原样保留，执行器落地前按类型二次校验） */
   payload: Record<string, unknown>;
+}
+
+/** 提问附加选项：任务类型路由与临时上下文键（自定义统计生成/迭代复用 sendMessage 通道） */
+export interface CopilotSendOptions {
+  /** 'custom_stat' → 后端路由自定义统计生成模板（后端 docs/custom-stats-api.md §2.1） */
+  taskType?: string;
+  /** 追加进 contextSummary.detail 的临时键（如 sampleRows/draftContext），受 12KB 护栏约束 */
+  extraDetail?: Record<string, unknown>;
 }
 
 /** Store Action 接口：汇总所有可以操作的函数签名 */
@@ -173,8 +202,9 @@ export interface AppStoreActions {
   unfocusBlock: () => void;
   /** 激活会话：墓碑对账 → 缓存优先（D8）→ 远端拉尾部 20 条 */
   ensureThreadLoaded: (scopeId: string) => Promise<void>;
-  /** 提问：乐观更新 pending → ok/failed（sending 锁防并发重复提交） */
-  sendMessage: (question: string) => Promise<void>;
+  /** 提问：乐观更新 pending → ok/failed（sending 锁防并发重复提交）。
+   *  opts：任务类型路由（'custom_stat' → 自定义统计生成模板）与临时上下文键（sampleRows/draftContext） */
+  sendMessage: (question: string, opts?: CopilotSendOptions) => Promise<void>;
   /** 重发失败消息：同 clientMessageId 幂等 + 最新 getData() 重采快照（D7） */
   retryMessage: (messageId: string) => Promise<void>;
   /** 中断进行中的流式提问（面板关闭/停止按钮触发；无进行中提问时空操作，幂等） */
@@ -193,6 +223,8 @@ export interface AppStoreActions {
   handleCopilotActions: (actions?: readonly CopilotAction[]) => void;
   /** 关闭全局提醒弹窗（notify 动作落地态） */
   dismissCopilotNotice: () => void;
+  /** 直接落地一条全局提醒（跨切片复用弹窗槽位，如自定义统计草稿覆盖/保存轻提示） */
+  setCopilotNotice: (payload: { title: string; message: string; severity: 'info' | 'warning' | 'danger' }) => void;
   /** 忽略待确认动作（出队） */
   dismissPendingCopilotAction: (id: string) => void;
   /** 执行待确认动作（按执行器注册表分发业务 action；未登记类型出队并忽略） */
@@ -201,6 +233,36 @@ export interface AppStoreActions {
   // -- 首页仪表盘（视图偏好上提 Store：Copilot 区块快照需经 getState() 同源重算，R2） --
   /** 设置首页时间筛选维度（1d/7d/30d/all） */
   setHomeTimeRange: (range: HomeTimeRange) => void;
+
+  // -- 自定义统计（AI 生成代码 + 端上沙箱执行，P0） --
+  /** 执行 run_custom_stat 动作：守卫后的载荷 → 夹具预跑 → 全量执行 → 入草稿（单槽位覆盖语义） */
+  startCustomStatDraft: (payload: CopilotRunStatPayload) => Promise<void>;
+  /** 草稿迭代（D15 单码覆盖）：prompt 种子 + 当前 code + 本次反馈 → sendMessage(custom_stat) */
+  iterateCustomStatDraft: (feedback: string) => Promise<void>;
+  /** 丢弃草稿 */
+  clearCustomStatDraft: () => void;
+  /** 保存草稿（信任动作，唯一写路径）：另存新定义 / 替换原定义（钉选迁移，需 originDefId） */
+  saveCustomStatDraft: (option: 'new' | 'replace', overrides?: { name?: string; description?: string }) => Promise<void>;
+  /** 钉选/取消钉选（画廊双区） */
+  toggleCustomStatPin: (id: string, pinned: boolean) => Promise<void>;
+  /** 收藏/取消收藏 */
+  toggleCustomStatFavorite: (id: string, favorite: boolean) => Promise<void>;
+  /** 软删除定义 */
+  deleteCustomStatDef: (id: string) => Promise<void>;
+  /** 服务端同步（登录即备份）：拉取 LWW 合并 + 推送本地较新定义 + 传播墓碑删除；未登录静默跳过 */
+  syncCustomStatsFromServer: () => Promise<{ pulled: number; pushed: number; deleted: number }>;
+  /** 加载画廊元数据（进入 custom tab 时调用，幂等） */
+  loadCustomStatsGallery: () => Promise<void>;
+  /** 批量刷新已加载条目（SWR）：1× ctx 注入 + N× 执行，分批让出（单批 ≤6） */
+  refreshLoadedCustomStats: () => Promise<void>;
+  /** 运行单个定义（画廊卡「运行」/手动刷新） */
+  runCustomStatDef: (id: string) => Promise<void>;
+  /** 重新生成：复用存储 prompt 种子发起 custom_stat 提问，新草稿携带 originDefId（另存/替换双选项） */
+  regenerateCustomStatDef: (id: string, extraRequest?: string) => Promise<void>;
+  /** 查看画廊后清除 NEW 角标基准（localStorage 持久化） */
+  markCustomStatsSeen: () => void;
+  /** 组装 custom_stat 提问样例上下文（字段字典 + 每集合 ≤3 行真实形状样例；仅进 prompt 不落库） */
+  buildCustomStatPromptContext: () => Promise<Record<string, unknown>>;
 }
 
 /** 完整的 Store 状态 + Action */
@@ -260,6 +322,18 @@ export interface AppStore extends AppStoreActions {
   // -- 首页仪表盘（视图偏好） --
   /** 首页时间筛选维度（自 Home useState 上提；V2 区块级快照同源读取，R2） */
   homeTimeRange: HomeTimeRange;
+
+  // -- 自定义统计（AI 生成代码 + 端上沙箱执行，P0） --
+  /** 草稿单槽位（内存态，刷新即失；新生成自动覆盖 + toast，FR3） */
+  customStatDraft: CustomStatsDraft | null;
+  /** 画廊元数据（含 lastResult 缓存；进入 custom tab 一次轻量读入，UI 切片分页） */
+  customStatsGallery: CustomStatDefinition[];
+  /** 批量刷新进行中（gallery 手动刷新/打开页面后台刷新共用） */
+  customStatsRefreshing: boolean;
+  /** 服务端同步进行中（打开 custom tab / 保存/删除后触发，失败静默降级为本地态） */
+  customStatsSyncing: boolean;
+  /** NEW 角标基准（pinnedAt > lastSeenAt 高亮；localStorage 持久化） */
+  customStatsLastSeenAt: string;
 }
 
 /** 导出数据版本号，用于跨版本导入校验 */

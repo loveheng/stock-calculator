@@ -27,6 +27,7 @@ const GROUPS = [
   ['risk（风控规则）', ['risk', 'getcloseblockreason']],
   ['calc（涨跌幅计算器）', ['changerate']],
   ['copilot（AI 助手）', ['copilot', 'pagecontext']],
+  ['customstat（自定义统计）', ['customstat']],
   ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'usedataloader', 'bootstrap', 'persistence', 'store/index', 'store/types', 'store/utils', 'db/index', 'db/schema', 'domain', 'installprompt', 'confirmmodal', 'migration', 'cleanundefined']],
 ];
 

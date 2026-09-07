@@ -36,6 +36,7 @@ import {
   type PositionBatchEntity,
   type PositionEntity,
   type PositionEventEntity,
+  type CustomStatEntity,
   type SandboxBranchEntity,
   type SandboxOrderEntity,
   type StockEntity,
@@ -55,9 +56,11 @@ export interface PageResult<T> {
 
 import type { AuditActionType, AuditEntry } from '../risk/types';
 import type { LongTermRecord, PlannedOrder } from '../types/domain';
+import type { CustomStatDefinition, CustomStatTxn } from '../types/domain';
 import type { KlineItem, SandboxBranch, SandboxOrder, CashInjection } from '../types/sandbox';
 export type { FeeConfig } from '../utils/mathUtils';
 export type { Position, PositionBatch, TRoundArchive, RoundTxn, LongTermRecord, PlannedOrder } from '../types/domain';
+export type { CustomStatDefinition } from '../types/domain';
 export type { StockMeta } from '../types/stock';
 
 /** 费率配置的行级视图模型（用于 UI 展示，非实体） */
@@ -100,6 +103,9 @@ export type LongTermRecordRow = LongTermRecord;
 
 /** 计划单行视图模型 = Store 层 PlannedOrder 类型 */
 export type PlannedOrderRow = PlannedOrder;
+
+/** 自定义统计定义行视图模型 = Store 层 CustomStatDefinition 类型（统一为单一定义） */
+export type CustomStatRow = CustomStatDefinition;
 
 /** 全局数据库实例（别名转发自 ./schema） */
 export const db = tradingDb;
@@ -459,6 +465,167 @@ export async function putPlannedOrder(order: PlannedOrder): Promise<void> {
  */
 export async function deletePlannedOrder(id: string): Promise<void> {
   await db.plannedOrders.update(id, { isDeleted: 1, updatedAt: Date.now() });
+}
+
+// ============================================================
+// 自定义统计（customStats 表）：AI 生成代码 + 端上沙箱执行
+// ============================================================
+
+/**
+ * 将自定义统计定义实体映射为 Store 层 CustomStatDefinition（epoch → ISO）。
+ */
+function toCustomStatRow(entity: CustomStatEntity): CustomStatDefinition {
+  return {
+    id: entity.id,
+    name: entity.name,
+    description: entity.description,
+    prompt: entity.prompt,
+    code: entity.code,
+    schemaVersion: entity.schemaVersion,
+    kind: entity.kind,
+    lastResult: entity.lastResult,
+    lastRunAt: entity.lastRunAt,
+    favorite: entity.favorite,
+    pinned: entity.pinned,
+    pinnedAt: entity.pinnedAt,
+    runCount: entity.runCount,
+    originMessageId: entity.originMessageId,
+    createdAt: new Date(entity.createdAt).toISOString(),
+    updatedAt: new Date(entity.updatedAt).toISOString(),
+    isDeleted: entity.isDeleted === 1 ? 1 : 0,
+  };
+}
+
+/**
+ * 将 Store 层 CustomStatDefinition 映射为实体（ISO → epoch）。
+ */
+export function toCustomStatEntity(def: CustomStatDefinition): CustomStatEntity {
+  return {
+    id: def.id,
+    name: def.name,
+    description: def.description,
+    prompt: def.prompt,
+    code: def.code,
+    schemaVersion: def.schemaVersion,
+    kind: def.kind,
+    lastResult: def.lastResult,
+    lastRunAt: def.lastRunAt,
+    favorite: def.favorite,
+    pinned: def.pinned,
+    pinnedAt: def.pinnedAt,
+    runCount: def.runCount,
+    originMessageId: def.originMessageId,
+    createdAt: Date.parse(def.createdAt) || Date.now(),
+    // 保留调用方传入的 updatedAt（同步合并按 LWW 比对该字段，禁止用 now() 覆盖）
+    updatedAt: Date.parse(def.updatedAt) || Date.now(),
+    isDeleted: def.isDeleted ?? 0,
+  };
+}
+
+/**
+ * 从 DB 加载全部自定义统计定义（不含软删，含 lastResult 缓存；个人量级，一次轻量读入由 UI 切片分页）。
+ */
+export async function loadCustomStatsFromDB(): Promise<CustomStatDefinition[]> {
+  const entities = await db.customStats
+    .filter((d) => d.isDeleted === 0)
+    .toArray();
+  return entities.map(toCustomStatRow);
+}
+
+/**
+ * 写入（新增或覆盖）自定义统计定义。仅用于保存/替换/钉选/收藏等显式写路径。
+ */
+export async function putCustomStatDef(def: CustomStatDefinition): Promise<void> {
+  await db.customStats.put(cleanUndefined(toCustomStatEntity(def)));
+}
+
+/**
+ * 软删除自定义统计定义。
+ */
+export async function deleteCustomStat(id: string): Promise<void> {
+  await db.customStats.update(id, { isDeleted: 1, updatedAt: Date.now() });
+}
+
+/**
+ * 加载全部自定义统计定义（含软删墓碑）：服务器同步合并专用。
+ *
+ * @description 墓碑（isDeleted=1）用于向服务端传播删除；服务端删除确认后
+ *              由 hardDeleteCustomStat 物理清理，避免墓碑无限累积。
+ */
+export async function loadCustomStatsIncludingDeletedFromDB(): Promise<CustomStatDefinition[]> {
+  const entities = await db.customStats.toArray();
+  return entities.map(toCustomStatRow);
+}
+
+/**
+ * 物理删除自定义统计行（仅用于同步：墓碑已在服务端确认删除后清理）。
+ */
+export async function hardDeleteCustomStat(id: string): Promise<void> {
+  await db.customStats.delete(id);
+}
+
+/**
+ * 钉选/取消钉选（画廊双区操作；取消时物理删除 pinnedAt 键，防 undefined 落库报错）。
+ */
+export async function setCustomStatPinnedInDB(id: string, pinned: boolean): Promise<void> {
+  const pinnedAt = pinned ? new Date().toISOString() : undefined;
+  await db.customStats
+    .where('id').equals(id)
+    .modify((row: CustomStatEntity) => {
+      row.pinned = pinned;
+      if (pinnedAt) row.pinnedAt = pinnedAt;
+      else delete row.pinnedAt;
+      row.updatedAt = Date.now();
+    });
+}
+
+/**
+ * 收藏/取消收藏。
+ */
+export async function setCustomStatFavoriteInDB(id: string, favorite: boolean): Promise<void> {
+  await db.customStats
+    .where('id').equals(id)
+    .modify((row: CustomStatEntity) => {
+      row.favorite = favorite;
+      row.updatedAt = Date.now();
+    });
+}
+
+/**
+ * 加载全部未删除做T流水（自定义统计全量口径）。
+ *
+ * @description 返回带 roundId 关联的领域流水（CustomStatTxn），按成交时间升序。
+ *              排序用 Date.parse 归一（兼容 ISO 与 'YYYY-MM-DD HH:mm' 两种历史格式），
+ *              不能用 Dexie sortBy（字符串序对混合格式不稳定）。
+ * @returns {Promise<CustomStatTxn[]>} 全量流水（timestamp 升序）
+ */
+export async function loadAllTxnsAscFromDB(): Promise<CustomStatTxn[]> {
+  const entities = await db.tTransactions
+    .where('isDeleted').equals(0)
+    .toArray();
+  const rows = entities.map((t) => ({
+    ...toRoundTxn(t),
+    // 行级实体 tTransactions 必带 roundId/fullCode/stockName（TTransactionEntity 契约），此处收紧可选字段
+    roundId: t.roundId,
+    fullCode: t.fullCode,
+    stockName: t.stockName,
+  }));
+  rows.sort((a, b) => {
+    const ta = Date.parse(a.timestamp) || 0;
+    const tb = Date.parse(b.timestamp) || 0;
+    return ta - tb;
+  });
+  return rows;
+}
+
+/**
+ * 原子写回单条定义的运行态字段（stale-while-revalidate：每条完成即写，不等整批）。
+ */
+export async function updateCustomStatRunState(
+  id: string,
+  patch: { lastResult?: CustomStatDefinition['lastResult']; lastRunAt?: string; runCount?: number },
+): Promise<void> {
+  await db.customStats.update(id, { ...cleanUndefined(patch), updatedAt: Date.now() });
 }
 
 /**

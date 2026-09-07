@@ -23,8 +23,18 @@ import { createIoSlice } from './slices/ioSlice';
 import { createCopilotSlice } from './slices/copilotSlice';
 import { createCopilotActionSlice } from './slices/copilotActionSlice';
 import { createHomeSlice } from './slices/homeSlice';
+import { createCustomStatsSlice } from './slices/customStatsSlice';
 import { getIsSyncingFromRemote } from './persistence';
 import { loadCopilotTombstones, loadCopilotConsent } from '../services/copilotService';
+
+/** 自定义统计 NEW 角标基准恢复（localStorage 不可用时静默降级为空） */
+function loadCustomStatsLastSeenAt(): string {
+  try {
+    return localStorage.getItem('customStatsLastSeenAt') ?? '';
+  } catch {
+    return '';
+  }
+}
 import { getWebDAVConfig, scheduleBackup } from '../services/webdavSync';
 import { cancelServerBackup, scheduleServerBackup } from '../services/serverSync';
 import { useAuthStore } from './useAuthStore';
@@ -68,6 +78,11 @@ export const useAppStore = create<AppStore>()((...a) => ({
   // 首页时间 Tab（视图偏好上提：区块快照经 getState() 同源读取，R2）
   homeTimeRange: '7d',
 
+  // 自定义统计：草稿单槽位/画廊/刷新态为内存态；NEW 角标基准从 localStorage 恢复
+  customStatDraft: null, customStatsGallery: [], customStatsRefreshing: false,
+  customStatsSyncing: false,
+  customStatsLastSeenAt: loadCustomStatsLastSeenAt(),
+
   // 服务端密文同步（M3）：UI 态初值（编排状态在 services/ioSlice 模块级）
   serverSyncing: false, serverLastVersion: null, serverLastError: null,
 
@@ -80,6 +95,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createCopilotSlice(...a),
   ...createCopilotActionSlice(...a),
   ...createHomeSlice(...a),
+  ...createCustomStatsSlice(...a),
 }));
 
 /**

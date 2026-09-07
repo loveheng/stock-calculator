@@ -297,7 +297,7 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
       }
     },
 
-    sendMessage: async (question) => {
+    sendMessage: async (question, opts) => {
       const s = get();
       if (s.sending) return; // 互斥锁：防并发重复提交
       const resolved = resolveSnapshot();
@@ -312,7 +312,7 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
         const data = snapshot.getData();
         const clientMessageId = newClientMessageId();
         // sessionTitle 恒用页面标题（会话身份稳定）；区块口径经 focusBlockId 交后端编排
-        const request = buildAskRequest(pageSnap.title, trimmed, clientMessageId, data, blockId);
+        const request = buildAskRequest(pageSnap.title, trimmed, clientMessageId, data, blockId, opts);
         // 事实数据变动检测（P2）：本轮概览 vs 上轮用户行落库概览（必须在追加本轮 user 行之前取）
         markContextChanged(scopeId, lastUserOverview(scopeId), request.contextOverview);
         const userMsg: CopilotMessage = {

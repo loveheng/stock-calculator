@@ -13,6 +13,7 @@ import type {
   CopilotNotifyPayload,
   CopilotFocusBlockPayload,
   CopilotApplyFilterPayload,
+  CopilotRunStatPayload,
   HomeTimeRange,
 } from '../types/domain';
 
@@ -22,6 +23,19 @@ export const COPILOT_ACTION_LIMIT = 5;
 /** notify 文案长度上限（弹窗内可完整展示） */
 const NOTICE_TITLE_MAX = 40;
 const NOTICE_MESSAGE_MAX = 300;
+
+/** run_custom_stat 载荷上限（spec FR1）：名称/口径按**字符数**可裁剪；prompt/code 按 **UTF-8 字节**超限整条拒绝（截断会静默破坏语义/语法，且与后端存储限长口径一致） */
+const RUN_STAT_NAME_MAX = 40;
+const RUN_STAT_DESC_MAX = 200;
+const RUN_STAT_PROMPT_MAX = 2048;
+const RUN_STAT_CODE_MAX = 16384;
+
+const sharedTextEncoder = new TextEncoder();
+
+/** UTF-8 字节长度（后端 user_custom_stat 限长口径；中文注释等多字节字符按 3 字节计） */
+function utf8ByteLength(s: string): number {
+  return sharedTextEncoder.encode(s).length;
+}
 
 /** 首页时间维度合法值（与 domain HomeTimeRange 对齐，守卫用白名单） */
 const HOME_TIME_RANGES: readonly HomeTimeRange[] = ['1d', '7d', '30d', 'all'];
@@ -36,6 +50,8 @@ const ACTION_TIERS: Record<string, 'auto' | 'confirm'> = {
   notify: 'auto',
   focus_block: 'auto',
   apply_filter: 'auto',
+  // 沙箱内只读计算 + 本地渲染，无业务副作用，与 notify 同级；唯一写操作「保存」由用户显式点击
+  run_custom_stat: 'auto',
   // 业务写操作登记处（示例）：create_plan_order: 'confirm' —— 执行器须在 copilotActionSlice 同步登记
 };
 
@@ -43,7 +59,7 @@ const ACTION_TIERS: Record<string, 'auto' | 'confirm'> = {
 export interface SanitizedCopilotAction {
   type: string;
   tier: 'auto' | 'confirm';
-  payload: CopilotNotifyPayload | CopilotFocusBlockPayload | CopilotApplyFilterPayload | Record<string, unknown>;
+  payload: CopilotNotifyPayload | CopilotFocusBlockPayload | CopilotApplyFilterPayload | CopilotRunStatPayload | Record<string, unknown>;
 }
 
 function asNonEmptyString(v: unknown): string | null {
@@ -91,6 +107,28 @@ export function asApplyFilterPayload(p: unknown): CopilotApplyFilterPayload | nu
 }
 
 /**
+ * run_custom_stat 载荷守卫：四字段必填非空字符串；name/description 超**字符数**裁剪，
+ * prompt（需求种子，截断会静默改变重建语义）与 code（截断即语法损坏）超**UTF-8 字节**整条拒绝——
+ * 与后端 user_custom_stat 存储限长口径一致（AI 生成代码常带中文注释，字符数与字节数差异是真实场景）。
+ */
+export function asRunStatPayload(p: unknown): CopilotRunStatPayload | null {
+  if (typeof p !== 'object' || p === null) return null;
+  const o = p as Record<string, unknown>;
+  const name = asNonEmptyString(o.name);
+  const description = asNonEmptyString(o.description);
+  const prompt = asNonEmptyString(o.prompt);
+  const code = asNonEmptyString(o.code);
+  if (!name || !description || !prompt || !code) return null;
+  if (utf8ByteLength(prompt) > RUN_STAT_PROMPT_MAX || utf8ByteLength(code) > RUN_STAT_CODE_MAX) return null;
+  return {
+    name: clamp(name, RUN_STAT_NAME_MAX),
+    description: clamp(description, RUN_STAT_DESC_MAX),
+    prompt,
+    code,
+  };
+}
+
+/**
  * 动作后处理入口：白名单 + 守卫 + 分级 + 截断。
  * 逐条校验，达到 LIMIT 即停（防超长数组放大守卫开销）。
  */
@@ -121,6 +159,12 @@ export function sanitizeCopilotActions(
         if (tier !== 'auto') break;
         const p = asApplyFilterPayload(a.payload);
         if (p) out.push({ type: 'apply_filter', tier, payload: p });
+        break;
+      }
+      case 'run_custom_stat': {
+        if (tier !== 'auto') break;
+        const p = asRunStatPayload(a.payload);
+        if (p) out.push({ type: 'run_custom_stat', tier, payload: p });
         break;
       }
       default: {

@@ -364,6 +364,9 @@ export interface CopilotAskRequest {
   /** 聚焦区块标识（V2 Click-to-Focus，缺省=整页口径）：后端据此路由区块级 Prompt 策略
    *  （如 home:short_term → 做T风控顾问），未命中回落 scopeId 页面级策略；仅参与编排不落库 */
   focusBlockId?: string;
+  /** 任务类型（可选；缺省 = 现有聊天模板，行为零变化）。
+   *  'custom_stat' = 自定义统计生成/迭代模板（后端 docs/custom-stats-api.md §2.1） */
+  taskType?: string;
 }
 
 /**
@@ -402,6 +405,18 @@ export interface CopilotApplyFilterPayload {
   value: HomeTimeRange;
 }
 
+/** run_custom_stat：AI 生成统计代码载荷（auto 级：沙箱只读计算 + 本地渲染，无业务副作用） */
+export interface CopilotRunStatPayload {
+  /** 统计名（结果面板标题 / 保存默认名） */
+  name: string;
+  /** 口径说明（结果面板必展示） */
+  description: string;
+  /** 规范化需求种子（≤2KB），随定义存储，删除时可复制保全、重新生成时复用 */
+  prompt: string;
+  /** 统计代码（≤16KB）：完整箭头函数表达式 (ctx) => CustomStatsResult */
+  code: string;
+}
+
 /** 提问响应 data */
 export interface CopilotAskResponse {
   assistantMessageId: number;
@@ -435,4 +450,155 @@ export interface CopilotThreadPage {
   }>;
   hasMore: boolean;
   oldestId: number;
+}
+
+// ---- 自定义统计（AI 生成代码 + 端上沙箱执行）----
+/**
+ * @description 自定义统计执行契约与存储实体（schemaVersion 演进，Runner / Guard / 生成代码共同遵守）。
+ *              结果为 XOR 判别联合：一次生成 = 一个标题卡 或 一个统计图表（P0 无表格）。
+ *              金额单位：元；rate 类为 0-1 小数；沙箱内无宿主时钟，一切「今天/本月」以 ctx.now 为基准。
+ */
+
+/** 契约版本：Runner 执行前校验定义.schemaVersion 与此值一致，不一致走「AI 修复」而非静默失败 */
+export const CUSTOM_STAT_SCHEMA_VERSION = 1;
+
+/** 标题卡的 KPI 项（tone 色彩由宿主统一映射：红涨绿跌，good=红） */
+export interface CustomStatKpi {
+  label: string;
+  value: string;
+  tone?: 'default' | 'good' | 'bad';
+}
+
+/** 标题卡统计（kpis ≤3，Guard 截断） */
+export interface CustomStatCard {
+  kind: 'card';
+  title: string;
+  /** 口径说明 */
+  caption?: string;
+  kpis: CustomStatKpi[];
+}
+
+/** 图表数据点（bar 排行降序 / line 趋势升序 / pie 占比，上限由 Guard 强制） */
+export interface CustomStatChartPoint {
+  label: string;
+  value: number;
+}
+
+export type CustomStatChart =
+  | { type: 'bar'; data: CustomStatChartPoint[] }
+  | { type: 'line'; data: CustomStatChartPoint[] }
+  | { type: 'pie'; data: CustomStatChartPoint[] };
+
+/** 图表统计（单图，XOR：与 CustomStatCard 二选一） */
+export interface CustomStatChartResult {
+  kind: 'chart';
+  title: string;
+  caption?: string;
+  chart: CustomStatChart;
+}
+
+/** 沙箱执行结果（Guard 归一化后的唯一合法形状） */
+export type CustomStatsResult = CustomStatCard | CustomStatChartResult;
+
+/** ctx.feeConfig 的结构子集（domain 零依赖，不 import utils/mathUtils；净额复算用） */
+export interface CustomStatFeeConfig {
+  commissionRate: number;
+  isFreeFive: boolean;
+  minCommission: number;
+  transferRate: number;
+  stampRate: number;
+}
+
+/**
+ * ctx.txns 行类型：tTransactions 全量（timestamp 升序）。在 RoundTxn 基础上收紧关联字段——
+ * 行级实体 tTransactions 必带 roundId/fullCode/stockName，统计按天/按股分组依赖它们。
+ */
+export interface CustomStatTxn extends RoundTxn {
+  /** 所属轮次 id（关联 rounds[].id） */
+  roundId: string;
+  fullCode: string;
+  stockName: string;
+}
+
+/** ctx.activeStreams 的序列化安全子集（service 组装时从 StockStreamResult 裁剪映射） */
+export interface CustomStatStream {
+  fullCode: string;
+  stockName: string;
+  status: 'PENDING' | 'PARTIAL' | 'CLEARED' | 'SHORT_PENDING';
+  /** 净持仓敞口（元） */
+  netPendingAmount: number;
+  /** 加权买入成本（元/股） */
+  weightedBuyCost: number;
+  /** 已实现盈亏（元） */
+  realizedPnL: number;
+}
+
+/** 宿主注入沙箱的纯函数工具（QuickJS 内无 decimal.js，金额口径靠这里对齐 mathUtils） */
+export interface CustomStatHelpers {
+  /** 四舍五入保留 2 位（规费/金额展示口径） */
+  round2(n: number): number;
+  /** 占比（part/total），除零安全返回 0，结果为 0-1 小数 */
+  pct(part: number, total: number): number;
+  /** 按键分组 */
+  groupBy<T>(xs: T[], f: (x: T) => string): Record<string, T[]>;
+  /** 求和 */
+  sumBy<T>(xs: T[], f: (x: T) => number): number;
+  /** 千分位 + 2 位小数 + 负号 */
+  fmtMoney(n: number): string;
+}
+
+/** 自定义统计执行契约（全量数据仅在端上沙箱注入，不出设备、不进 LLM prompt） */
+export interface CustomStatsContext {
+  schemaVersion: number;
+  /** 宿主注入时间锚点（ISO）。沙箱内无 Date.now，保证可复现可测试 */
+  now: string;
+  /** 已归档轮（COMPLETED 全量标量） */
+  rounds: TRoundArchive[];
+  /** 进行中轮（OPENED） */
+  openRounds: TRoundArchive[];
+  /** 逐笔做T流水（tTransactions 全量，timestamp 升序）——按天/星期统计的原料 */
+  txns: CustomStatTxn[];
+  /** 持仓全量（含已平仓） */
+  positions: Position[];
+  /** 进行中轮撮合结果（tStreamEngine 管线重算，与统计页同口径） */
+  activeStreams: CustomStatStream[];
+  /** 费率配置（净额口径用） */
+  feeConfig: CustomStatFeeConfig;
+  /** 宿主注入纯函数工具（Worker 内 eval HELPERS_SOURCE 后挂载，不出现在线格式） */
+  helpers: CustomStatHelpers;
+}
+
+/** 沙箱执行前注入的上下文（helpers 由 Worker 内挂载，不序列化） */
+export type CustomStatsContextWire = Omit<CustomStatsContext, 'helpers'>;
+
+/**
+ * 统计定义（custom_stats 表，权威定义；db/schema.ts re-export）。
+ * 不可变约束：保存后不提供 updateCode，修改只走「重新生成」（另存或替换+钉选迁移）。
+ */
+export interface CustomStatDefinition {
+  id: string;
+  name: string;
+  description?: string;
+  /** 生成时的需求种子快照（删除时可复制保全，重新生成时复用） */
+  prompt?: string;
+  code: string;
+  /** 运行前与 CUSTOM_STAT_SCHEMA_VERSION 校验 */
+  schemaVersion: number;
+  /** 冗余 lastResult.kind：画廊分区与列表渲染直读，保存时写入 */
+  kind: 'card' | 'chart';
+  /** stale-while-revalidate 缓存：先秒显缓存，后台刷新原位替换 */
+  lastResult?: CustomStatsResult;
+  /** 最近一次成功执行时间（ISO），「截至 HH:mm」角标 */
+  lastRunAt?: string;
+  favorite?: boolean;
+  /** 画廊双区钉选（区由 kind 推导），区内按 pinnedAt 倒序 */
+  pinned?: boolean;
+  pinnedAt?: string;
+  runCount?: number;
+  /** 溯源：来自哪条 AI 会话消息 */
+  originMessageId?: string;
+  createdAt: string;
+  updatedAt: string;
+  /** 软删，与全库惯例对齐，为 P1 同步铺路 */
+  isDeleted?: 0 | 1;
 }

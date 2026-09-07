@@ -21,7 +21,9 @@ import {
   asNotifyPayload,
   asFocusBlockPayload,
   asApplyFilterPayload,
+  asRunStatPayload,
 } from '../../utils/copilotActions';
+import { prewarmSandbox } from '../../utils/customStats/client';
 
 /** 待确认动作 id 序列（内存态，无需 ulid 级别防撞） */
 let pendingSeq = 0;
@@ -30,6 +32,7 @@ export type CopilotActionSlice = Pick<
   AppStore,
   | 'handleCopilotActions'
   | 'dismissCopilotNotice'
+  | 'setCopilotNotice'
   | 'dismissPendingCopilotAction'
   | 'executePendingCopilotAction'
 >;
@@ -71,6 +74,15 @@ export const createCopilotActionSlice: StateCreator<AppStore, [], [], CopilotAct
           if (p && p.filter === 'homeTimeRange') get().setHomeTimeRange(p.value);
           break;
         }
+        case 'run_custom_stat': {
+          const p = asRunStatPayload(a.payload);
+          // 守卫 → 夹具预跑 → 全量执行 → 入草稿（编排见 customStatsSlice.startCustomStatDraft）
+          if (p) {
+            prewarmSandbox(); // 顺带预热（首次动作时 wasm 可能尚未就绪）
+            void get().startCustomStatDraft(p);
+          }
+          break;
+        }
         default:
           // 理论不可达：分级表登记了 auto 却没实现执行器 → 静默忽略
           break;
@@ -79,6 +91,8 @@ export const createCopilotActionSlice: StateCreator<AppStore, [], [], CopilotAct
   },
 
   dismissCopilotNotice: () => set({ copilotNotice: null }),
+
+  setCopilotNotice: (payload) => set({ copilotNotice: payload }),
 
   dismissPendingCopilotAction: (id) => {
     set((s) => ({ pendingCopilotActions: s.pendingCopilotActions.filter((a) => a.id !== id) }));

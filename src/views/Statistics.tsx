@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Search, X, ChevronDown, ChevronUp, BarChart3, Wallet, Loader2 } from 'lucide-react';
+import { Search, X, ChevronDown, ChevronUp, BarChart3, Wallet, Loader2, Sparkles } from 'lucide-react';
 import { useAppStore } from '../store';
 import { useStreamResults } from '../hooks/useStreamResults';
 import type { Position, PositionBatch, RoundTxn } from '../store';
@@ -21,6 +21,7 @@ import { searchStocks } from '../services/stockService';
 import type { StockSearchItem } from '../types/stock';
 import { usePageContext } from '../hooks/usePageContext';
 import { buildStatisticsContext } from '../utils/copilotSnapshots';
+import CustomStatsPanel from '../components/customStats/CustomStatsPanel';
 
 type TimeFilter = 'all' | '7d' | '30d' | 'month';
 type DirectionTab = 'all' | 'long_open' | 'long_closed' | 'short_open' | 'short_closed';
@@ -105,7 +106,7 @@ export default function Statistics() {
     getData: () => buildStatisticsContext(useAppStore.getState()),
   });
 
-  const [tab, setTab] = useState<'trades' | 'positions'>('trades');
+  const [tab, setTab] = useState<'trades' | 'positions' | 'custom'>('trades');
   const [searchQuery, setSearchQuery] = useState('');
   const [matchedCodes, setMatchedCodes] = useState<string[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -515,12 +516,26 @@ export default function Statistics() {
           <Wallet className="h-4 w-4" />
           <span>仓位数据统计</span>
         </button>
+        <button
+          type="button"
+          onClick={() => setTab('custom')}
+          className={`tap-target flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition ${
+            tab === 'custom'
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <Sparkles className="h-4 w-4" />
+          <span>自定义统计</span>
+        </button>
       </div>
 
       {/* =============================== */}
       {/* 做T账本统计 */}
       {/* =============================== */}
-      {tab === 'trades' ? (
+      {tab === 'custom' ? (
+        <CustomStatsPanel />
+      ) : tab === 'trades' ? (
         <div className="space-y-4">
           {/* ===== 模块 1：做 T 交易维度统计 (T-Trading Overall) ===== */}
           <div className="rounded-[28px] border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-4 md:p-5 shadow-sm">

@@ -12,6 +12,7 @@ import {
   sanitizeCopilotActions,
   COPILOT_ACTION_LIMIT,
   asNotifyPayload,
+  asRunStatPayload,
 } from '../utils/copilotActions';
 import type { CopilotAction } from '../types/domain';
 
@@ -109,5 +110,64 @@ describe('sanitizeCopilotActions（白名单 + 守卫 + 截断）', () => {
       { type: 'apply_filter', payload: { filter: 'homeTimeRange', value: '1d' } },
     ]);
     expect(out.map((a) => a.type)).toEqual(['notify', 'apply_filter']);
+  });
+});
+
+describe('asRunStatPayload（run_custom_stat 载荷守卫）', () => {
+  const VALID = {
+    name: '各股做T净收益排行',
+    description: '统计已归档轮净收益按股票求和，柱状降序',
+    prompt: '统计各股做T净收益排行，柱状图降序',
+    code: '(ctx) => ({ kind: "card", title: "t", kpis: [] })',
+  };
+
+  it('登记为 auto 级，合法载荷通过', () => {
+    const out = sanitizeCopilotActions([{ type: 'run_custom_stat', payload: { ...VALID } }]);
+    expect(out).toEqual([{ type: 'run_custom_stat', tier: 'auto', payload: { ...VALID } }]);
+  });
+
+  it('缺任一字段 / 空串 / 非对象 / 非字符串 → 整条丢弃', () => {
+    const bads: unknown[] = [
+      null,
+      'str',
+      {},
+      { ...VALID, name: '' },
+      { ...VALID, description: '   ' },
+      { ...VALID, prompt: undefined },
+      { ...VALID, code: 123 },
+    ];
+    for (const bad of bads) {
+      expect(asRunStatPayload(bad)).toBeNull();
+    }
+    expect(sanitizeCopilotActions([{ type: 'run_custom_stat', payload: { ...VALID, prompt: null } as never }])).toEqual([]);
+  });
+
+  it('name/description 超长裁剪到 40/200', () => {
+    const p = asRunStatPayload({
+      ...VALID,
+      name: '标'.repeat(60),
+      description: '描'.repeat(300),
+    });
+    expect(p).not.toBeNull();
+    expect(p!.name.length).toBe(40);
+    expect(p!.description.length).toBe(200);
+  });
+
+  it('prompt 超 2KB / code 超 16KB 整条拒绝（截断会静默破坏语义/语法）', () => {
+    expect(asRunStatPayload({ ...VALID, prompt: 'x'.repeat(2049) })).toBeNull();
+    expect(asRunStatPayload({ ...VALID, code: 'x'.repeat(16385) })).toBeNull();
+    expect(asRunStatPayload({ ...VALID, prompt: 'x'.repeat(2048) })).not.toBeNull();
+    expect(asRunStatPayload({ ...VALID, code: 'x'.repeat(16384) })).not.toBeNull();
+  });
+
+  it('prompt/code 按 UTF-8 字节限长（与后端 user_custom_stat 存储口径一致）：多字节字符按 3 字节计', () => {
+    // 700 个中文字符 = 2100 字节 > 2048：字符数远未超限，但字节超限必须拒绝（旧字符口径会放行）
+    expect(asRunStatPayload({ ...VALID, prompt: '释'.repeat(700) })).toBeNull();
+    // 682 个中文字符 = 2046 字节 ≤ 2048：字节口径下放行
+    expect(asRunStatPayload({ ...VALID, prompt: '释'.repeat(682) })).not.toBeNull();
+    // 5462 个中文字符 = 16386 字节 > 16384：拒绝
+    expect(asRunStatPayload({ ...VALID, code: '注'.repeat(5462) })).toBeNull();
+    // 5461 个中文字符 = 16383 字节 ≤ 16384：放行
+    expect(asRunStatPayload({ ...VALID, code: '注'.repeat(5461) })).not.toBeNull();
   });
 });

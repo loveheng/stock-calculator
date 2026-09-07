@@ -2,15 +2,17 @@
  * @file schema.ts
  * @description 定义 TradingLedgerDB_v3 的全部 IndexedDB 实体类型（Entity）与 Dexie 数据库表结构，是整个应用数据持久化的类型基石。
  * @layer DAO
- * @storage_impact 声明 stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes / feeConfigs / longTermRecords / positionAdjustments / positionEvents / plannedOrders / sandboxBranches / sandboxOrders / klineCache 共 16 张表的实体结构，并导出 Dexie 实例 db。
+ * @storage_impact 声明 stocks / positions / positionBatches / tRounds / tTransactions / accountCash / cashFlows / tradeNotes / feeConfigs / longTermRecords / positionAdjustments / positionEvents / plannedOrders / sandboxBranches / sandboxOrders / klineCache / auditLogs / customStats 共 18 张表的实体结构，并导出 Dexie 实例 db。
  * @author 开发团队
  */
 
 import Dexie, { type Table } from 'dexie';
-import type { BaseEntity, PositionEntity, PositionBatchEntity } from '../types/domain';
+import type { BaseEntity, PositionEntity, PositionBatchEntity, CustomStatsResult } from '../types/domain';
 
 // 持仓相关实体（行级契约）已下沉 types/domain.ts 零依赖叶子；此处 re-export 保持既有导入路径兼容
 export type { BaseEntity, PositionEntity, PositionBatchEntity };
+// 自定义统计定义（权威定义在 types/domain.ts；实体为本文件 CustomStatEntity，行级时间戳为 epoch 数字）
+export type { CustomStatDefinition } from '../types/domain';
 
 
 /** 股票基础信息实体（stocks 表）。`fullCode` 为唯一业务主键，关联持仓与做T记录。 */
@@ -460,6 +462,37 @@ export interface AuditLogEntity {
 }
 
 /**
+ * 自定义统计定义实体（customStats 表）。
+ *
+ * @description AI 生成统计代码 + 端上沙箱执行的持久化定义。代码不可变（无 updateCode），
+ *              修改只走「重新生成」；lastResult 为 stale-while-revalidate 缓存（打开画廊秒显）。
+ *              领域形态 CustomStatDefinition（ISO 时间字符串）见 types/domain.ts。
+ */
+export interface CustomStatEntity extends BaseEntity {
+  id: string;
+  name: string;
+  description?: string;
+  /** 生成时的需求种子快照（≤2KB，删除时可复制保全，重新生成时复用） */
+  prompt?: string;
+  code: string;
+  /** 运行前与 CUSTOM_STAT_SCHEMA_VERSION 校验，不一致走「AI 修复」 */
+  schemaVersion: number;
+  /** 冗余 lastResult.kind：画廊双区（数字卡区/图表区）分区直读 */
+  kind: 'card' | 'chart';
+  /** 最近一次成功执行的 Guard 归一化结果（缓存，打开画廊秒显） */
+  lastResult?: CustomStatsResult;
+  /** 最近一次成功执行时间（ISO），「截至 HH:mm」角标 */
+  lastRunAt?: string;
+  favorite?: boolean;
+  /** 双区钉选（区由 kind 推导），区内按 pinnedAt 倒序 */
+  pinned?: boolean;
+  pinnedAt?: string;
+  runCount?: number;
+  /** 溯源：来自哪条 AI 会话消息 */
+  originMessageId?: string;
+}
+
+/**
  * 各版本不变的基础表结构（v2）。
  * 后续版本基于此增量叠加或覆盖，不再全量复制。
  */
@@ -541,6 +574,12 @@ const STORES_V12 = {
   auditLogs: 'id, action, targetType, targetId, result, timestamp, [action+timestamp]',
 } as const;
 
+/** v13：新增 customStats 表（自定义统计定义：AI 生成代码 + 端上沙箱执行） */
+const STORES_V13 = {
+  ...STORES_V12,
+  customStats: 'id, kind, pinned, pinnedAt, updatedAt, isDeleted',
+} as const;
+
 /**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
@@ -592,6 +631,9 @@ export class TradingLedgerDB extends Dexie {
   /** 审计日志表（只追加） */
   auditLogs!: Table<AuditLogEntity, string>;
 
+  /** 自定义统计定义表（AI 生成代码，端上沙箱执行） */
+  customStats!: Table<CustomStatEntity, string>;
+
   /**
    * 初始化数据库结构（版本链 v2→v11）。
    *
@@ -628,6 +670,7 @@ export class TradingLedgerDB extends Dexie {
     this.version(10).stores(STORES_V10 as Record<string, string | null>);
     this.version(11).stores(STORES_V11 as Record<string, string | null>);
     this.version(12).stores(STORES_V12 as Record<string, string | null>);
+    this.version(13).stores(STORES_V13 as Record<string, string | null>);
   }
 }
 

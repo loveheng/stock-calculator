@@ -133,6 +133,28 @@ describe('parseOcrPayload', () => {
     const result = parseOcrPayload([{ stockCode: '688001', direction: '买入', price: 100, amount: 100 }]);
     expect(result[0].fullCode).toBe('sh688001');
   });
+  test('缺码行放行并透传 Smartbox 候选', () => {
+    const payload = {
+      items: [
+        { stockName: '中国银行', direction: '买入', price: 5.12, amount: 100, tradeTime: '2026-09-01 10:00:00',
+          candidates: [{ market: 'sh', code: '601988', name: '中国银行', type: 'GP-A' }, { market: 'hk', code: '03988', name: '中国银行', type: 'GP' }] },
+      ],
+    };
+    const result = parseOcrPayload(payload);
+    expect(result).toHaveLength(1);
+    expect(result[0].fullCode).toBe('');
+    expect(result[0].stockName).toBe('中国银行');
+    expect(result[0].codeCandidates).toHaveLength(2);
+    expect(result[0].codeCandidates![0]).toEqual({ market: 'sh', code: '601988', name: '中国银行', type: 'GP-A' });
+  });
+  test('有码行不携带候选；候选结构非法时过滤', () => {
+    const r1 = parseOcrPayload([{ stockCode: '600519', direction: '买入', price: 100, amount: 100, candidates: 'bad' }]);
+    expect(r1[0].codeCandidates).toBeUndefined();
+    const r2 = parseOcrPayload([{ stockName: 'X', direction: '买入', price: 1, amount: 1, candidates: [null, 'x', { market: 'sh', code: '600000', name: 'X', type: 'GP-A' }] }]);
+    expect(r2[0].codeCandidates).toHaveLength(1);
+    const r3 = parseOcrPayload([{ stockName: 'X', direction: '买入', price: 1, amount: 1, candidates: [] }]);
+    expect(r3[0].codeCandidates).toBeUndefined();
+  });
 });
 
 // ============================================================
@@ -278,6 +300,15 @@ describe('enrichDraftRow', () => {
     expect(row.fingerprint).toMatch(/^600519_buy_/);
     expect(row.fingerprint).toContain('20260823');
   });
+  test('缺码行指纹留空并透传候选', () => {
+    const row = enrichDraftRow(
+      { fullCode: '', direction: 'buy', price: 5.12, amount: 100, codeCandidates: [{ market: 'sh', code: '601988', name: '中国银行', type: 'GP-A' }] } as any,
+      positions,
+      [],
+    );
+    expect(row.fingerprint).toBe('');
+    expect(row.codeCandidates).toHaveLength(1);
+  });
 });
 
 // ============================================================
@@ -315,6 +346,15 @@ describe('completeDedupCheck', () => {
     ] as ImportDraftRow[];
     const result = completeDedupCheck(rows, history);
     expect(result[0].duplicateStatus).toBe('POTENTIAL');
+  });
+  test('空指纹（缺码行）不参与表内互判重复', () => {
+    const rows: ImportDraftRow[] = [
+      { id: 'a', fingerprint: '', fullCode: '', direction: 'buy', price: 5.12, amount: 100, timestamp: 0, targetCategory: 'LONG_TERM_BATCH', duplicateStatus: 'UNIQUE', skipImport: false, validationStatus: 'PENDING' },
+      { id: 'b', fingerprint: '', fullCode: '', direction: 'sell', price: 5.12, amount: 100, timestamp: 0, targetCategory: 'LONG_TERM_BATCH', duplicateStatus: 'UNIQUE', skipImport: false, validationStatus: 'PENDING' },
+    ] as ImportDraftRow[];
+    const result = completeDedupCheck(rows, []);
+    expect(result[0].duplicateStatus).toBe('UNIQUE');
+    expect(result[1].duplicateStatus).toBe('UNIQUE');
   });
 });
 

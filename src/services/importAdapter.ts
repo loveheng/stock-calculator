@@ -2,6 +2,7 @@
  * @file importAdapter.ts
  * @description 批量导入统一适配器：原始数据（手动填表 / 剪贴板粘贴 / OCR 输出）的格式归一化、
  *              智能关联 Position/PlannedOrder、默认分类推断与指纹生成。
+ *              缺码行放行（fullCode 置空 + 透传 Smartbox 候选），指纹留空待补码后重算。
  *              转译结果直接输出 ImportDraftRow[]，供 BatchImport 工作台消费。
  * @layer Service
  * @author 开发团队
@@ -43,17 +44,29 @@ export function parseOcrPayload(payload: unknown): RawTxRecord[] {
     const code = it.fullCode ?? it.stockCode ?? it.code ?? it.证券代码;
     const priceNum = Number(it.price ?? it.tradePrice ?? it.成交价格 ?? it.成交价);
     const amountNum = Number(it.amount ?? it.quantity ?? it.成交数量 ?? it.volume);
-    if (!code || isNaN(priceNum) || priceNum <= 0 || isNaN(amountNum) || amountNum <= 0) continue;
+    // 完整性策略：缺码行不静默丢弃（保留名称并透传候选，交由前端人工补码），价格/数量非法才跳过
+    if (isNaN(priceNum) || priceNum <= 0 || isNaN(amountNum) || amountNum <= 0) continue;
     const dir = toDirection(it.direction ?? it.buySell ?? it.交易方向 ?? it.买卖);
     if (!dir) continue;
     const ts = it.timestamp ?? it.tradeTime ?? it.成交时间;
+    // Smartbox 候选透传：仅保留结构合法的候选，空列表归一为 undefined（保持 null 语义）
+    const rawCands: any[] = Array.isArray(it.candidates) ? it.candidates : [];
+    const codeCandidates = rawCands
+      .filter((c) => c && typeof c === 'object')
+      .map((c) => ({
+        market: String(c.market ?? ''),
+        code: String(c.code ?? ''),
+        name: String(c.name ?? ''),
+        type: String(c.type ?? ''),
+      }));
     out.push({
-      fullCode: toFullCode(String(code)),
+      fullCode: code ? toFullCode(String(code)) : '',
       stockName: it.stockName ?? it.name ?? it.证券名称,
       timestamp: ts ? String(ts).trim() : undefined,
       direction: dir,
       price: Number(priceNum.toFixed(3)),
       amount: Math.round(amountNum),
+      codeCandidates: codeCandidates.length > 0 ? codeCandidates : undefined,
     });
   }
   return out;
@@ -146,18 +159,24 @@ export function enrichDraftRow(
   const timestamp = row.timestamp ?? Date.now();
   const ts = typeof timestamp === 'number' ? timestamp : new Date(timestamp).getTime();
 
+  // 缺码行指纹留空：防止不同标的缺码行生成同指纹互判重复；补码后由 updateRow 重算
+  const fingerprint = canonicalFullCode
+    ? generateTxFingerprint({
+        fullCode: canonicalFullCode,
+        direction: row.direction,
+        price: row.price,
+        amount: row.amount,
+        timestamp: ts,
+      })
+    : '';
+
   return {
     id: row.id ?? generateId(),
-    fingerprint: generateTxFingerprint({
-      fullCode: canonicalFullCode,
-      direction: row.direction,
-      price: row.price,
-      amount: row.amount,
-      timestamp: ts,
-    }),
+    fingerprint,
     timestamp: ts,
     fullCode: canonicalFullCode,
     stockName: canonicalName,
+    codeCandidates: row.codeCandidates,
     direction: row.direction,
     price: row.price,
     amount: row.amount,
@@ -192,10 +211,11 @@ export function completeDedupCheck(
 
   return rows.map((row) => {
     // 第一道防线：表内去重
-    if (seenFingerprints.has(row.fingerprint)) {
+    // 空指纹（缺码行）不参与表内指纹比对，避免不同标的缺码行互判重复
+    if (row.fingerprint && seenFingerprints.has(row.fingerprint)) {
       return { ...row, duplicateStatus: 'EXACT_DUPLICATE' as const, skipImport: true };
     }
-    seenFingerprints.add(row.fingerprint);
+    if (row.fingerprint) seenFingerprints.add(row.fingerprint);
 
     // 第二道防线：历史库去重
     const result = classifyDraft(row, history);

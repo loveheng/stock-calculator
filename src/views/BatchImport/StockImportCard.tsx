@@ -1,7 +1,8 @@
 /**
  * @file StockImportCard.tsx
  * @description 按标的分组的折叠卡片流组件：折叠头部展示汇总信息与状态徽标，
- *              展开体展示标的全局绑定选择器与行级精简编辑列表。
+ *              展开体展示标的全局绑定选择器与行级精简编辑列表；缺码行琥珀高亮，
+ *              缺码行琥珀高亮，弹窗内 Smartbox 候选一键补码 + 名称/代码/拼音模糊搜索（不完整数据不可过账）。
  *              支持响应式布局：PC 宽屏保持行内快速编辑，移动端窄屏自动切换为
  *              紧凑摘要卡片 + 底部抽屉编辑模式。
  * @layer View
@@ -17,6 +18,7 @@ import type { ImportDraftRow, ImportTargetCategory, GroupRiskLevel } from '../..
 import type { Position, PlannedOrder } from '../../store/types';
 import { getAvailablePositions, getActivePlannedOrders, inferPlanBind } from '../../services/importAdapter';
 import { normalizeCode } from '../../utils/dedup';
+import StockAutocomplete from '../../components/ui/StockAutocomplete';
 
 // ---- 响应式断点 ----
 const MOBILE_BREAKPOINT = 768;
@@ -86,6 +88,8 @@ export default function StockImportCard({
   }, [allExpanded]);
 
   const isMobile = useIsMobile();
+  // 缺码补码弹窗（桌面行内按钮 / 移动徽标 / 抽屉按钮共用入口）
+  const [supplementRow, setSupplementRow] = useState<ImportDraftRow | null>(null);
   const norm = group.key;
   const availPositions = getAvailablePositions(positions, norm);
   const badge = RISK_BADGE[group.riskLevel];
@@ -177,6 +181,7 @@ export default function StockImportCard({
                   plannedOrders={plannedOrders}
                   onUpdate={(p) => onUpdateRow(row.id, p)}
                   onDelete={() => onDeleteRow(row.id)}
+                  onSupplement={() => setSupplementRow(row)}
                 />
               ) : (
                 <RowLine
@@ -186,6 +191,7 @@ export default function StockImportCard({
                   plannedOrders={plannedOrders}
                   onUpdate={(p) => onUpdateRow(row.id, p)}
                   onDelete={() => onDeleteRow(row.id)}
+                  onSupplement={() => setSupplementRow(row)}
                 />
               )
             ))}
@@ -200,6 +206,88 @@ export default function StockImportCard({
           </button>
         </div>
       )}
+
+      {supplementRow && (
+        <CodeSupplementModal
+          row={supplementRow}
+          onPick={(fc, nm) => {
+            onUpdateRow(supplementRow.id, { fullCode: fc, stockName: nm, codeCandidates: [] });
+            setSupplementRow(null);
+          }}
+          onClose={() => setSupplementRow(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// 补码弹窗：Smartbox 候选一键回填 + 名称/代码/拼音模糊搜索
+// ============================================================
+function CodeSupplementModal({ row, onPick, onClose }: {
+  row: ImportDraftRow;
+  onPick: (fullCode: string, stockName: string) => void;
+  onClose: () => void;
+}) {
+  const candidates = row.codeCandidates ?? [];
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl bg-slate-800 border border-slate-600 shadow-2xl animate-slide-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 标题栏 */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700">
+          <h3 className="text-sm font-semibold text-slate-200">补全股票代码</h3>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {/* 流水上下文：防补错行 */}
+          <div className="rounded-lg bg-slate-900/60 px-3 py-2.5 text-xs text-slate-300 space-y-1">
+            <div>
+              OCR 名称：<span className="text-amber-300 font-medium">{row.stockName || '（未识别）'}</span>
+            </div>
+            <div className="text-slate-500">
+              {row.timestamp ? formatTimeCompact(row.timestamp) : '--'} · {row.direction === 'buy' ? '买入' : '卖出'} · ¥{row.price.toFixed(3)} × {row.amount}
+            </div>
+          </div>
+
+          {/* 智能候选（后端 Smartbox 透传） */}
+          {candidates.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="block text-xs text-slate-400 font-medium">智能候选（点击直接补全）</label>
+              <div className="flex flex-wrap gap-1.5">
+                {candidates.map((c) => (
+                  <button
+                    key={c.market + c.code}
+                    onClick={() => onPick(c.market + c.code, c.name)}
+                    className="px-2 py-1 rounded-md bg-slate-900 border border-slate-600 text-[10px] text-slate-200 hover:border-amber-400 hover:text-amber-300 transition-colors"
+                  >
+                    {c.name}（{c.market}{c.code}）
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 模糊搜索：名称 / 代码 / 拼音 */}
+          <div className="space-y-1.5">
+            <label className="block text-xs text-slate-400 font-medium">模糊搜索</label>
+            <StockAutocomplete
+              value={null}
+              onChange={(stock) => { if (stock) onPick(stock.fullCode, stock.Name); }}
+              placeholder="股票名称 / 6位代码 / 拼音缩写"
+            />
+            <p className="text-[10px] text-slate-500">补全后自动重算指纹与校验状态；不完整数据不可过账</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -207,18 +295,19 @@ export default function StockImportCard({
 // ============================================================
 // 桌面端：行内编辑（原有逻辑，仅微调）
 // ============================================================
-function RowLine({ row, positions, plannedOrders, onUpdate, onDelete }: {
+function RowLine({ row, positions, plannedOrders, onUpdate, onDelete, onSupplement }: {
   row: ImportDraftRow;
   positions: Position[];
   plannedOrders: PlannedOrder[];
   onUpdate: (p: Partial<ImportDraftRow>) => void;
   onDelete: () => void;
+  onSupplement: () => void;
 }) {
   const availPositions = getAvailablePositions(positions, row.fullCode);
   const availPlans = getActivePlannedOrders(plannedOrders, row.fullCode);
   const autoPlan = row.targetCategory === 'BIND_PLANNED_ORDER' ? inferPlanBind(row, plannedOrders) : undefined;
 
-  return (
+  const rowLine = (
     <div className="flex items-center gap-2 px-1 py-1 rounded hover:bg-slate-700/20 transition-colors">
       {/* 时间 */}
       <input type="datetime-local" value={row.timestamp ? toLocalDatetime(row.timestamp) : ''}
@@ -296,17 +385,38 @@ function RowLine({ row, positions, plannedOrders, onUpdate, onDelete }: {
       </button>
     </div>
   );
+
+  // 缺码行：琥珀高亮 + 弹窗补码入口（补码后 updateRow 重算指纹并复位校验状态）
+  if (!row.fullCode) {
+    return (
+      <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-1.5 py-1.5 space-y-2">
+        <div className="flex items-center gap-1.5 text-[10px] text-amber-400">
+          <AlertTriangle className="w-3 h-3 shrink-0" />
+          <span className="truncate">缺少代码{row.stockName ? '：' + row.stockName : ''}</span>
+          <button
+            onClick={onSupplement}
+            className="ml-auto shrink-0 px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/50 hover:bg-amber-500/30 transition-colors"
+          >
+            立即补码
+          </button>
+        </div>
+        {rowLine}
+      </div>
+    );
+  }
+  return rowLine;
 }
 
 // ============================================================
 // 移动端：紧凑摘要卡片 + 底部抽屉编辑
 // ============================================================
-function MobileRowCard({ row, positions, plannedOrders, onUpdate, onDelete }: {
+function MobileRowCard({ row, positions, plannedOrders, onUpdate, onDelete, onSupplement }: {
   row: ImportDraftRow;
   positions: Position[];
   plannedOrders: PlannedOrder[];
   onUpdate: (p: Partial<ImportDraftRow>) => void;
   onDelete: () => void;
+  onSupplement: () => void;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -323,6 +433,14 @@ function MobileRowCard({ row, positions, plannedOrders, onUpdate, onDelete }: {
             <span className="text-[10px] text-slate-400">
               {row.timestamp ? formatTimeCompact(row.timestamp) : '--'}
             </span>
+            {!row.fullCode && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onSupplement(); }}
+                className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 hover:bg-amber-500/30 transition-colors"
+              >
+                缺少代码·补码
+              </button>
+            )}
             <span className={`text-[10px] font-bold ${row.direction === 'buy' ? 'text-red-400' : 'text-green-400'}`}>
               {row.direction === 'buy' ? '买' : '卖'}
             </span>
@@ -358,6 +476,7 @@ function MobileRowCard({ row, positions, plannedOrders, onUpdate, onDelete }: {
           positions={positions}
           plannedOrders={plannedOrders}
           onUpdate={onUpdate}
+          onSupplement={onSupplement}
           onDelete={() => { onDelete(); setDrawerOpen(false); }}
           onClose={() => setDrawerOpen(false)}
         />
@@ -383,12 +502,13 @@ const CAT_TAG_COLOR: Record<string, string> = {
 // ============================================================
 // 移动端底部编辑抽屉（Bottom Sheet）
 // ============================================================
-function RowEditorDrawer({ row, positions, plannedOrders, onUpdate, onDelete, onClose }: {
+function RowEditorDrawer({ row, positions, plannedOrders, onUpdate, onDelete, onClose, onSupplement }: {
   row: ImportDraftRow;
   positions: Position[];
   plannedOrders: PlannedOrder[];
   onUpdate: (p: Partial<ImportDraftRow>) => void;
   onDelete: () => void;
+  onSupplement: () => void;
   onClose: () => void;
 }) {
   const [local, setLocal] = useState<Partial<ImportDraftRow>>({});
@@ -443,6 +563,20 @@ function RowEditorDrawer({ row, positions, plannedOrders, onUpdate, onDelete, on
 
         {/* 表单内容 */}
         <div className="px-5 py-4 space-y-5">
+          {/* 缺码提示：不完整数据不可过账，点击弹窗补码（保存后生效） */}
+          {!merged.fullCode && (
+            <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+              <span className="text-xs text-amber-300">缺少股票代码，不完整数据不可过账</span>
+              <button
+                onClick={onSupplement}
+                className="ml-auto shrink-0 px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/50 hover:bg-amber-500/30 transition-colors text-xs"
+              >
+                立即补码
+              </button>
+            </div>
+          )}
+
           {/* 成交时间 */}
           <FieldGroup label="成交时间">
             <input type="datetime-local" value={merged.timestamp ? toLocalDatetime(merged.timestamp) : ''}

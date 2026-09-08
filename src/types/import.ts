@@ -1,7 +1,8 @@
 /**
  * @file import.ts
  * @description 批量导入（Batch Import）相关的数据类型契约：暂存行数据模型、业务归类枚举、
- *              防重状态与风控校验状态。作为 OCR / CSV / 剪贴板接入的公共中间层。
+ *              防重状态与风控校验状态、股票代码候选（StockCodeCandidate）。
+ *              作为 OCR / CSV / 剪贴板接入的公共中间层。
  * @layer Types
  * @author 开发团队
  */
@@ -21,6 +22,21 @@ export type GroupRiskLevel = 'PASSED' | 'WARNING' | 'ERROR';
 /** 风控校验状态（RiskController 回填） */
 export type ValidationStatus = 'PENDING' | 'PASSED' | 'WARNING' | 'ERROR';
 
+/**
+ * Smartbox 股票代码候选（后端 StockCandidate 透传）：
+ * 截图缺码且 Smartbox 多候选/零匹配时随草稿行透传，供前端人工选择补码。
+ */
+export interface StockCodeCandidate {
+  /** 市场前缀（sh / sz） */
+  market: string;
+  /** 6 位数字代码 */
+  code: string;
+  /** 证券名称 */
+  name: string;
+  /** 证券类型（GP-A / ETF 等） */
+  type: string;
+}
+
 /** 剪贴板 / OCR / CSV 解析出的原始基础字段（未归类、未关联） */
 export interface RawTxRecord {
   fullCode: string;
@@ -29,6 +45,8 @@ export interface RawTxRecord {
   direction?: 'buy' | 'sell';
   price?: number;
   amount?: number;
+  /** 缺码行携带的 Smartbox 候选（有码行为 undefined） */
+  codeCandidates?: StockCodeCandidate[];
 }
 
 /**
@@ -43,8 +61,10 @@ export interface ImportDraftRow {
 
   /** 基础交易数据 */
   timestamp: number; // 成交时间戳（ms）
-  fullCode: string; // 完整证券代码（含市场前缀，如 sh600519）
+  fullCode: string; // 完整证券代码（含市场前缀，如 sh600519）；缺码行为空串并高亮待补全
   stockName?: string;
+  /** 缺码行候选透传：人工补码后置为空数组 */
+  codeCandidates?: StockCodeCandidate[];
   direction: 'buy' | 'sell';
   price: number;
   amount: number;

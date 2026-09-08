@@ -2,6 +2,7 @@
  * @file index.tsx
  * @description 批量导入工作台主视图：手动填表 / 剪贴板粘贴 / OCR 图片三条录入路径，
  *              草稿表编辑 → 指纹去重校验 → 分组风控（RiskController）→ 按标的分组执行导入。
+ *              缺码行琥珀高亮待补全（弹窗内候选一键回填/模糊搜索），过账门只放行标准完整数据。
  * @layer View
  * @storage_impact 无直接 IndexedDB 读写（写路径经 store action 与 importAdapter）。
  * @author 开发团队
@@ -170,11 +171,12 @@ export default function BatchImportPage() {
     }
     const newRows = raw.map((r) => {
       const ts = r.timestamp ? new Date(r.timestamp).getTime() : undefined;
-      return enrichDraftRow({ fullCode: r.fullCode, direction: r.direction ?? 'buy', price: r.price ?? 0, amount: r.amount ?? 0, timestamp: ts, stockName: r.stockName }, positions, plannedOrders);
+      return enrichDraftRow({ fullCode: r.fullCode, direction: r.direction ?? 'buy', price: r.price ?? 0, amount: r.amount ?? 0, timestamp: ts, stockName: r.stockName, codeCandidates: r.codeCandidates }, positions, plannedOrders);
     });
     const deduped = completeDedupCheck(newRows, history);
+    const missingCodeCount = newRows.filter((r) => !r.fullCode).length;
     setRows((prev) => [...prev, ...deduped]);
-    window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 已导入 ${newRows.length} 条交易` }));
+    window.dispatchEvent(new CustomEvent('app-toast', { detail: '✅ 已导入 ' + newRows.length + ' 条交易' + (missingCodeCount > 0 ? '，其中 ' + missingCodeCount + ' 条缺少代码待补全' : '') }));
   }, [positions, plannedOrders, history]);
 
   const handleFileDrop = useCallback(async (file: File) => {
@@ -201,7 +203,7 @@ export default function BatchImportPage() {
       if (result.previewUrl) setOcrImageUrl(result.previewUrl);
       const newRows = result.records.map((r) => {
         const ts = r.timestamp ? new Date(r.timestamp).getTime() : undefined;
-        return enrichDraftRow({ fullCode: r.fullCode, direction: r.direction ?? 'buy', price: r.price ?? 0, amount: r.amount ?? 0, timestamp: ts, stockName: r.stockName }, positions, plannedOrders);
+        return enrichDraftRow({ fullCode: r.fullCode, direction: r.direction ?? 'buy', price: r.price ?? 0, amount: r.amount ?? 0, timestamp: ts, stockName: r.stockName, codeCandidates: r.codeCandidates }, positions, plannedOrders);
       });
 
       if (newRows.length === 0) {
@@ -211,9 +213,10 @@ export default function BatchImportPage() {
       }
 
       const deduped = completeDedupCheck(newRows, history);
+      const missingCodeCount = newRows.filter((r) => !r.fullCode).length;
       setRows((prev) => [...prev, ...deduped]);
-      setOcrStatus({ loading: false, message: `✅ 成功识别出 ${newRows.length} 笔成交记录，请核对明细` });
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 成功识别出 ${newRows.length} 笔成交记录` }));
+      setOcrStatus({ loading: false, message: '✅ 成功识别出 ' + newRows.length + ' 笔成交记录' + (missingCodeCount > 0 ? '，其中 ' + missingCodeCount + ' 条缺少代码' : '') + '，请核对明细' });
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: '✅ 成功识别出 ' + newRows.length + ' 笔成交记录' + (missingCodeCount > 0 ? '，' + missingCodeCount + ' 条缺少代码待补全' : '') }));
     } catch (e: any) {
       setOcrStatus({ loading: false, message: '' });
       window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${e.message}` }));
@@ -249,9 +252,15 @@ export default function BatchImportPage() {
   }, [positions]);
 
   const handleCommitRows = useCallback(async (targetRows: ImportDraftRow[]) => {
-    const valid = targetRows.filter((r) => !r.skipImport && r.validationStatus !== 'ERROR' && r.fullCode && r.price > 0 && r.amount > 0);
+    // 完整性守门：只过账标准完整数据；缺码/歧义/防重/风控拦截行一律保留在暂存区并提示
+    const isCommitReady = (r: ImportDraftRow) => !r.skipImport && r.validationStatus !== 'ERROR' && !!r.fullCode && r.price > 0 && r.amount > 0;
+    const valid = targetRows.filter(isCommitReady);
+    const invalid = targetRows.filter((r) => !isCommitReady(r));
     if (valid.length === 0) {
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: '⚠️ 没有可过账的数据' }));
+      const hasMissingCode = invalid.some((r) => !r.fullCode);
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: hasMissingCode
+        ? '⚠️ 所选记录缺少股票代码或数据不完整，请补全后再过账'
+        : '⚠️ 所选记录均被防重/风控拦截，没有可过账的数据' }));
       return;
     }
     setCommitting(true);
@@ -288,7 +297,15 @@ export default function BatchImportPage() {
 
     if (successIds.length > 0) setRows((prev) => prev.filter((r) => !successIds.includes(r.id)));
     setCommitting(false);
-    window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 成功过账 ${success} 条${errors.length ? `，${errors.length} 条失败` : ''}` }));
+    const missingCodeCount = invalid.filter((r) => !r.fullCode).length;
+    let toastDetail = '✅ 成功过账 ' + success + ' 条';
+    if (errors.length > 0) toastDetail += '，' + errors.length + ' 条失败';
+    if (invalid.length > 0) {
+      toastDetail += missingCodeCount > 0
+        ? '；' + invalid.length + ' 条不完整/歧义未过账（' + missingCodeCount + ' 条缺码），已保留待补全'
+        : '；' + invalid.length + ' 条被防重/风控拦截未过账';
+    }
+    window.dispatchEvent(new CustomEvent('app-toast', { detail: toastDetail }));
   }, [positions, feeConfig, addBatch, addStreamRecord, addPosition, markPlanExecuted, plannedOrders]);
 
   const handleCommitAll = useCallback(() => handleCommitRows(rows), [handleCommitRows, rows]);

@@ -24,6 +24,8 @@ import { createCopilotSlice } from './slices/copilotSlice';
 import { createCopilotActionSlice } from './slices/copilotActionSlice';
 import { createHomeSlice } from './slices/homeSlice';
 import { createCustomStatsSlice } from './slices/customStatsSlice';
+import { createAnnouncementSlice } from './slices/announcementSlice';
+import { createSearchSlice } from './slices/searchSlice';
 import { getIsSyncingFromRemote } from '../utils/persistence';
 import { loadCopilotTombstones, loadCopilotConsent } from '../services/copilotService';
 
@@ -86,6 +88,14 @@ export const useAppStore = create<AppStore>()((...a) => ({
   // 服务端密文同步（M3）：UI 态初值（编排状态在 services/ioSlice 模块级）
   serverSyncing: false, serverLastVersion: null, serverLastError: null,
 
+  // 公告订阅（服务端为准，本地镜像；登录后由订阅按钮首次挂载触发拉取）
+  subscribedStockIds: [], announcementSubsLoaded: false, announcementSubsLoading: false,
+
+  // 资讯搜索（内存态：检索历史不持久化，刷新即回初始态）
+  searchQuery: '', searchScope: 'announcement', searchStatus: 'idle',
+  searchResults: [], compositeResult: null, stockProfile: null,
+  searchError: null, searchTotal: 0, retryAfterSeconds: null,
+
   ...createCoreSlice(...a),
   ...createStreamsSlice(...a),
   ...createRoundsSlice(...a),
@@ -96,6 +106,8 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createCopilotActionSlice(...a),
   ...createHomeSlice(...a),
   ...createCustomStatsSlice(...a),
+  ...createAnnouncementSlice(...a),
+  ...createSearchSlice(...a),
 }));
 
 /**

@@ -16,6 +16,14 @@ import type { FeeConfig } from '../utils/mathUtils';
 import type { StockMeta, StockSearchItem } from '../types/stock';
 import type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 import type {
+  CompositeResult,
+  RunSearchInput,
+  SearchScope,
+  SearchStatus,
+  SearchResultItem,
+  StockProfile,
+} from '../types/search';
+import type {
   Position,
   PositionBatch,
   RoundTxn,
@@ -263,6 +271,22 @@ export interface AppStoreActions {
   markCustomStatsSeen: () => void;
   /** 组装 custom_stat 提问样例上下文（字段字典 + 每集合 ≤3 行真实形状样例；仅进 prompt 不落库） */
   buildCustomStatPromptContext: () => Promise<Record<string, unknown>>;
+
+  // -- 公告订阅 --
+  /** 拉取当前用户公告订阅列表（幂等：成功后标记已加载，重复调用直接跳过；未登录静默跳过） */
+  loadAnnouncementSubscriptions: () => Promise<void>;
+  /** 订阅公告摘要（乐观更新，失败回滚）；message 为后端/本地用户可读文案 */
+  subscribeAnnouncement: (stockId: string) => Promise<{ ok: boolean; message?: string }>;
+  /** 取消订阅公告摘要（乐观更新，失败回滚） */
+  unsubscribeAnnouncement: (stockId: string) => Promise<{ ok: boolean; message?: string }>;
+
+  // -- 资讯搜索 --
+  /** 执行资讯检索：形态检测（6 位码/名称消歧）→ 档案卡装载（400 降级，A10）→
+   *  按 scope 调对应端点；announcement 范围自动注入未平仓持仓代码（去重 ≤50，
+   *  为空短路引导空态），股票形态覆盖为单票硬过滤；seq 竞态守卫内置 */
+  runSearch: (input: RunSearchInput) => Promise<void>;
+  /** 重置搜索页状态回初始态（进行中的检索/流式请求一并作废；spec §4.2 刷新即回初始态） */
+  resetSearch: () => void;
 }
 
 /** 完整的 Store 状态 + Action */
@@ -287,6 +311,34 @@ export interface AppStore extends AppStoreActions {
   serverLastVersion: number | null;
   /** 服务端同步错误提示（冲突未解决/回退告警/拉取失败；null = 无；网络失败静默不置位） */
   serverLastError: string | null;
+
+  // -- 公告订阅（服务端为准，本地镜像） --
+  /** 已订阅的股票代码（归一化 6 位数字码，如 '600745'）；服务端订阅列表的本地镜像 */
+  subscribedStockIds: string[];
+  /** 订阅列表是否已完成首次拉取（防重复加载） */
+  announcementSubsLoaded: boolean;
+  /** 订阅列表拉取进行中（防并发重复请求） */
+  announcementSubsLoading: boolean;
+
+  // -- 资讯搜索（内存态：检索历史不持久化，刷新即回初始态） --
+  /** 最近一次查询关键词（驱动 Copilot scope getData 与结果头展示） */
+  searchQuery: string;
+  /** 最近一次执行的检索范围（视图表单态另存 useState，切换不自动重搜） */
+  searchScope: SearchScope;
+  /** 页面状态机：idle | loading | succeeded | failed | generating（综合摘要流式专用） */
+  searchStatus: SearchStatus;
+  /** 结果列表（判别联合，按 scope 装载公告/CLS 命中；composite 时为空） */
+  searchResults: SearchResultItem[];
+  /** AI 综合摘要（scope=composite 时装载；meta 引用先上屏 + delta 渐进拼接） */
+  compositeResult: CompositeResult | null;
+  /** 股票档案卡（形态检测命中具体股票时装载；null = 关键词形态/A10 降级） */
+  stockProfile: StockProfile | null;
+  /** 失败文案（信封 message 直出或网络异常文案；空持仓引导文案同源） */
+  searchError: string | null;
+  /** 结果计数（列表头「匹配到 N 条」；composite 时 = 引用数） */
+  searchTotal: number;
+  /** 限流倒计时秒数（信封 429 data.retryAfterSeconds；null = 非限流错误/缺省） */
+  retryAfterSeconds: number | null;
 
   // -- Copilot（AI 助手，P0：mock 全链路） --
   /** 页面上下文注册表（scopeId → 快照，同 scopeId 覆盖幂等） */

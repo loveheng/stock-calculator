@@ -19,6 +19,16 @@ export function normalizeCode(raw: string): string {
   return c.replace(/^(sh|sz|bj)/i, '').toUpperCase();
 }
 
+/**
+ * 归一化为 6 位数字股票码（如 sh600745 → 600745）；无法提取 6 位码时返回 null。
+ * 共享纯函数：announcementSlice / AnnouncementSubscribeButton / 资讯搜索（持仓注入、
+ * CLS 股票 chips、Smartbox 选中值）等多处复用（R2：放 utils 纯函数层，不碰 store/db）。
+ */
+export function toStockId(raw: string): string | null {
+  const c = normalizeCode(raw ?? '');
+  return /^\d{6}$/.test(c) ? c : null;
+}
+
 /** 归一化证券名称：大写 + 去风险/除权/新股前缀 + 去空白，用于口径不一致时的名称匹配 */
 export function normalizeStockName(raw: string): string {
   return String(raw ?? '')

@@ -26,6 +26,7 @@ import {
   ClipboardList,
   LogIn,
   LogOut,
+  Search,
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
 import AuthGate from './components/ui/AuthGate';
@@ -45,6 +46,7 @@ import FeeConfig from './views/FeeConfig';
 import WebDAVConfig from './views/WebDAVConfig';
 import SandboxPlayback from './views/SandboxPlayback';
 import BatchImport from './views/BatchImport';
+import NewsSearch from './views/NewsSearch';
 
 /**
  * 导航菜单配置项。
@@ -59,6 +61,7 @@ const NAV_ITEMS = [
   { path: '/change-rate', label: '涨跌幅计算器', icon: TrendingUp },
   { path: '/t-calculator', label: '短线交易', icon: RefreshCw },
   { path: '/cost-averaging', label: '中长期交易', icon: BarChart3 },
+  { path: '/news', label: '资讯', icon: Search },
   { path: '/sandbox', label: '沙盘复盘', icon: FlaskConical },
   { path: '/statistics', label: '数据统计', icon: PieChart },
   { path: '/fee-config', label: '费率配置', icon: Settings },
@@ -255,6 +258,7 @@ function AppLayout() {
             <Route path="/change-rate" element={<ChangeRate />} />
             <Route path="/t-calculator" element={<TCalculator />} />
             <Route path="/cost-averaging" element={<CostAveraging />} />
+            <Route path="/news" element={<NewsSearch />} />
             <Route path="/sandbox" element={<SandboxPlayback />} />
             <Route path="/statistics" element={<Statistics />} />
             <Route path="/fee-config" element={<FeeConfig />} />

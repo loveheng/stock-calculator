@@ -30,6 +30,7 @@ import type { PlannedOrder } from '../store/types';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import PlanOrderCard from '../components/PlanOrderCard';
+import AnnouncementSubscribeButton from '../components/ui/AnnouncementSubscribeButton';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
 
 /**
@@ -972,6 +973,8 @@ function PositionLedger() {
                 </div>
               </div>
               <div className="flex items-center shrink-0 ml-2">
+                {/* 公告订阅切换（仅订阅/取消订阅；内部 stopPropagation，fullCode 为空的旧持仓不渲染） */}
+                <AnnouncementSubscribeButton fullCode={pos.fullCode} />
                 {pos.fullCode && (
                   <BlockFocusButton
                     scopeId={`cost_averaging:${pos.fullCode}`}

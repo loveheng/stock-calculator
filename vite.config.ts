@@ -2,7 +2,8 @@
  * @file vite.config.ts
  * @description Vite 构建配置：React 插件、PWA 支持（Workbox 运行时缓存）、
  *              开发服务器代理（腾讯 Smartbox 行情搜索 / 腾讯实时行情 / 东方财富搜索 API /
- *              WebDAV 代理 / OCR 交割单识别 / E2EE 认证服务 / 服务端密文同步），以及构建输出配置。
+ *              WebDAV 代理 / OCR 交割单识别 / E2EE 认证服务 / 服务端密文同步 / 公告订阅 /
+ *              资讯搜索），以及构建输出配置。
  *
  * 【WebDAV 代理说明】
  *   开发环境下，Vite 代理 /api/webdav 请求到动态目标 URL，使用 bypass 函数
@@ -158,6 +159,19 @@ export default defineConfig({
       // 服务端密文同步代理：与 /api/auth 同源（同一 Spring Boot 应用，
       // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认）
       '/api/sync': {
+        target: devUpstreams.auth,
+        changeOrigin: true,
+      },
+      // 公告订阅代理：与 /api/auth 同源（同一 Spring Boot 应用，
+      // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认）
+      '/api/announcement': {
+        target: devUpstreams.auth,
+        changeOrigin: true,
+      },
+      // 资讯搜索代理：与 /api/auth 同源（同一 Spring Boot 应用，
+      // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认；
+      // composite SSE 流式响应需保留流式转发，Vite 代理默认支持）
+      '/api/search': {
         target: devUpstreams.auth,
         changeOrigin: true,
       },

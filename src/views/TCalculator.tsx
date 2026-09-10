@@ -48,6 +48,7 @@ import { RiskController, type SellValidationResult } from '../risk';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import PlanOrderCard from '../components/PlanOrderCard';
+import AnnouncementSubscribeButton from '../components/ui/AnnouncementSubscribeButton';
 import type { StockQuoteSummary, StockSearchItem } from '../types/stock';
 import type { PlannedOrder } from '../store/types';
 import type {
@@ -623,6 +624,8 @@ function CurrentProjectCard({
             底仓 <b className="text-slate-200">{baseHolding}</b> 股
           </span>
         ) : null}
+        {/* 公告订阅切换（仅订阅/取消订阅；fullCode 归一化失败时不渲染） */}
+        <AnnouncementSubscribeButton fullCode={result.fullCode} />
         {/* V2 Click-to-Focus：按标的区块聚焦入口（聚焦后浮窗胶囊显示该标的短线项目） */}
         <BlockFocusButton scopeId={projectScopeId} blockId={`${projectScopeId}:project`} />
       </div>

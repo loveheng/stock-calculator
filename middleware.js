@@ -78,6 +78,20 @@ const UPSTREAMS = {
     headers: {},
     stripPrefix: false,
   },
+  // 公告订阅服务代理（保留原始路径前缀，不剥离 /api/announcement；
+  // 与 /api/auth 同源部署，线上固定读 PROXY_UPSTREAMS.online）
+  '/api/announcement': {
+    base: PROXY_UPSTREAMS.online.auth,
+    headers: {},
+    stripPrefix: false,
+  },
+  // 资讯搜索服务代理（保留原始路径前缀，不剥离 /api/search；
+  // 与 /api/auth 同源部署，composite SSE 流式响应透传）
+  '/api/search': {
+    base: PROXY_UPSTREAMS.online.auth,
+    headers: {},
+    stripPrefix: false,
+  },
 };
 
 /** 匹配路径前缀（按长度降序，避免 `/api/eastmoney` 被 `/api` 误匹配）。 */
@@ -122,6 +136,8 @@ export const config = {
     '/api/eastmoney/:path*',
     '/api/import/:path*',
     '/api/auth/:path*',
+    '/api/announcement/:path*',
+    '/api/search/:path*',
   ],
 };
 

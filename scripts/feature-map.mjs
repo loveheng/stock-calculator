@@ -3,15 +3,21 @@
  * @file feature-map.mjs
  * @description 功能→文件触点速查表：实时扫描 src/ 按功能分组输出，不落盘、永不过期。
  *              修改某功能前先跑 npm run map:features 查它的全部触点（视图/状态/服务/计算/测试）。
+ *              域过滤（L2 单域展开）：npm run map:features -- <域> [更多域...]，按组名/中文名子串匹配，只输出目标域省 token。
  *              新文件按「功能词」命名即可自动归组；命名不含功能词的特例登记进 GROUPS 关键词。
  *              「未归类」清单就是漂移探测器：出现新条目 = 新功能待登记，或文件命名缺功能词。
  * @layer 工程脚本（零依赖，node >= 18）
  * @author 开发团队
  */
 import { readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const SRC = join(process.cwd(), 'src');
+// 以脚本自身位置定位仓库 src/，任意 cwd 可用（npm run 或绝对路径皆可）
+const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
+
+// 域过滤：npm run map:features -- <域>...，按组名子串匹配（不区分大小写），只展开目标域
+const FILTERS = process.argv.slice(2).map((s) => s.toLowerCase());
 
 // 分组按数组顺序匹配（先具体后一般），关键词为小写子串，匹配对象是 src/ 下相对路径
 const GROUPS = [
@@ -92,10 +98,19 @@ for (const rel of files) {
   roles.get(role).push(rel);
 }
 
+const selected = FILTERS.length === 0
+  ? null
+  : new Set(GROUPS.map(([name]) => name).filter((name) => FILTERS.some((f) => name.toLowerCase().includes(f))));
+for (const raw of process.argv.slice(2)) {
+  const f = raw.toLowerCase();
+  if (!GROUPS.some(([name]) => name.toLowerCase().includes(f))) console.log('⚠ 未匹配到功能组: ' + raw);
+}
 let total = 0;
 console.log('功能→文件触点速查（npm run map:features 实时扫描生成，非静态文档，永不过期）');
+if (selected) console.log('（域过滤: ' + process.argv.slice(2).join(', ') + '）');
 console.log('');
 for (const [name, roles] of grouped) {
+  if (selected && !selected.has(name)) continue;
   const count = [...roles.values()].reduce((n, list) => n + list.length, 0);
   if (count === 0) continue;
   total += count;
@@ -105,8 +120,12 @@ for (const [name, roles] of grouped) {
   }
   console.log('');
 }
-console.log('已归组 ' + total + ' / ' + files.length + ' 个文件');
-if (unmatched.length > 0) {
+if (selected) {
+  console.log('已展开 ' + total + ' 个文件（全仓 ' + files.length + '）');
+} else {
+  console.log('已归组 ' + total + ' / ' + files.length + ' 个文件');
+}
+if (!selected && unmatched.length > 0) {
   console.log('');
   console.log('⚠ 未归类 ' + unmatched.length + ' 个（新功能待登记关键词，或文件命名缺功能词）：');
   for (const rel of unmatched) console.log('   ' + rel);

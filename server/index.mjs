@@ -185,8 +185,9 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname;
 
-    // 0. 健康检查（Docker HEALTHCHECK 用）
-    if (pathname === '/healthz') {
+    // 0. 健康检查（Docker HEALTHCHECK 用；Cloud Run 保留 z 结尾路径如 /healthz，
+    //    请求到不了容器，故另备 /health 别名供 Cloud Run 探测）
+    if (pathname === '/healthz' || pathname === '/health') {
       res.statusCode = 200;
       res.end('ok');
       return;

@@ -94,6 +94,14 @@ function mkFlat(count: number, price = 10): KlineItem[] {
   return makeKline(Array(count).fill(price));
 }
 
+/** 正弦摆动行情：拉升→回落循环（用于触发 ma20 偏离减仓与回踩低吸的相邻信号） */
+function mkSwing(count: number, base = 11, amp = 1.5, period = 40): KlineItem[] {
+  const closes = Array.from({ length: count }, (_, i) =>
+    Math.round((base + amp * Math.sin((2 * Math.PI * i) / period)) * 100) / 100,
+  );
+  return makeKline(closes);
+}
+
 /** 构造最小订单 */
 function makeOrder(over: Partial<SandboxOrder> & { timestamp: string; price: number }): SandboxOrder {
   return { id: 'o', branchId: '', seqIndex: 0, action: 'buy', quantity: 100, ...over };
@@ -256,6 +264,27 @@ describe('统一订单契约（6 大标准策略）', () => {
         return s - o.price * o.quantity * (1 - SELL_BUFFER_RATE);
       }, 0);
       expect(net).toBeLessThanOrEqual(base * 1.001);
+    }
+  });
+
+  it('同日买卖互斥（防同根先卖后买抖动）：6 策略任一撮合日不同时含买卖订单', () => {
+    // 引擎按信号日步进、各步撮合日（次日开盘）严格递增，同日买卖共存只能来自
+    // 同一信号步先卖后买——即审查文档 §4.2 的同根抖动回归签名。
+    // 摆动行情专门触发 ma20「偏离减仓→回踩低吸」相邻信号对。
+    for (const kline of [mkRise(90, 10, 13), mkSwing(150), mkFlat(90)]) {
+      for (const id of ids) {
+        const orders = generateStrategyOrders(id, makeCtx({ klineData: kline, simulatedCash: 60000 }), {});
+        const byDay = new Map<string, Set<string>>();
+        for (const o of orders) {
+          const day = o.timestamp.slice(0, 10);
+          const acts = byDay.get(day) ?? new Set<string>();
+          acts.add(o.action);
+          byDay.set(day, acts);
+        }
+        for (const [day, acts] of byDay) {
+          expect(acts.has('buy') && acts.has('sell'), `${id} 在 ${day} 同日出现买卖对（同根抖动回归）`).toBe(false);
+        }
+      }
     }
   });
 });

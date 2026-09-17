@@ -63,7 +63,7 @@ EXPOSE 3000
 
 # 健康检查：alpine 自带 busybox wget
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3000/healthz || exit 1
+  CMD wget -qO- http://127.0.0.1:3000/health || exit 1
 
 # 非 root 运行
 USER node

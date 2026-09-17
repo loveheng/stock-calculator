@@ -1,0 +1,15 @@
+# Cloud Build（gcloud run deploy --source .）上传源码时的忽略清单。
+# 只保留 Dockerfile 构建阶段真正 COPY 的内容，避免把 node_modules /
+# 构建产物 / 本地数据一起打包上传。
+.git
+.gitignore
+node_modules
+dist
+data
+context
+docs
+coverage
+*.tsbuildinfo
+aa.txt
+api-test.http
+.vercel

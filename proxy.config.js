@@ -35,4 +35,4 @@ export const UPSTREAMS = {
  *   'online' → 本地开发也走线上服务（默认）
  *   'local'  → 本地开发连本机 Spring Boot（联调用）
  */
-export const DEV_UPSTREAM_ENV = 'online'; // 'online' | 'local'
+export const DEV_UPSTREAM_ENV = 'local'; // 'online' | 'local'

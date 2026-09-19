@@ -18,6 +18,7 @@ import type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 import type {
   CompositeResult,
   RunSearchInput,
+  SearchRequest,
   SearchScope,
   SearchStatus,
   SearchResultItem,
@@ -287,6 +288,9 @@ export interface AppStoreActions {
   runSearch: (input: RunSearchInput) => Promise<void>;
   /** 重置搜索页状态回初始态（进行中的检索/流式请求一并作废；spec §4.2 刷新即回初始态） */
   resetSearch: () => void;
+  /** 列表续拉下一页（无限滑动）：按 lastSearchRequest 翻页、追加去重进结果列表；
+   *  非 succeeded / hasMore=false / 续拉进行中 / composite 时幂等空操作 */
+  loadMore: () => Promise<void>;
 }
 
 /** 完整的 Store 状态 + Action */
@@ -339,6 +343,14 @@ export interface AppStore extends AppStoreActions {
   searchTotal: number;
   /** 限流倒计时秒数（信封 429 data.retryAfterSeconds；null = 非限流错误/缺省） */
   retryAfterSeconds: number | null;
+  /** 分页游标：已加载页数（下一页请求的页码；0 起翻页） */
+  searchPage: number;
+  /** 分页：是否还有下一页（后端多取 1 条精确判定；后端未上分页/端点缺省 false） */
+  searchHasMore: boolean;
+  /** 续拉进行中（IntersectionObserver/连点防重；status 保持 succeeded，列表不闪） */
+  searchLoadingMore: boolean;
+  /** 最近一次执行的检索请求基座（不含分页字段；续拉翻页复用其中的 query/dateRange/stockCodes） */
+  lastSearchRequest: SearchRequest | null;
 
   // -- Copilot（AI 助手，P0：mock 全链路） --
   /** 页面上下文注册表（scopeId → 快照，同 scopeId 覆盖幂等） */

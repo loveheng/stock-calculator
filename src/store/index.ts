@@ -64,6 +64,8 @@ export { DEFAULT_FEE_CONFIG, FEE_PRESETS, FEE_TEMPLATES } from '../utils/feePres
 export { getPersistError, clearPersistError, getIsSyncingFromRemote } from '../utils/persistence';
 export type { TStreamRecord, StockStreamResult } from '../utils/tStreamEngine';
 export { reconcilePositionsWithStreams } from './reconcile';
+// Copilot 区块独立会话的线程键派生（纯函数）：浮窗 UI 与切片共用同一口径
+export { copilotThreadKey } from './slices/copilotSlice';
 
 export const useAppStore = create<AppStore>()((...a) => ({
   feeConfig: { ...DEFAULT_FEE_CONFIG }, tRounds: [],
@@ -95,6 +97,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   searchQuery: '', searchScope: 'announcement', searchStatus: 'idle',
   searchResults: [], compositeResult: null, stockProfile: null,
   searchError: null, searchTotal: 0, retryAfterSeconds: null,
+  searchPage: 0, searchHasMore: false, searchLoadingMore: false, lastSearchRequest: null,
 
   ...createCoreSlice(...a),
   ...createStreamsSlice(...a),

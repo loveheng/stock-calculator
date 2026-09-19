@@ -2,7 +2,7 @@
  * @file NewsSearch.tsx
  * @description 资讯搜索页（一级菜单「资讯」，route /news）：search-first 落地页。
  *              组装搜索框（普通受控 input，自由文本提交；6 位码/名称消歧由 slice
- *              形态检测承担）+ 意图分流 Tabs + 日期预设 chips + 预置提问模板 +
+ *              形态检测承担）+ 意图分流 Tabs + 自定义时间区间筛选 + 预置提问模板 +
  *              结果流（档案卡 / 结果卡片列表 / AI 综合摘要面板）+ Copilot 页面上下文注册
  *              （scopeId=news_search，结果卡 blockId=news_search:result:{resultId}）。
  *              结果状态全部落 searchSlice（D5/R2），本视图只持有表单草稿等纯 UI 态（I3）。
@@ -11,7 +11,7 @@
  * @author 开发团队
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { LogIn, Search } from 'lucide-react';
 import { useAppStore } from '../store';
 import { useAuthStore } from '../store/useAuthStore';
@@ -21,9 +21,8 @@ import {
   buildProfileContext,
   buildSearchContext,
 } from '../utils/searchCopilot';
-import { presetDateRange } from '../utils/searchPrompts';
 import type {
-  DatePreset,
+  DateRange,
   RunSearchInput,
   SearchPromptTemplate,
   SearchResultItem,
@@ -42,13 +41,6 @@ const SCOPE_LABEL: Record<SearchScope, string> = {
   cls: '财联社电报',
   composite: 'AI 智能综合',
 };
-
-/** 日期预设 chips（「自定义」范围延后，spec F1 P2） */
-const DATE_PRESETS: Array<{ preset: DatePreset; label: string }> = [
-  { preset: 'all', label: '全部' },
-  { preset: '7d', label: '近 7 天' },
-  { preset: '30d', label: '近 30 天' },
-];
 
 /** Copilot 区块标题（注册签名的一部分，随结果集热更新） */
 function blockTitleOf(r: SearchResultItem): string {
@@ -84,6 +76,9 @@ export default function NewsSearch() {
   const searchError = useAppStore((s) => s.searchError);
   const searchTotal = useAppStore((s) => s.searchTotal);
   const retryAfterSeconds = useAppStore((s) => s.retryAfterSeconds);
+  const searchHasMore = useAppStore((s) => s.searchHasMore);
+  const searchLoadingMore = useAppStore((s) => s.searchLoadingMore);
+  const loadMore = useAppStore((s) => s.loadMore);
   const positions = useAppStore((s) => s.positions);
   const runSearch = useAppStore((s) => s.runSearch);
   const resetSearch = useAppStore((s) => s.resetSearch);
@@ -91,25 +86,30 @@ export default function NewsSearch() {
   // 表单态（I3：纯 UI 态留视图 useState；结果态一律在 searchSlice）
   const [draft, setDraft] = useState('');
   const [scope, setScope] = useState<SearchScope>('announcement');
-  const [datePreset, setDatePreset] = useState<DatePreset>('all');
-  /** 最近一次实际执行的查询（驱动「筛选已变化」提示）；preset=null = 模板自带 dateRange，不参与预设对比 */
-  const [lastRun, setLastRun] = useState<{ input: RunSearchInput; preset: DatePreset | null } | null>(null);
+  // 单一日期筛选（v1.5：近7天/近30天预设与起止区间均移除——后端无对应日期参数口径；
+  // 单日按闭区间下发 start=end=该日，空 = 不限日期）
+  const [dateDay, setDateDay] = useState('');
+  /** 最近一次实际执行的查询（驱动「筛选已变化」提示）；formDate=null = 模板自带 dateRange，不参与对比 */
+  const [lastRun, setLastRun] = useState<{ input: RunSearchInput; formDate: string | null } | null>(null);
 
   const hasHoldings = positions.some((p) => !p.isClosed);
   const generating = status === 'generating';
 
-  function buildInput(q: string, sc: SearchScope, preset: DatePreset): RunSearchInput {
-    return {
-      query: q,
-      scope: sc,
-      ...(preset === 'all' ? {} : { dateRange: presetDateRange(preset, new Date()) }),
-    };
+  function buildInput(q: string, sc: SearchScope, day: string): RunSearchInput {
+    // 单日筛选：契约只有闭区间 dateRange，单日即 start=end=该日；空 = 不限（不发日期参数）
+    const range: DateRange | null = day ? { start: day, end: day } : null;
+    return { query: q, scope: sc, ...(range ? { dateRange: range } : {}) };
   }
 
-  /** 表单路径执行（日期预设参与陈旧对比） */
+  /** 表单路径执行（日期参与陈旧对比） */
   function executeForm(q: string) {
-    const input = buildInput(q, scope, datePreset);
-    setLastRun({ input, preset: datePreset });
+    executeWith(q, scope, dateDay);
+  }
+
+  /** 显式参数执行（筛选控件即查路径：setState 异步，必须传目标值而不能读刚 set 的 state） */
+  function executeWith(q: string, sc: SearchScope, day: string) {
+    const input = buildInput(q, sc, day);
+    setLastRun({ input, formDate: day });
     void runSearch(input);
   }
 
@@ -127,7 +127,7 @@ export default function NewsSearch() {
     const req = t.buildRequest({ today: new Date() });
     setDraft(req.query);
     setScope(req.scope);
-    setLastRun({ input: req, preset: null }); // 模板自带 dateRange，不参与预设对比
+    setLastRun({ input: req, formDate: null }); // 模板自带 dateRange，不参与日期对比
     void runSearch(req);
   }
 
@@ -137,13 +137,27 @@ export default function NewsSearch() {
     executeForm(stockId);
   }
 
-  // scope 切换不自动重搜（spec F1）：筛选与上次执行不一致时提示手动重查
+  /**
+   * 筛选控件变更即查（spec F1 v1.3 修订，原为提示手动重查）：
+   * 上次执行的查询词未被修改时，切范围立即按新条件重查（seq 竞态守卫兜住连点）；
+   * 查询词已改未提交时不自动搜（避免把输入中的词误发），保留 stale 提示引导手动搜索。
+   * 日期不参与即查：改动后走 stale 提示由用户手动搜索。
+   */
+  function handleScopeChange(next: SearchScope) {
+    if (next === scope) return;
+    setScope(next);
+    if (lastRun !== null && draft.trim() === lastRun.input.query) {
+      executeWith(draft.trim(), next, dateDay);
+    }
+  }
+
+  // 查询词已修改未提交时的提示（范围切换即查已自动消化 scope 分歧；剩余是词变更/日期变更）
   const stale =
     lastRun !== null &&
     status === 'succeeded' &&
     (draft.trim() !== lastRun.input.query ||
       scope !== lastRun.input.scope ||
-      (lastRun.preset !== null && lastRun.preset !== datePreset));
+      (lastRun.formDate !== null && lastRun.formDate !== dateDay));
 
   // ── Copilot 页面上下文注册（D5/I5）：getData 经 getState() 同源读取，禁闭包取数 ──
   usePageContext(
@@ -190,12 +204,31 @@ export default function NewsSearch() {
     return (
       <div className="flex items-center gap-2 text-xs text-slate-500">
         <span>
-          📄 匹配到 {searchTotal} 条{executedScope === 'announcement' ? '相关公告摘要' : '电报'}
+          {executedScope === 'announcement'
+            ? `📄 已加载 ${results.length} 条公告摘要${searchHasMore ? '，下滑继续加载' : ''}`
+            : `📰 已加载 ${results.length} 条电报${searchHasMore ? '，下滑继续加载' : ''}`}
         </span>
         <span className="text-slate-600">（范围：{SCOPE_LABEL[executedScope]}）</span>
       </div>
     );
   }
+
+  // ── 列表无限滑动续拉：哨兵进入视口即续拉（loadMore 自带守卫；
+  //    依赖 loadingMore/hasMore 使每页拉完后重新武装观察器，滚动到底自动接力） ──
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const showLoadMore = (lastRun?.input.scope ?? scope) !== 'composite';
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !showLoadMore || !searchHasMore) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) void loadMore();
+      },
+      { rootMargin: '240px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loadMore, showLoadMore, searchHasMore, searchLoadingMore]);
 
   // ── 未登录门控（A7）：引导登录空态，打开既有 AuthModal ──
   if (!isAuthenticated) {
@@ -250,29 +283,31 @@ export default function NewsSearch() {
           </button>
         </div>
 
-        <IntentFilterTabs scope={scope} onChange={setScope} />
+        <IntentFilterTabs scope={scope} onChange={handleScopeChange} />
 
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-slate-600">日期</span>
-          {DATE_PRESETS.map(({ preset, label }) => (
+          <input
+            type="date"
+            value={dateDay}
+            onChange={(e) => setDateDay(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800/50 px-2 py-1 text-[11px] text-slate-300 focus:border-blue-500 focus:outline-none"
+          />
+          {dateDay && (
             <button
-              key={preset}
               type="button"
-              onClick={() => setDatePreset(preset)}
-              className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                preset === datePreset
-                  ? 'bg-slate-700 text-slate-100'
-                  : 'bg-slate-800/50 text-slate-500 hover:text-slate-300'
-              }`}
+              onClick={() => setDateDay('')}
+              title="清除日期条件（不限日期）"
+              className="rounded-full bg-slate-800/50 px-2.5 py-1 text-[11px] text-slate-500 hover:text-slate-300"
             >
-              {label}
+              清除
             </button>
-          ))}
+          )}
         </div>
 
         {stale && (
           <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-            筛选条件已变化，点击「搜索」重新查询
+            查询内容已修改，点击「搜索」重新查询
           </div>
         )}
 
@@ -315,7 +350,24 @@ export default function NewsSearch() {
           {scopeNote()}
 
           {results.length > 0 ? (
-            <ResultCardList items={results} query={lastRun?.input.query ?? ''} onSelectStock={handleSelectStock} />
+            <>
+              <ResultCardList items={results} query={lastRun?.input.query ?? ''} onSelectStock={handleSelectStock} />
+              {showLoadMore && searchHasMore && (
+                <div ref={sentinelRef} className="flex justify-center py-1">
+                  {searchLoadingMore ? (
+                    <span className="text-xs text-slate-500">正在加载更多…</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void loadMore()}
+                      className="tap-target rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:border-blue-500/60 hover:text-blue-300"
+                    >
+                      加载更多
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
           ) : (
             !compositeResult && !stockProfile && (
               <div className="card space-y-2 text-center !mb-0">

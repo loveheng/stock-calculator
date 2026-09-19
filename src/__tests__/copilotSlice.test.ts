@@ -176,7 +176,7 @@ describe('focusBlock / unfocusBlock（V2 Click-to-Focus）', () => {
     expect(useAppStore.getState().focusedBlock).toBeNull();
   });
 
-  it('sendMessage 聚焦态：取区块快照并透传 focusBlockId，sessionTitle 恒页面标题', async () => {
+  it('sendMessage 聚焦态：取区块快照并透传 focusBlockId，sessionTitle 恒页面标题；会话落区块独立线程键', async () => {
     const blockGetData = vi.fn(() => EMPTY_DATA);
     const snap: PageContextSnapshot = {
       scopeId: 'home',
@@ -189,13 +189,36 @@ describe('focusBlock / unfocusBlock（V2 Click-to-Focus）', () => {
 
     await useAppStore.getState().sendMessage('做T盈亏如何？');
     expect(blockGetData).toHaveBeenCalledTimes(1);
-    expect(streamQuestion).toHaveBeenCalledWith('home', expect.objectContaining({ question: '做T盈亏如何？' }), expect.any(Function), expect.any(AbortSignal));
-    const thread = useAppStore.getState().threads.home;
-    expect(thread).toHaveLength(2);
+    // V2.1 区块独立会话：线程键 = scopeId:blockId，后端会话随键隔离
+    expect(streamQuestion).toHaveBeenCalledWith('home:home:short_term', expect.objectContaining({ question: '做T盈亏如何？' }), expect.any(Function), expect.any(AbortSignal));
+    const blockThread = useAppStore.getState().threads['home:home:short_term'];
+    expect(blockThread).toHaveLength(2);
+    expect(useAppStore.getState().threads.home).toBeUndefined(); // 页面会话不受聚焦提问污染
     // sessionTitle 恒页面标题（会话身份稳定）；第 5 参透传区块标识（后端 Prompt 路由）
     const buildCall = (buildAskRequest as Mock).mock.calls[0] as unknown[];
     expect(buildCall[0]).toBe('首页仪表盘');
     expect(buildCall[4]).toBe('home:short_term');
+  });
+
+  it('V2.1 会话隔离：区块提问与整页提问分线程互不叠加，切回整页续聊页面会话', async () => {
+    const snap = makeBlockSnapshot('news_search', '资讯搜索', 'news_search:result:C1');
+    useAppStore.setState({ registry: { news_search: snap }, activeScopeId: 'news_search' });
+
+    // 聚焦公告卡片提问 → 落区块线程
+    useAppStore.getState().focusBlock('news_search', 'news_search:result:C1');
+    await useAppStore.getState().sendMessage('这条公告说了什么？');
+    expect(useAppStore.getState().threads['news_search:news_search:result:C1']).toHaveLength(2);
+
+    // 退出聚焦回整页提问 → 落页面线程，两条会话互不可见
+    useAppStore.getState().unfocusBlock();
+    await useAppStore.getState().sendMessage('整页概览如何？');
+    expect(useAppStore.getState().threads.news_search).toHaveLength(2);
+    expect(useAppStore.getState().threads['news_search:news_search:result:C1']).toHaveLength(2);
+
+    // 再次聚焦同一卡片 → 续聊该卡片自己的历史
+    useAppStore.getState().focusBlock('news_search', 'news_search:result:C1');
+    await useAppStore.getState().sendMessage('追问：影响多大？');
+    expect(useAppStore.getState().threads['news_search:news_search:result:C1']).toHaveLength(4);
   });
 
   it('聚焦态快照失效（页面已注销/区块已移除）→ 提问与重发均丢弃，严禁回落整页串口径', async () => {
@@ -374,6 +397,23 @@ describe('clearCurrentThread / purgeScopeOnEntityDelete（级联清理 + 墓碑 
     expect(clearThread).toHaveBeenCalledWith('cost_averaging:600519');
     expect(useAppStore.getState().threads['cost_averaging:600519']).toBeUndefined();
     expect(useAppStore.getState().deletedScopes).toEqual([]);
+  });
+
+  it('V2.1 区块聚焦时清空会话：清区块独立线程而非页面线程', async () => {
+    const snap = makeBlockSnapshot('news_search', '资讯搜索', 'news_search:profile');
+    useAppStore.setState({
+      registry: { news_search: snap }, activeScopeId: 'news_search',
+      threads: {
+        news_search: [makeMsg({})],
+        'news_search:news_search:profile': [makeMsg({})],
+      },
+    });
+    useAppStore.getState().focusBlock('news_search', 'news_search:profile');
+
+    await useAppStore.getState().clearCurrentThread();
+    expect(useAppStore.getState().threads['news_search:news_search:profile']).toBeUndefined();
+    expect(useAppStore.getState().threads.news_search).toHaveLength(1); // 页面会话保留
+    expect(clearThread).toHaveBeenCalledWith('news_search:news_search:profile');
   });
 
   it('空 scope 幂等返回', async () => {

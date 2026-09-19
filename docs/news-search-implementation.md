@@ -1,6 +1,6 @@
 # 资讯搜索（News Search）· 技术实现文档（前端）
 
-> 版本：v1.1（2026-09-10；v1.1 = 采纳后端评审：fetchSubscriptions 三形状兼容与 recognized 语义、toStockId 提升至 utils/dedup、composite 流式通道镜像 copilotService、mock 错误分支与相对日期、持仓注入裁剪 ≤50）
+> 版本：v1.3（2026-09-19；v1.3 = 结果卡移除订阅按钮（档案卡保留）+ 追问 AI 会话按卡片隔离（copilotThreadKey 下沉线程键）；v1.2 = 列表分页续拉适配（CLS 已上线 pageSize/page/hasMore，公告端点同契约就绪前多发字段被忽略）+ F1 筛选即查交互同步；v1.1 = 采纳后端评审：fetchSubscriptions 三形状兼容与 recognized 语义、toStockId 提升至 utils/dedup、composite 流式通道镜像 copilotService、mock 错误分支与相对日期、持仓注入裁剪 ≤50）
 > 范围：`/news` 搜索页的前端落点、状态设计、类型契约、服务层封装、Copilot 上下文联动、mock 策略、代理接线与实施顺序。
 > 关联：`docs/news-search-spec.md`（需求，D1-D10 决策）、`后端仓 docs/news-search-api.md`（接口契约 v1.1）、`docs/copilot-implementation.md`（区块上下文机制参考）
 > 状态：设计定稿，P0 可立即开工
@@ -15,8 +15,8 @@
 | I2 | 路由与菜单 | `App.tsx` NAV_ITEMS 增 `{ path: '/news', label: '资讯', icon: Search }`，位置排在中长期交易之后；页面标题由既有 `NAV_ITEMS.find(path === pathname)` 精确匹配机制自动生效，**不用子路由** |
 | I3 | 结果状态层级 | 结果状态一律落 `store/slices/searchSlice.ts`（R2：Copilot 快照经 getState() 同源读取，严禁读视图闭包）；查询表单态（输入框草稿等纯 UI 态）留视图 useState |
 | I4 | mock 策略 | `searchService` 导出统一函数签名，内部按模块常量 `USE_MOCK`（后续可改 `import.meta.env.VITE_SEARCH_MOCK`）分流到同签名的 mock 提供者；切真实接口 = 改一个常量 + 加代理，视图层零改动 |
-| I5 | Copilot scope 设计 | 页面单 scope：`scopeId = 'news_search'`；每个结果卡片注册一个 block：`blockId = 'news_search:result:{resultId}'`；档案卡注册 `news_search:profile`。focusBlock 聚焦单 block，无需按查询建多 scope |
-| I6 | 订阅按钮复用 | 卡片订阅动作直接复用 `components/ui/AnnouncementSubscribeButton`（接受 fullCode，内部归一化 + 共享订阅态），搜索卡片不新写订阅逻辑 |
+| I5 | Copilot scope 设计 | 页面单 scope：`scopeId = 'news_search'`；每个结果卡片注册一个 block：`blockId = 'news_search:result:{resultId}'`；档案卡注册 `news_search:profile`。focusBlock 聚焦单 block，无需按查询建多 scope；**会话按 block 隔离**（V2.1：聚焦时线程键 = `copilotThreadKey(scopeId, blockId)`，每条公告/日报独立会话） |
+| I6 | 订阅按钮复用 | 档案卡订阅动作复用 `components/ui/AnnouncementSubscribeButton`（接受 fullCode，内部归一化 + 共享订阅态），不新写订阅逻辑；v1.4 起结果卡不再提供订阅入口 |
 | I7 | 持仓注入 | slice 的查询 action 内部从 `positions`（既有 positionsSlice 状态）取未平仓持仓的 fullCode → `normalizeCode` 归一化 → 去重 → 作为 `stockCodes` 参数；视图不手工传持仓 |
 | I8 | 竞态防护 | 模块级自增 `requestSeq`，响应返回时序号不匹配即丢弃；不做请求取消（AbortController 留给超时底座） |
 
@@ -70,8 +70,16 @@ interface SearchSliceState {
   stockProfile: StockProfile | null;
   /** 失败文案（信封 message 直出或网络异常文案） */
   searchError: string | null;
-  /** 结果计数（列表头「匹配到 N 条」） */
+  /** 结果计数（已加载条数口径：列表分页后随续拉累加） */
   searchTotal: number;
+  /** 分页游标：已加载页数（下一页请求页码，0 起翻页） */
+  searchPage: number;
+  /** 分页：是否还有下一页（后端多取 1 条精确判定；公告端点上分页前缺省 false） */
+  searchHasMore: boolean;
+  /** 续拉进行中（观察器/连点防重；status 保持 succeeded，列表不闪） */
+  searchLoadingMore: boolean;
+  /** 续拉请求基座（不含分页字段；翻页复用 query/dateRange/stockCodes） */
+  lastSearchRequest: SearchRequest | null;
 }
 ```
 
@@ -80,6 +88,8 @@ interface SearchSliceState {
 ```ts
 runSearch: (input: { query: string; scope: SearchScope; dateRange?: DateRange }) => Promise<void>;
 resetSearch: () => void;
+/** 列表续拉下一页（无限滑动）：按 lastSearchRequest 翻页追加去重；非 succeeded/hasMore=false 时幂等空操作 */
+loadMore: () => Promise<void>;
 ```
 
 `runSearch` 编排顺序：
@@ -87,7 +97,7 @@ resetSearch: () => void;
 2. 形态检测：6 位数字码 / Smartbox 已选股票 → 并行装载 `stockProfile`（P0 mock；P1 走聚合接口），并**放宽持仓限定**（该股票不在持仓也检索）。
 3. `scope=announcement` 时收集持仓代码（I7）：`positions.filter((p) => !p.isClosed)` → `toStockId(fullCode)`（`utils/dedup.ts` 共享纯函数，announcementSlice / AnnouncementSubscribeButton / 搜索页三处同源）→ 去重 → **上限 50 截断**（配合后端 stockCodes 校验建议）；为空 → 置引导空态并 return（不发请求，spec F1）。全程读同 store 内存状态，**不读 db**（R 层护栏）；模板常量只含 query/scope/dateRange 静态部分，持仓集合在 dispatch 时注入（R2：utils 禁 import store）。
 4. `seq = ++requestSeq`；置 `loading`（composite 置 `generating`）。
-5. 调 service；返回后 `seq` 校验，不匹配丢弃；匹配则按 scope 装载结果 / 综合摘要，置 `succeeded`。
+5. 调 service；返回后 `seq` 校验，不匹配丢弃；匹配则按 scope 装载结果 / 综合摘要，置 `succeeded`。列表范围（cls/announcement）统一分页取数：首页 `page=0` + `pageSize=10`，`hasMore` 驱动 `loadMore` 无限滑动续拉（追加按 resultId 去重）；公告端点上分页前 `hasMore` 缺省 false，多发分页字段被后端忽略。
 6. 失败：`searchError` = `e.message`（SessionExpiredError 的会话文案同样直出），置 `failed`。
 
 ---
@@ -203,8 +213,8 @@ usePageContext(useMemo(() => ({
 
 ### 5.4 订阅与追问按钮（零新逻辑）
 
-- 订阅：`<AnnouncementSubscribeButton fullCode={hit.stockId} />`（公告类卡片与档案卡共用；CLS 卡不提供订阅，仅追问）。
-- 追问：见 5.2；按钮样式沿用 BlockFocusButton 胶囊态，卡片操作区不再引入其他动作（D2：无写账本入口）。
+- 订阅（v1.4 修订）：仅档案卡保留 `<AnnouncementSubscribeButton fullCode={profile.stockId} />`；**结果卡（公告/CLS）不再提供订阅入口**（订阅仍在短线/中长期交易卡片与档案卡提供）。CLS 卡无订阅，仅追问。
+- 追问：见 5.2；按钮样式沿用 BlockFocusButton 胶囊态，卡片操作区不再引入其他动作（D2：无写账本入口）。会话按卡片隔离——线程键经 `copilotThreadKey` 下沉为 `scopeId:blockId`（V2.1 区块独立会话，copilotSlice/GlobalCopilot 共用），每条公告/日报问答互不叠加。
 
 ## 6. 代理与菜单接线
 

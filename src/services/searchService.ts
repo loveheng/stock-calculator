@@ -20,6 +20,7 @@ import type {
   ClsHit,
   CompositeResult,
   SearchRequest,
+  SearchResultItem,
   StockProfile,
 } from '../types/search';
 
@@ -31,10 +32,12 @@ const REQUEST_TIMEOUT_MS = 15_000;
 /** composite SSE 空闲超时（毫秒）：TTFB 与块间隔共用，每收到字节重置（接口文档 §4 同步上限 30s） */
 const STREAM_IDLE_TIMEOUT_MS = 30_000;
 
-/** 列表检索响应（接口文档 §2/§3 同构） */
+/** 列表检索响应（接口文档 §2/§3 同构；hasMore 为分页专用字段，未分页端点缺省） */
 export interface SearchListResult<T> {
   total: number;
   items: T[];
+  /** 分页：是否还有下一页（后端多取 1 条精确判定）；公告端点上分页前无此语义 */
+  hasMore?: boolean;
 }
 
 /** composite 流式回调集合（meta 引用先于 delta 到达，保证引用先上屏） */
@@ -117,17 +120,44 @@ async function searchRequest<T>(
   return parsed;
 }
 
+/**
+ * 检索命中行归一：kind 缺失/契约外（旧构建后端实测——渲染侧按「非 announcement 即 CLS」
+ * 隐式兜底，快照侧却按 kind 严格判别，脏行导致区块快照降级为空、AI 拿到 data={}）时
+ * 按字段形状推断修补：publishedAt/mentions → cls，annDate → announcement；
+ * 两者皆无的行原样保留不强删（渲染容忍、该行区块快照 exists=false 降级），避免脏行清空整页结果。
+ */
+function normalizeHit(item: unknown): SearchResultItem {
+  if (!item || typeof item !== 'object') return item as SearchResultItem;
+  const r = item as Record<string, unknown>;
+  if (r.kind === 'announcement' || r.kind === 'cls') return r as unknown as SearchResultItem;
+  if (typeof r.publishedAt === 'string' || Array.isArray(r.mentions)) {
+    return {
+      ...r,
+      kind: 'cls',
+      mentions: Array.isArray(r.mentions) ? (r.mentions.filter(Boolean) as ClsHit['mentions']) : [],
+    } as unknown as SearchResultItem;
+  }
+  if (typeof r.annDate === 'string') {
+    return { ...r, kind: 'announcement' } as unknown as SearchResultItem;
+  }
+  return r as unknown as SearchResultItem;
+}
+
 /** 列表响应防御性归一：items 非数组 / total 缺省时不让脏数据流入状态机 */
 function normalizeList<T>(data: unknown): SearchListResult<T> {
   if (data && typeof data === 'object') {
-    const d = data as { total?: unknown; items?: unknown };
-    const items = Array.isArray(d.items) ? (d.items as T[]) : [];
+    const d = data as { total?: unknown; items?: unknown; hasMore?: unknown };
+    // 元素级过滤 null + kind 缺失修补（线上旧构建后端两类脏数据实测均出现过），脏数据不得流入状态机
+    const items = (Array.isArray(d.items) ? d.items.filter(Boolean) : []).map(
+      (it) => normalizeHit(it) as unknown as T,
+    );
     return {
       total: typeof d.total === 'number' ? d.total : items.length,
       items,
+      hasMore: d.hasMore === true,
     };
   }
-  return { total: 0, items: [] };
+  return { total: 0, items: [], hasMore: false };
 }
 
 /** 综合摘要响应防御性归一（同步 JSON 回落路径；summary/citations 缺省兜底空值） */
@@ -183,6 +213,39 @@ export async function searchCls(
   return normalizeList<ClsHit>(envelope.data);
 }
 
+/** 档案卡归一目标类型（从接口文档 §5 契约类型派生，避免双源漂移） */
+type ProfileAnnouncement = StockProfile['latestAnnouncements'][number];
+type ClsMentionItem = NonNullable<StockProfile['clsMention']>['items'][number];
+
+/**
+ * 档案卡响应防御性归一（镜像 normalizeList/normalizeComposite 模式）：
+ * 线上环境 §5 响应实测会在 latestAnnouncements / clsMention.items 数组里混入 null 元素
+ * （表现：资讯页聊天快照 profileDetail 遍历 items 读 i.publishedAt 时 TypeError）。
+ * 注意当前后端源码并无此产出路径（clsMention 恒 null，P2 未实现），疑为旧构建产物——
+ * 防御保留为纵深兜底，不因当前源码"干净"而移除。
+ */
+function normalizeProfile(data: unknown, fallbackStockId: string): StockProfile {
+  const d = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+  const rawAnns: unknown = d.latestAnnouncements;
+  const rawCls =
+    d.clsMention && typeof d.clsMention === 'object'
+      ? (d.clsMention as { count7d?: unknown; items?: unknown })
+      : null;
+  const rawClsItems: unknown = rawCls ? rawCls.items : undefined;
+  const clsItems = (Array.isArray(rawClsItems) ? rawClsItems.filter(Boolean) : []) as ClsMentionItem[];
+  return {
+    stockId: typeof d.stockId === 'string' && d.stockId ? d.stockId : fallbackStockId,
+    stockName: typeof d.stockName === 'string' ? d.stockName : '',
+    latestAnnouncements: (Array.isArray(rawAnns) ? rawAnns.filter(Boolean) : []) as ProfileAnnouncement[],
+    clsMention: rawCls
+      ? {
+          count7d: typeof rawCls.count7d === 'number' ? rawCls.count7d : clsItems.length,
+          items: clsItems,
+        }
+      : null,
+  };
+}
+
 /**
  * 股票确定性档案卡聚合（GET /stock-profile?stockId=，接口文档 §5）。
  * 未知 stockId（格式合法但语料未收录）→ 200 + 空 latestAnnouncements + clsMention=null，
@@ -193,7 +256,7 @@ export async function fetchStockProfile(token: string, stockId: string): Promise
     token,
   });
   if (envelope.code !== 200) throw new AuthApiError(envelope.code, envelope.message, envelope.data);
-  return envelope.data;
+  return normalizeProfile(envelope.data, stockId);
 }
 
 /**

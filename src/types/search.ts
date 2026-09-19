@@ -19,7 +19,7 @@ export interface DateRange {
   end: string;
 }
 
-/** CLS 范围日期预设 chips（'all' = 不限，后端不传 dateRange） */
+/** 日期预设（预置提问模板内置区间用；搜索页 v1.5 起改为自定义时间区间，不再提供预设 chips） */
 export type DatePreset = 'all' | '7d' | '30d';
 
 /** 检索请求（接口文档 §2/§3/§4 请求体同构） */
@@ -30,6 +30,10 @@ export interface SearchRequest {
   dateRange?: DateRange;
   /** 缺省 10，上限 50 */
   topK?: number;
+  /** 分页（无限滑动续拉）：页大小；CLS 端传入时忽略 topK 兼容别名；公告端点就绪前多发字段被后端忽略 */
+  pageSize?: number;
+  /** 分页：页码，0 起 */
+  page?: number;
 }
 
 /** runSearch action 入参（视图 dispatch 契约） */

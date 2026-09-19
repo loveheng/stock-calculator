@@ -19,7 +19,7 @@ import {
   searchCls,
   searchCompositeStream,
 } from '../services/searchService';
-import type { SearchRequest } from '../types/search';
+import type { ClsHit, SearchRequest } from '../types/search';
 
 const TOKEN = 'test-token';
 
@@ -105,7 +105,20 @@ describe('常规检索端点（15s 底座）', () => {
     );
     const data = await searchCls(TOKEN, { query: '半导体' });
     expect(fetchMock.mock.calls[0][0]).toBe('/api/search/cls');
-    expect(data).toEqual({ total: 0, items: [] });
+    expect(data).toEqual({ total: 0, items: [], hasMore: false });
+  });
+
+  it('CLS 分页：hasMore 透传（无限滑动续拉依据），pageSize/page 请求体透传', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, { code: 200, message: 'ok', data: { total: 10, items: [], hasMore: true } }),
+    );
+    const data = await searchCls(TOKEN, { query: '半导体', pageSize: 10, page: 2 });
+    expect(data.hasMore).toBe(true);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      query: '半导体',
+      pageSize: 10,
+      page: 2,
+    });
   });
 
   it('fetchStockProfile：GET /api/search/stock-profile?stockId=…（encodeURIComponent）', async () => {
@@ -124,10 +137,58 @@ describe('常规检索端点（15s 底座）', () => {
     expect(profile.stockId).toBe('600745');
   });
 
+  it('fetchStockProfile：档案卡数组混入 null 元素时元素级过滤（线上聊天快照崩溃回归）', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        code: 200,
+        message: 'ok',
+        data: {
+          stockId: '600745',
+          stockName: '闻泰科技',
+          latestAnnouncements: [null, { annId: 'AN2', annDate: '2026-09-08', title: 't', summary: 's' }],
+          clsMention: {
+            count7d: 2,
+            items: [null, { publishedAt: '2026-09-05 07:32', summary: 's1' }],
+          },
+        },
+      }),
+    );
+    const profile = await fetchStockProfile(TOKEN, '600745');
+    expect(profile.stockId).toBe('600745');
+    expect(profile.latestAnnouncements).toHaveLength(1);
+    expect(profile.latestAnnouncements[0].annId).toBe('AN2');
+    expect(profile.clsMention?.items).toHaveLength(1);
+    expect(profile.clsMention?.items[0].publishedAt).toBe('2026-09-05 07:32');
+  });
+
+  it('items 元素 kind 缺失时按字段形状修补（旧构建后端实测，区块快照降级为空的根因）', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        code: 200,
+        message: 'ok',
+        data: {
+          total: 3,
+          items: [
+            { resultId: 'C1', publishedAt: '2026-09-05 07:32', edition: 'telegraph', title: 't', summary: 's', mentions: [null, { stockId: '600745', stockName: '闻泰科技' }] },
+            { resultId: 'C2', publishedAt: '2026-09-06 08:00', edition: 'telegraph', title: 't2', summary: 's2' },
+            { resultId: 'A1', stockId: '600745', stockName: '闻泰科技', annDate: '2026-09-01', title: 't3', summary: 's3' },
+          ],
+        },
+      }),
+    );
+    const data = await searchAnnouncements(TOKEN, { query: 'x' });
+    const items = data.items as unknown as ClsHit[];
+    expect(items[0].kind).toBe('cls');
+    expect(items[0].mentions).toEqual([{ stockId: '600745', stockName: '闻泰科技' }]);
+    expect(items[1].kind).toBe('cls');
+    expect(items[1].mentions).toEqual([]);
+    expect(items[2].kind).toBe('announcement');
+  });
+
   it('data 形状异常防御：items 非数组兜底空列表', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { code: 200, message: 'ok', data: null }));
     const data = await searchCls(TOKEN, { query: 'x' });
-    expect(data).toEqual({ total: 0, items: [] });
+    expect(data).toEqual({ total: 0, items: [], hasMore: false });
   });
 
   it('信封 400 → AuthApiError（code/message 透出，用户可读直出）', async () => {

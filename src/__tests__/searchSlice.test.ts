@@ -97,8 +97,9 @@ import {
   searchCls,
   searchCompositeStream,
 } from '../services/searchService';
+import type { SearchListResult } from '../services/searchService';
 import { searchStocks } from '../services/stockService';
-import type { StockProfile } from '../types/search';
+import type { ClsHit, StockProfile } from '../types/search';
 
 const searchAnnouncementsMock = vi.mocked(searchAnnouncements);
 const searchClsMock = vi.mocked(searchCls);
@@ -141,6 +142,10 @@ function searchState() {
     stockProfile: s.stockProfile,
     compositeResult: s.compositeResult,
     retryAfterSeconds: s.retryAfterSeconds,
+    searchPage: s.searchPage,
+    searchHasMore: s.searchHasMore,
+    searchLoadingMore: s.searchLoadingMore,
+    lastSearchRequest: s.lastSearchRequest,
   };
 }
 
@@ -162,6 +167,10 @@ beforeEach(() => {
     searchError: null,
     searchTotal: 0,
     retryAfterSeconds: null,
+    searchPage: 0,
+    searchHasMore: false,
+    searchLoadingMore: false,
+    lastSearchRequest: null,
   });
 });
 
@@ -179,6 +188,8 @@ describe('runSearch：关键词 + 持仓注入', () => {
     expect(searchAnnouncementsMock).toHaveBeenCalledWith(TOKEN, {
       query: '对赌',
       stockCodes: ['600745'],
+      pageSize: 10,
+      page: 0,
     });
     const s = searchState();
     expect(s.searchStatus).toBe('succeeded');
@@ -212,12 +223,12 @@ describe('runSearch：关键词 + 持仓注入', () => {
     expect(s.searchError).toContain('持仓');
   });
 
-  it('cls 范围：不注入 stockCodes（接口 §3 无该参数），持仓为空也不短路', async () => {
-    searchClsMock.mockResolvedValueOnce({ total: 0, items: [] });
+  it('cls 范围：不注入 stockCodes（接口 §3 无该参数），持仓为空也不短路；分页首页 page=0', async () => {
+    searchClsMock.mockResolvedValueOnce({ total: 0, items: [], hasMore: false });
 
     await useAppStore.getState().runSearch({ query: '半导体', scope: 'cls' });
 
-    expect(searchClsMock).toHaveBeenCalledWith(TOKEN, { query: '半导体' });
+    expect(searchClsMock).toHaveBeenCalledWith(TOKEN, { query: '半导体', pageSize: 10, page: 0 });
     expect(searchAnnouncementsMock).not.toHaveBeenCalled();
     expect(searchState().searchStatus).toBe('succeeded');
   });
@@ -253,6 +264,8 @@ describe('runSearch：形态检测与档案卡', () => {
     expect(searchAnnouncementsMock).toHaveBeenCalledWith(TOKEN, {
       query: '600745',
       stockCodes: ['600745'],
+      pageSize: 10,
+      page: 0,
     });
     const s = searchState();
     expect(s.stockProfile).toEqual(profileFixture);
@@ -280,6 +293,8 @@ describe('runSearch：形态检测与档案卡', () => {
     expect(searchAnnouncementsMock).toHaveBeenCalledWith(TOKEN, {
       query: '平安银行',
       stockCodes: ['600745'],
+      pageSize: 10,
+      page: 0,
     });
   });
 
@@ -291,7 +306,7 @@ describe('runSearch：形态检测与档案卡', () => {
     await useAppStore.getState().runSearch({ query: '600745', scope: 'announcement' });
 
     expect(fetchStockProfileMock).toHaveBeenCalledWith(TOKEN, '600745');
-    expect(searchAnnouncementsMock).toHaveBeenCalledWith(TOKEN, { query: '600745' });
+    expect(searchAnnouncementsMock).toHaveBeenCalledWith(TOKEN, { query: '600745', pageSize: 10, page: 0 });
     const s = searchState();
     expect(s.stockProfile).toBeNull();
     expect(s.searchStatus).toBe('succeeded'); // 无错误 toast，结果列表照常展示
@@ -306,6 +321,8 @@ describe('runSearch：形态检测与档案卡', () => {
     expect(searchAnnouncementsMock).toHaveBeenCalledWith(TOKEN, {
       query: '600745',
       stockCodes: ['600745'],
+      pageSize: 10,
+      page: 0,
     });
     expect(searchState().searchStatus).toBe('succeeded');
   });
@@ -321,6 +338,8 @@ describe('runSearch：形态检测与档案卡', () => {
     expect(searchAnnouncementsMock).toHaveBeenCalledWith(TOKEN, {
       query: '闻泰科技',
       stockCodes: ['600745'],
+      pageSize: 10,
+      page: 0,
     });
   });
 });
@@ -425,6 +444,107 @@ describe('runSearch：composite 流式与竞态守卫', () => {
       compositeResult: null,
       searchError: null,
       retryAfterSeconds: null,
+      searchPage: 0,
+      searchHasMore: false,
+      searchLoadingMore: false,
+      lastSearchRequest: null,
     });
+  });
+});
+
+describe('列表分页续拉（loadMore）', () => {
+  const clsHitA: ClsHit = {
+    kind: 'cls',
+    resultId: 'C1',
+    publishedAt: '2026-09-05 07:32',
+    edition: 'telegraph',
+    title: 't1',
+    summary: 's1',
+    mentions: [],
+  };
+  const clsHitB: ClsHit = { ...clsHitA, resultId: 'C2', publishedAt: '2026-09-06 08:00', title: 't2', summary: 's2' };
+
+  it('cls 首页：page=0 + pageSize 传参，游标推进 + hasMore 落状态 + 续拉基座留存', async () => {
+    searchClsMock.mockResolvedValueOnce({ total: 10, items: [clsHitA], hasMore: true });
+    await useAppStore.getState().runSearch({ query: '半导体', scope: 'cls' });
+
+    expect(searchClsMock).toHaveBeenCalledWith(TOKEN, { query: '半导体', pageSize: 10, page: 0 });
+    const s = useAppStore.getState();
+    expect(s.searchPage).toBe(1);
+    expect(s.searchHasMore).toBe(true);
+    expect(s.lastSearchRequest).toEqual({ query: '半导体' });
+  });
+
+  it('cls 续拉：翻页追加 + 重复条目去重 + 游标/hasMore 更新；无更多后空操作', async () => {
+    searchClsMock.mockResolvedValueOnce({ total: 10, items: [clsHitA], hasMore: true });
+    await useAppStore.getState().runSearch({ query: '半导体', scope: 'cls' });
+
+    // 页间漂移：第 2 页带回已展示的 C1 → 去重只追加 C2
+    searchClsMock.mockResolvedValueOnce({ total: 10, items: [clsHitA, clsHitB], hasMore: false });
+    await useAppStore.getState().loadMore();
+
+    expect(searchClsMock).toHaveBeenLastCalledWith(TOKEN, { query: '半导体', pageSize: 10, page: 1 });
+    const s = useAppStore.getState();
+    expect(s.searchResults.map((r) => r.resultId)).toEqual(['C1', 'C2']);
+    expect(s.searchTotal).toBe(11);
+    expect(s.searchPage).toBe(2);
+    expect(s.searchHasMore).toBe(false);
+
+    await useAppStore.getState().loadMore(); // hasMore=false → 幂等空操作
+    expect(searchClsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('cls 续拉失败静默：列表保持、loadingMore 复位，可再次触发', async () => {
+    searchClsMock.mockResolvedValueOnce({ total: 10, items: [clsHitA], hasMore: true });
+    await useAppStore.getState().runSearch({ query: '半导体', scope: 'cls' });
+
+    searchClsMock.mockRejectedValueOnce(new Error('网络异常'));
+    await useAppStore.getState().loadMore();
+    expect(useAppStore.getState().searchResults).toHaveLength(1);
+    expect(useAppStore.getState().searchLoadingMore).toBe(false);
+
+    searchClsMock.mockResolvedValueOnce({ total: 10, items: [clsHitB], hasMore: false });
+    await useAppStore.getState().loadMore();
+    expect(useAppStore.getState().searchResults).toHaveLength(2);
+  });
+
+  it('新查询使在途续拉作废（N5 同源竞态守卫）', async () => {
+    searchClsMock.mockResolvedValueOnce({ total: 10, items: [clsHitA], hasMore: true });
+    await useAppStore.getState().runSearch({ query: '半导体', scope: 'cls' });
+
+    let resolveMore!: (v: SearchListResult<ClsHit>) => void;
+    searchClsMock.mockImplementationOnce(
+      () => new Promise((res) => {
+        resolveMore = res;
+      }),
+    );
+    const pending = useAppStore.getState().loadMore();
+
+    searchClsMock.mockResolvedValueOnce({ total: 0, items: [], hasMore: false });
+    await useAppStore.getState().runSearch({ query: '新词', scope: 'cls' });
+    resolveMore({ total: 10, items: [clsHitB], hasMore: false });
+    await pending;
+
+    const s = useAppStore.getState();
+    expect(s.searchResults.map((r) => r.resultId)).toEqual([]); // 迟到的续拉未写入（新查询结果为空列表）
+    expect(s.searchPage).toBe(1); // 游标随新查询重置，未被续拉推进
+    expect(s.searchLoadingMore).toBe(false);
+  });
+
+  it('公告范围：同契约带分页参数；后端上分页前 hasMore 缺省 → 续拉空操作', async () => {
+    useAppStore.setState({ positions: [mkPosition('sh600745')] });
+    searchStocksMock.mockResolvedValue([]);
+    searchAnnouncementsMock.mockResolvedValueOnce({ total: 10, items: [annHit] });
+    await useAppStore.getState().runSearch({ query: '对赌', scope: 'announcement' });
+
+    expect(searchAnnouncementsMock).toHaveBeenCalledWith(TOKEN, {
+      query: '对赌',
+      stockCodes: ['600745'],
+      pageSize: 10,
+      page: 0,
+    });
+    expect(useAppStore.getState().searchHasMore).toBe(false);
+    await useAppStore.getState().loadMore(); // hasMore=false → 幂等空操作
+    expect(searchAnnouncementsMock).toHaveBeenCalledTimes(1);
   });
 });

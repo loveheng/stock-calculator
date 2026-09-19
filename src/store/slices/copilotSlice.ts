@@ -3,6 +3,8 @@
  * @description Store Copilot 切片：页面上下文注册表、区块聚焦态（V2 Click-to-Focus）、
  *              会话内存缓存（尾部 20 条）、提问/重发闭环（乐观更新 pending → ok/failed）、
  *              级联清理与墓碑对账、浮窗开关与知情同意。从 store/index.ts 装配。
+ *              区块独立会话（V2.1）：区块聚焦时线程键下沉为 scopeId:blockId，
+ *              每个区块（公告/日报/卡片）各自独立会话互不叠加；整页态回落页面会话。
  *              关键约束：
  *              - unregisterContext 仅在 owner 引用相等时注销（防路由竞态误删新页注册）；
  *              - 快照必须显式执行 getData()（命令式取数，禁闭包捕获组件态）；
@@ -30,6 +32,15 @@ import {
 
 /** 内存缓存上限：每会话仅保留尾部 20 条（更早历史经 keyset 分页从后端拉取） */
 const THREAD_TAIL_LIMIT = 20;
+
+/**
+ * 生效会话线程键（V2.1 区块独立会话）：区块聚焦时下沉为 scopeId:blockId——
+ * 每条公告/日报等区块各自独立会话（后端 /threads/{scopeId} 按 key 隔离），互不叠加；
+ * 整页态回落原 scopeId。切片与 GlobalCopilot 共用，保证展示/上报/清理同一口径。
+ */
+export function copilotThreadKey(scopeId: string, blockId?: string | null): string {
+  return blockId ? scopeId + ':' + blockId : scopeId;
+}
 
 /** 进行中的流式提问（非响应式）：面板关闭/停止按钮经 cancelCopilotStream 中断流，
  *  服务端随连接断开取消上游 LLM 订阅（省 token）。同一时刻至多一条（sending 锁保证） */
@@ -215,6 +226,8 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
    */
   const resolveSnapshot = (): {
     scopeId: string;
+    /** 会话线程键：区块聚焦时为 scopeId:blockId（区块独立会话），整页为 scopeId */
+    threadKey: string;
     pageSnap: PageContextSnapshot;
     snapshot: Pick<PageContextSnapshot, 'getData'>;
     blockId: string | undefined;
@@ -224,10 +237,10 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
     const scopeId = focus ? focus.scopeId : s.activeScopeId;
     const pageSnap = scopeId ? s.registry[scopeId] : undefined;
     if (!scopeId || !pageSnap) return null;
-    if (!focus) return { scopeId, pageSnap, snapshot: pageSnap, blockId: undefined };
+    if (!focus) return { scopeId, threadKey: scopeId, pageSnap, snapshot: pageSnap, blockId: undefined };
     const blockSnap = pageSnap.blocks?.find((b) => b.blockId === focus.blockId);
     if (!blockSnap) return null;
-    return { scopeId, pageSnap, snapshot: blockSnap, blockId: blockSnap.blockId };
+    return { scopeId, threadKey: copilotThreadKey(scopeId, blockSnap.blockId), pageSnap, snapshot: blockSnap, blockId: blockSnap.blockId };
   };
 
   return {
@@ -302,7 +315,7 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
       if (s.sending) return; // 互斥锁：防并发重复提交
       const resolved = resolveSnapshot();
       if (!resolved) return; // 当前页未注册上下文 / 聚焦区块已失效（严禁回落整页串口径）
-      const { scopeId, pageSnap, snapshot, blockId } = resolved;
+      const { threadKey, pageSnap, snapshot, blockId } = resolved;
       const trimmed = question.trim();
       if (!trimmed) return;
 
@@ -314,7 +327,7 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
         // sessionTitle 恒用页面标题（会话身份稳定）；区块口径经 focusBlockId 交后端编排
         const request = buildAskRequest(pageSnap.title, trimmed, clientMessageId, data, blockId, opts);
         // 事实数据变动检测（P2）：本轮概览 vs 上轮用户行落库概览（必须在追加本轮 user 行之前取）
-        markContextChanged(scopeId, lastUserOverview(scopeId), request.contextOverview);
+        markContextChanged(threadKey, lastUserOverview(threadKey), request.contextOverview);
         const userMsg: CopilotMessage = {
           id: clientMessageId,
           role: 'user',
@@ -326,9 +339,9 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
           ctime: Math.floor(Date.now() / 1000),
         };
         set((st) => ({
-          threads: { ...st.threads, [scopeId]: capThread([...(st.threads[scopeId] ?? []), userMsg]) },
+          threads: { ...st.threads, [threadKey]: capThread([...(st.threads[threadKey] ?? []), userMsg]) },
         }));
-        await dispatchAsk(scopeId, request, clientMessageId);
+        await dispatchAsk(threadKey, request, clientMessageId);
       } finally {
         set({ sending: false });
       }
@@ -340,8 +353,8 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
       // 与 sendMessage 同一套聚焦解析（V2）：重发永远重采当前生效口径（D7），聚焦失效则丢弃
       const resolved = resolveSnapshot();
       if (!resolved) return;
-      const { scopeId, pageSnap, snapshot, blockId } = resolved;
-      const target = (s.threads[scopeId] ?? []).find((m) => m.id === messageId);
+      const { threadKey, pageSnap, snapshot, blockId } = resolved;
+      const target = (s.threads[threadKey] ?? []).find((m) => m.id === messageId);
       if (!target || target.status !== 'failed' || !target.retryable || !target.clientMessageId) return;
 
       set({ sending: true });
@@ -350,16 +363,18 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
         const data = snapshot.getData();
         const request = buildAskRequest(pageSnap.title, target.content, target.clientMessageId, data, blockId);
         // 事实数据变动检测（P2）：重采概览 vs 被重发行的落库概览（被重发行即上一轮提问）
-        markContextChanged(scopeId, target.contextOverview, request.contextOverview);
-        markPending(scopeId, messageId);
-        await dispatchAsk(scopeId, request, messageId);
+        markContextChanged(threadKey, target.contextOverview, request.contextOverview);
+        markPending(threadKey, messageId);
+        await dispatchAsk(threadKey, request, messageId);
       } finally {
         set({ sending: false });
       }
     },
 
     clearCurrentThread: async () => {
-      const scopeId = get().activeScopeId;
+      // 区块聚焦时清的是区块独立会话（scopeId:blockId），整页态清页面会话
+      const focus = get().focusedBlock;
+      const scopeId = focus ? copilotThreadKey(focus.scopeId, focus.blockId) : get().activeScopeId;
       if (scopeId) await get().purgeScopeOnEntityDelete(scopeId);
     },
 

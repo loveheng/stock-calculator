@@ -38,8 +38,9 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function clip(text: string, max = DETAIL_CLIP): string {
-  return text.length > max ? text.slice(0, max) + '…' : text;
+function clip(text: string | null | undefined, max = DETAIL_CLIP): string {
+  const s = text ?? '';
+  return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
 /** 单位字典（歧义字段口径声明） */
@@ -85,7 +86,7 @@ function resultRow(r: SearchResultItem): Record<string, unknown> {
     edition: r.edition,
     title: r.title ?? '',
     summary: clip(r.summary, 240),
-    mentions: r.mentions.map((m) => m.stockId + ' ' + m.stockName),
+    mentions: (r.mentions ?? []).filter(Boolean).map((m) => m.stockId + ' ' + m.stockName),
   };
 }
 
@@ -126,7 +127,9 @@ export function buildSearchContext(state: SearchCopilotState): CopilotContextDat
 /**
  * 单结果区块上下文：按 resultId 从 searchSlice 同源取该条命中，
  * 输出摘要全文（2~3 句，不做长文）+ 确定性元信息（股票/日期/来源）。
- * 结果已随新查询被替换（resultId 不存在）时安全降级 exists=false。
+ * resultId 不存在（已随新查询被替换）或 kind 契约外（脏数据/后端字段缺失）时
+ * 安全降级 exists=false——渲染侧 ResultCardList 对未知 kind 容忍（按 CLS 卡兜底），
+ * 快照侧不允许同样的隐式假设。
  */
 export function buildBlockContext(state: SearchCopilotState, resultId: string): CopilotContextData {
   const hit = (state.searchResults ?? []).find((r) => r.resultId === resultId);
@@ -135,10 +138,14 @@ export function buildBlockContext(state: SearchCopilotState, resultId: string): 
   const a: AnnouncementHit | null = hit.kind === 'announcement' ? hit : null;
   const c: ClsHit | null = hit.kind === 'cls' ? hit : null;
 
+  // kind 契约外（脏数据/后端字段缺失）：与 resultId 缺失同口径安全降级 exists=false，
+  // 否则下方 else 分支的 c 为 null（线上崩溃：can't access property "title", c is null）
+  if (!a && !c) return emptyExistsFalse(resultId);
+
   const overview: Record<string, string | number | boolean> = {
     exists: true,
     kind: hit.kind,
-    date: a ? a.annDate : (c as ClsHit).publishedAt,
+    date: a ? a.annDate : (c?.publishedAt ?? ''),
   };
   if (a) overview.stock = a.stockId + ' ' + a.stockName;
   if (c) overview.edition = c.edition;
@@ -151,9 +158,11 @@ export function buildBlockContext(state: SearchCopilotState, resultId: string): 
         query: state.searchQuery ?? '',
       }
     : {
-        title: (c as ClsHit).title ?? '',
-        summary: clip((c as ClsHit).summary),
-        mentions: (c as ClsHit).mentions.map((m) => m.stockId + ' ' + m.stockName),
+        title: c?.title ?? '',
+        summary: clip(c?.summary),
+        mentions: (c?.mentions ?? [])
+          .filter(Boolean)
+          .map((m) => m.stockId + ' ' + m.stockName),
         query: state.searchQuery ?? '',
       };
 
@@ -165,7 +174,8 @@ function profileDetail(p: StockProfile): Record<string, unknown> {
   return {
     stockId: p.stockId,
     stockName: p.stockName,
-    latestAnnouncements: p.latestAnnouncements.map((a) => ({
+    // filter(Boolean)：数组混入 null 元素时降级跳过而非抛错（快照引擎对上游数据零信任）
+    latestAnnouncements: (p.latestAnnouncements ?? []).filter(Boolean).map((a) => ({
       annId: a.annId,
       annDate: a.annDate,
       title: a.title,
@@ -173,11 +183,14 @@ function profileDetail(p: StockProfile): Record<string, unknown> {
     })),
     clsMention: p.clsMention
       ? {
-          count7d: p.clsMention.count7d,
-          items: p.clsMention.items.slice(0, 3).map((i) => ({
-            publishedAt: i.publishedAt,
-            summary: clip(i.summary, 240),
-          })),
+          count7d: p.clsMention.count7d ?? 0,
+          items: (p.clsMention.items ?? [])
+            .filter(Boolean)
+            .slice(0, 3)
+            .map((i) => ({
+              publishedAt: i.publishedAt ?? '',
+              summary: clip(i.summary, 240),
+            })),
         }
       : null,
   };
@@ -195,7 +208,7 @@ export function buildProfileContext(state: SearchCopilotState): CopilotContextDa
     overview: {
       exists: true,
       stock: p.stockId + ' ' + (p.stockName || ''),
-      announcementCount: p.latestAnnouncements.length,
+      announcementCount: (p.latestAnnouncements ?? []).filter(Boolean).length,
       mention7d: p.clsMention?.count7d ?? 0,
     },
     timeAnchor: timeAnchor(),

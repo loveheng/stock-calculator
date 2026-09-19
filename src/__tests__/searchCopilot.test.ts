@@ -128,6 +128,14 @@ describe('buildBlockContext（结果区块快照）', () => {
     expect(ctx.overview.resultId).toBe('GONE');
     expect(ctx.detail).toEqual({});
   });
+
+  it('hit kind 契约外（脏数据/后端字段缺失）→ exists=false 安全降级不抛错（线上崩溃回归）', () => {
+    const weird = { ...clsHit, kind: 'telegraph' } as unknown as SearchResultItem;
+    const ctx = buildBlockContext({ ...baseState, searchResults: [weird] }, 'CLS1');
+    expect(ctx.overview.exists).toBe(false);
+    expect(ctx.overview.resultId).toBe('CLS1');
+    expect(ctx.detail).toEqual({});
+  });
 });
 
 describe('buildProfileContext（档案卡区块快照）', () => {
@@ -153,5 +161,32 @@ describe('buildProfileContext（档案卡区块快照）', () => {
   it('档案卡缺席（关键词形态/A10 降级）→ exists=false', () => {
     const ctx = buildProfileContext({ ...baseState, stockProfile: null });
     expect(ctx.overview.exists).toBe(false);
+  });
+
+  it('档案卡数组混入 null 元素（契约外脏数据）→ 降级跳过不抛错（线上崩溃回归）', () => {
+    const dirty: StockProfile = {
+      stockId: '600745',
+      stockName: '闻泰科技',
+      latestAnnouncements: [{ annId: 'AN2', annDate: '2026-09-08', title: 't', summary: 's' }],
+      clsMention: { count7d: 2, items: [{ publishedAt: '2026-09-05 07:32', summary: 's1' }] },
+    };
+    // 模拟后端脏数据：数组内混入 null（类型层不可表达，运行时注入）
+    (dirty.latestAnnouncements as unknown[]).unshift(null);
+    if (dirty.clsMention) (dirty.clsMention.items as unknown[]).unshift(null);
+
+    const ctx = buildProfileContext({ ...baseState, stockProfile: dirty });
+    expect(ctx.overview.announcementCount).toBe(1);
+    expect(ctx.overview.mention7d).toBe(2);
+    const detail = ctx.detail as {
+      latestAnnouncements: unknown[];
+      clsMention: { items: unknown[] } | null;
+    };
+    expect(detail.latestAnnouncements).toHaveLength(1);
+    expect(detail.clsMention?.items).toHaveLength(1);
+
+    // 整页快照同路径（线上报错链：sendMessage → getData → buildSearchContext → profileDetail）
+    const pageCtx = buildSearchContext({ ...baseState, stockProfile: dirty });
+    const pageProfile = pageCtx.detail.profile as { clsMention: { items: unknown[] } | null };
+    expect(pageProfile.clsMention?.items).toHaveLength(1);
   });
 });

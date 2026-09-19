@@ -3,8 +3,9 @@
  * @description 检索命中卡片列表（spec F2 场景 2）：公告行卡（代码/名称/日期 + 2~3 句
  *              提炼摘要，默认 line-clamp 点击展开全文 + 命中关键词高亮）与 CLS 电报卡
  *              （edition 徽章 + 提及股票 chips，点击 chip 等价以该股发起档案卡查询）。
- *              卡片操作区：【订阅公告】（公告类）+【问 AI】（复用 BlockFocusButton，
- *              blockId = news_search:result:{resultId}，与 Copilot 区块注册锚点一致）。
+ *              卡片操作区：【问 AI】（复用 BlockFocusButton，blockId = news_search:result:
+ *              {resultId}，与 Copilot 区块注册锚点一致；区块独立会话互不叠加）。
+ *              公告订阅入口已按产品要求从搜索页移除（订阅仍在档案卡与持仓页提供）。
  * @layer UI
  * @storage_impact 纯展示组件，无存储读写。
  * @author 开发团队
@@ -12,7 +13,6 @@
 
 import { useMemo, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
-import AnnouncementSubscribeButton from '../ui/AnnouncementSubscribeButton';
 import BlockFocusButton from '../copilot/BlockFocusButton';
 import type { AnnouncementHit, ClsHit, SearchResultItem } from '../../types/search';
 
@@ -98,7 +98,6 @@ function AnnouncementCard({ hit, query }: { hit: AnnouncementHit; query: string 
         )}
       </div>
       <div className="flex items-center justify-end gap-2">
-        <AnnouncementSubscribeButton fullCode={hit.stockId} />
         <BlockFocusButton
           scopeId={SEARCH_SCOPE_ID}
           blockId={SEARCH_SCOPE_ID + ':result:' + hit.resultId}

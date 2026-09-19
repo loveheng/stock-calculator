@@ -5,6 +5,7 @@
  *              - 展开态：顶部上下文胶囊（已关联页面标题）+ 清空会话（ConfirmModal 二次确认 D18）
  *                + 折叠按钮；切页归档指示条（§7.3）与离线指示条；
  *              - 区块聚焦（V2 Click-to-Focus）：胶囊切换为区块名（紫色调）+ [返回整页 ✕]，
+ *                会话按区块隔离（V2.1：scopeId:blockId 独立线程，公告/日报等互不叠加），
  *                输入框上方渲染聚焦区块的快捷提问气泡（Prompt Starters，点击填入草稿）；
  *              - 消息列表：纯文本渲染（whitespace-pre-wrap）、失败红框 + subCode 提示 + 可重发、
  *                user 行底部回显 contextOverview 概览与 timeAnchor 标签（D32：V1 仅概览，不做明细重放）、
@@ -27,7 +28,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { useAppStore } from '../../store';
+import { useAppStore, copilotThreadKey } from '../../store';
 import { useAuthStore } from '../../store/useAuthStore';
 import ConfirmModal from '../ui/ConfirmModal';
 import CopilotActionCards from './CopilotActionCards';
@@ -162,12 +163,18 @@ export default function GlobalCopilot() {
   // 生效胶囊标题：区块聚焦优先，回落整页标题
   const pageTitle = useAppStore((s) => (s.activeScopeId ? s.registry[s.activeScopeId]?.title : undefined));
   const capsuleTitle = focusedBlockSnap?.title ?? pageTitle;
-  const thread = useAppStore((s) => (s.activeScopeId ? s.threads[s.activeScopeId] : undefined));
+  // 生效会话线程键（V2.1 区块独立会话）：区块聚焦时为 scopeId:blockId（每条公告/日报
+  // 各自独立会话），整页回落 scopeId；展示与历史加载共用此键，切换聚焦即切换会话
+  const threadKey = useAppStore((s) => {
+    const focus = s.focusedBlock;
+    return focus ? copilotThreadKey(focus.scopeId, focus.blockId) : s.activeScopeId;
+  });
+  const thread = useAppStore((s) => (threadKey ? s.threads[threadKey] : undefined));
   const messages = thread ?? EMPTY_MESSAGES;
   const sending = useAppStore((s) => s.sending);
   const lastArchived = useAppStore((s) => s.lastArchived);
-  // 事实数据变动提示（P2）：当前 scope 上次提问时快照相对上上轮是否变化
-  const contextChanged = useAppStore((s) => (s.activeScopeId ? (s.contextChangedScopes[s.activeScopeId] ?? false) : false));
+  // 事实数据变动提示（P2）：当前生效会话（区块聚焦时按区块键）上轮快照相对上上轮是否变化
+  const contextChanged = useAppStore((s) => (threadKey ? (s.contextChangedScopes[threadKey] ?? false) : false));
   const consentAcknowledged = useAppStore((s) => s.consentAcknowledged);
   const sendMessage = useAppStore((s) => s.sendMessage);
   const retryMessage = useAppStore((s) => s.retryMessage);
@@ -199,11 +206,12 @@ export default function GlobalCopilot() {
     };
   }, []);
 
-  // 会话加载：浮窗展开 + 已登录 + 存在激活 scope 时拉取（墓碑对账在 slice 内处理）
+  // 会话加载：浮窗展开 + 已登录 + 存在生效会话键时拉取（墓碑对账在 slice 内处理）；
+  // 依赖含 threadKey：聚焦切换/取消聚焦都会换会话键，必须重新加载对应会话
   useEffect(() => {
-    if (!copilotOpen || !isAuthenticated || !activeScopeId) return;
-    void ensureThreadLoaded(activeScopeId);
-  }, [copilotOpen, isAuthenticated, activeScopeId, ensureThreadLoaded]);
+    if (!copilotOpen || !isAuthenticated || !threadKey) return;
+    void ensureThreadLoaded(threadKey);
+  }, [copilotOpen, isAuthenticated, threadKey, ensureThreadLoaded]);
 
   // 沙箱预热（D16/§4.1）：浮窗打开即触发 wasm 懒加载与 VM 初始化，首次生成时已就绪
   useEffect(() => {
@@ -440,7 +448,7 @@ export default function GlobalCopilot() {
             <h3 className="text-base font-bold text-white">使用 AI 助手前请确认</h3>
             <p className="text-xs text-slate-400 leading-relaxed">
               提问时，当前页面白名单内的业务数据摘要（标量概览与少量明细）将发送至 LLM
-              服务商用于生成回答；问答历史按页面隔离保存，可随时一键清空。
+              服务商用于生成回答；问答历史按页面/区块隔离保存，可随时一键清空。
               请勿在提问中输入密码、助记词等敏感信息。
             </p>
             <div className="flex gap-3">

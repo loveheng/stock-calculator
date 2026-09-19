@@ -39,6 +39,7 @@ npm run map:features -- <域>    # 单域展开（L2），如：-- ledger；可�
 | announcement（公告订阅） | announcementSlice | announcementService | AnnouncementSubscribeButton（components/ui/） | — | 公告订阅入口：订阅按钮与订阅状态管理 |
 | customstat（自定义统计） | customStatsSlice | customStatsService · customStatsSyncService · utils/customStats/*（vm/worker/dictionary/guard/protocol/client） | CustomStatsPanel + components/customStats/* | docs/custom-stats-spec.md · custom-stats-implementation.md · custom-stats-server-sync.md | 自定义统计指标：字典定义 + VM 沙箱计算 + 图表渲染 + 定义云同步 |
 | search（资讯搜索） | searchSlice | searchService · searchPrompts（utils） | NewsSearch + components/search/*（意图过滤/结果卡片/股票档案等） | docs/news-search-spec.md · news-search-implementation.md | 资讯搜索页：意图过滤/结果展示/提示词模板 |
+| kg（新闻联播图谱） | kgSlice | kgService · kgText（utils，高亮/时间兜底） | NewsSearch 页级「图谱」模式 + components/kg/*（KgPanel/KgTimeline/KgEntityCard/KgEventDrawer/KgShared） | docs/news-kg-spec.md | 新闻联播事件时间轴：默认浏览/keyword·entityId 检索/热榜与共现漫游/事件详情抽屉 |
 | app（应用骨架/通用） | index（组装）· bootstrap · types · utils | db/index+schema · persistence（落库队列，utils/ 中立叶子）· idGenerator（utils/ 中立叶子）· useDataLoader(hooks) | App · main · ConfirmModal · InstallPrompt | — | Store 组装/冷启动/落库队列/schema 迁移/domain 权威类型 |
 
 未挂域文档（校准后可补列）：behavior-spec.md · db-schema.png/puml · cloud-run-deploy.md · OcrImportPage.vue（疑似误入 docs）。
@@ -63,6 +64,7 @@ npm run map:features -- <域>    # 单域展开（L2），如：-- ledger；可�
 - **announcement**：公告、公告订阅、订阅按钮
 - **customstat**：自定义统计、统计指标、指标定义、VM 沙箱、图表
 - **search**：资讯搜索、新闻搜索、搜索页、意图过滤
+- **kg**：新闻联播图谱、图谱、联播、时间轴、事件抽取、实体热榜、新闻联播；易混：NewsSearch 页内的模式 Tab，非独立路由
 - **app**：冷启动、落库队列、schema 迁移、应用骨架、domain 类型
 
 ## 命令速查（跨 skill 指针）

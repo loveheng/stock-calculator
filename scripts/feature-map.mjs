@@ -37,6 +37,7 @@ const GROUPS = [
   ['announcement（公告订阅）', ['announcement']],
   ['customstat（自定义统计）', ['customstat']],
   ['search（资讯搜索）', ['search', 'newssearch']],
+  ['kg（新闻联播图谱）', ['kgpanel', 'kgtimeline', 'kgentity', 'kgevent', 'kgshared', 'kgservice', 'kgslice', 'kgtext', 'types/kg']],
   ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'usedataloader', 'bootstrap', 'persistence', 'store/index', 'store/types', 'store/utils', 'db/index', 'db/schema', 'domain', 'installprompt', 'confirmmodal', 'migration', 'cleanundefined', 'idgenerator']],
 ];
 

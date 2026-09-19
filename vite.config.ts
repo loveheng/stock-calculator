@@ -175,6 +175,12 @@ export default defineConfig({
         target: devUpstreams.auth,
         changeOrigin: true,
       },
+      // 新闻联播图谱代理：与 /api/auth 同源（同一 Spring Boot 应用，
+      // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认）
+      '/api/kg': {
+        target: devUpstreams.auth,
+        changeOrigin: true,
+      },
       // WebDAV 代理：使用全局 fetch() 转发，避免动态 require
       '/api/webdav': {
         target: 'http://localhost:5173',

@@ -26,6 +26,7 @@ import { createHomeSlice } from './slices/homeSlice';
 import { createCustomStatsSlice } from './slices/customStatsSlice';
 import { createAnnouncementSlice } from './slices/announcementSlice';
 import { createSearchSlice } from './slices/searchSlice';
+import { createKgSlice } from './slices/kgSlice';
 import { getIsSyncingFromRemote } from '../utils/persistence';
 import { loadCopilotTombstones, loadCopilotConsent } from '../services/copilotService';
 
@@ -99,6 +100,11 @@ export const useAppStore = create<AppStore>()((...a) => ({
   searchError: null, searchTotal: 0, retryAfterSeconds: null,
   searchPage: 0, searchHasMore: false, searchLoadingMore: false, lastSearchRequest: null,
 
+  // 新闻联播图谱（内存态：浏览状态不持久化，刷新即回初始态）
+  kgStatus: 'idle', kgError: null, kgDays: [], kgPage: 0, kgHasMore: false,
+  kgLoadingMore: false, kgMatchedEntities: [], kgTotalDays: 0,
+  kgKeyword: null, kgEntityId: null, kgEntityName: null,
+
   ...createCoreSlice(...a),
   ...createStreamsSlice(...a),
   ...createRoundsSlice(...a),
@@ -111,6 +117,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createCustomStatsSlice(...a),
   ...createAnnouncementSlice(...a),
   ...createSearchSlice(...a),
+  ...createKgSlice(...a),
 }));
 
 /**

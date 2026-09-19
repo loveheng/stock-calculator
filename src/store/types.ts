@@ -25,6 +25,12 @@ import type {
   StockProfile,
 } from '../types/search';
 import type {
+  KgMatchedEntity,
+  KgStatus,
+  KgTimelineDay,
+  KgTimelineInput,
+} from '../types/kg';
+import type {
   Position,
   PositionBatch,
   RoundTxn,
@@ -291,6 +297,16 @@ export interface AppStoreActions {
   /** 列表续拉下一页（无限滑动）：按 lastSearchRequest 翻页、追加去重进结果列表；
    *  非 succeeded / hasMore=false / 续拉进行中 / composite 时幂等空操作 */
   loadMore: () => Promise<void>;
+
+  // -- 新闻联播图谱 --
+  /** 执行时间轴查询：默认浏览（无过滤参数 = 最近时间轴）与搜索态（keyword /
+   *  entityId 单选下发，entityId 优先）共用 timeline 端点；seq 竞态守卫内置 */
+  runKgTimeline: (input: KgTimelineInput) => Promise<void>;
+  /** 时间轴续拉下一页（按「日」分页）：按当前过滤条件翻页、追加去重进日组列表；
+   *  非 succeeded / hasMore=false / 续拉进行中时幂等空操作 */
+  loadMoreKgTimeline: () => Promise<void>;
+  /** 重置图谱时间轴状态回初始态（进行中的首拉/续拉一并作废；内存态，刷新即回初始态） */
+  resetKgTimeline: () => void;
 }
 
 /** 完整的 Store 状态 + Action */
@@ -351,6 +367,30 @@ export interface AppStore extends AppStoreActions {
   searchLoadingMore: boolean;
   /** 最近一次执行的检索请求基座（不含分页字段；续拉翻页复用其中的 query/dateRange/stockCodes） */
   lastSearchRequest: SearchRequest | null;
+
+  // -- 新闻联播图谱（内存态：浏览状态不持久化，刷新即回初始态） --
+  /** 时间轴状态机：idle | loading | succeeded | failed */
+  kgStatus: KgStatus;
+  /** 失败文案（信封 message 直出或网络异常文案） */
+  kgError: string | null;
+  /** 累积日组（一篇汇编稿 = 一日；续拉按日组追加去重） */
+  kgDays: KgTimelineDay[];
+  /** 分页游标：已加载页数（下一页请求的页码；按「日」分页） */
+  kgPage: number;
+  /** 是否还有下一页（后端 hasMore） */
+  kgHasMore: boolean;
+  /** 续拉进行中（IntersectionObserver/连点防重；status 保持 succeeded，列表不闪） */
+  kgLoadingMore: boolean;
+  /** keyword 搜索态命中实体 top3（timeline 自带；默认态为 []） */
+  kgMatchedEntities: KgMatchedEntity[];
+  /** 命中条件的事件日总数（分页进度展示） */
+  kgTotalDays: number;
+  /** 当前 keyword（null = 非 keyword 态；与 entityId 互斥下发，entityId 优先） */
+  kgKeyword: string | null;
+  /** 当前实体过滤 id（null = 非实体搜索态） */
+  kgEntityId: number | null;
+  /** 实体过滤态的实体名（过滤提示与高亮展示辅助） */
+  kgEntityName: string | null;
 
   // -- Copilot（AI 助手，P0：mock 全链路） --
   /** 页面上下文注册表（scopeId → 快照，同 scopeId 覆盖幂等） */

@@ -92,6 +92,13 @@ const UPSTREAMS = {
     headers: {},
     stripPrefix: false,
   },
+  // 新闻联播图谱服务代理（保留原始路径前缀，不剥离 /api/kg；
+  // 与 /api/auth 同源部署，线上固定读 PROXY_UPSTREAMS.online）
+  '/api/kg': {
+    base: PROXY_UPSTREAMS.online.auth,
+    headers: {},
+    stripPrefix: false,
+  },
 };
 
 /** 匹配路径前缀（按长度降序，避免 `/api/eastmoney` 被 `/api` 误匹配）。 */
@@ -138,6 +145,7 @@ export const config = {
     '/api/auth/:path*',
     '/api/announcement/:path*',
     '/api/search/:path*',
+    '/api/kg/:path*',
   ],
 };
 

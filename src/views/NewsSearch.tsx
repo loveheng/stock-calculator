@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { LogIn, Search } from 'lucide-react';
+import { LogIn, Network, Newspaper, Search } from 'lucide-react';
 import { useAppStore } from '../store';
 import { useAuthStore } from '../store/useAuthStore';
 import { usePageContext } from '../hooks/usePageContext';
@@ -33,8 +33,17 @@ import PromptTemplates from '../components/search/PromptTemplates';
 import StockProfileCard from '../components/search/StockProfileCard';
 import ResultCardList from '../components/search/ResultCardList';
 import CompositeResultPanel from '../components/search/CompositeResultPanel';
+import KgPanel from '../components/kg/KgPanel';
 
 const SEARCH_SCOPE_ID = 'news_search';
+
+/** 资讯页顶层模式：search = 资讯检索（原搜索页），kg = 新闻联播图谱（内存态切换，不进 store） */
+type NewsPageMode = 'search' | 'kg';
+
+const MODE_TABS: Array<{ id: NewsPageMode; label: string; icon: typeof Search }> = [
+  { id: 'search', label: '资讯检索', icon: Newspaper },
+  { id: 'kg', label: '新闻联播图谱', icon: Network },
+];
 
 const SCOPE_LABEL: Record<SearchScope, string> = {
   announcement: '持仓公告',
@@ -86,6 +95,8 @@ export default function NewsSearch() {
   // 表单态（I3：纯 UI 态留视图 useState；结果态一律在 searchSlice）
   const [draft, setDraft] = useState('');
   const [scope, setScope] = useState<SearchScope>('announcement');
+  // 页级模式切换（I3 纯 UI 态：kg 面板数据态在 kgSlice，切走再切回不丢结果）
+  const [mode, setMode] = useState<NewsPageMode>('search');
   // 单一日期筛选（v1.5：近7天/近30天预设与起止区间均移除——后端无对应日期参数口径；
   // 单日按闭区间下发 start=end=该日，空 = 不限日期）
   const [dateDay, setDateDay] = useState('');
@@ -256,6 +267,34 @@ export default function NewsSearch() {
 
   return (
     <div className="space-y-4">
+      {/* 页级模式切换：资讯检索 / 新闻联播图谱 */}
+      <div className="flex gap-2 overflow-x-auto py-0.5" role="tablist" aria-label="资讯页模式">
+        {MODE_TABS.map(({ id, label, icon: Icon }) => {
+          const active = id === mode;
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setMode(id)}
+              className={`tap-target flex flex-shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-xs font-semibold transition-colors ${
+                active
+                  ? 'border-blue-500/40 bg-blue-600/20 text-blue-200'
+                  : 'border-slate-800 bg-slate-900/60 text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {mode === 'kg' ? (
+        <KgPanel />
+      ) : (
+        <>
       {/* 搜索框 + 预置模板（D8 三不原则：永不弹空白 Chat） */}
       <div className="card space-y-3">
         <div className="flex gap-2">
@@ -383,6 +422,8 @@ export default function NewsSearch() {
               </div>
             )
           )}
+        </>
+      )}
         </>
       )}
     </div>

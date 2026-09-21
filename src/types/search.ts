@@ -65,6 +65,8 @@ export interface ClsHit {
   edition: 'morning' | 'evening' | 'telegraph';
   title?: string;
   summary: string;
+  /** 电报正文全文（后端实际返回；无则前端回退 summary） */
+  content?: string;
   /** 正文实体识别抽取的提及股票；点击 chip 等价于以该股票发起档案卡查询 */
   mentions: Array<{ stockId: string; stockName: string }>;
 }

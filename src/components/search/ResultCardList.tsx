@@ -2,7 +2,8 @@
  * @file ResultCardList.tsx
  * @description 检索命中卡片列表（spec F2 场景 2）：公告行卡（代码/名称/日期 + 2~3 句
  *              提炼摘要，默认 line-clamp 点击展开全文 + 命中关键词高亮）与 CLS 电报卡
- *              （edition 徽章 + 提及股票 chips，点击 chip 等价以该股发起档案卡查询）。
+ *              （edition 徽章 + 摘要超 120 字折叠、展开全文/收起 + 提及股票 chips，点击 chip
+ *              等价以该股发起档案卡查询）。
  *              卡片操作区：【问 AI】（复用 BlockFocusButton，blockId = news_search:result:
  *              {resultId}，与 Copilot 区块注册锚点一致；区块独立会话互不叠加）。
  *              公告订阅入口已按产品要求从搜索页移除（订阅仍在档案卡与持仓页提供）。
@@ -108,7 +109,10 @@ function AnnouncementCard({ hit, query }: { hit: AnnouncementHit; query: string 
   );
 }
 
-/** CLS 电报卡：edition 徽章 + 提及股票 chips（点击 chip 以该股发起查询） */
+/** CLS 电报摘要折叠显示固定长度（字符数），超出提供展开全文/收起 */
+const CLS_SUMMARY_COLLAPSED_LEN = 120;
+
+/** CLS 电报卡：edition 徽章 + 提及股票 chips（点击 chip 以该股发起查询）；摘要超长折叠 */
 function ClsCard({
   hit,
   query,
@@ -118,6 +122,11 @@ function ClsCard({
   query: string;
   onSelectStock: (stockId: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const fullText = hit.content ?? hit.summary;
+  const overLimit = fullText.length > CLS_SUMMARY_COLLAPSED_LEN;
+  const shownSummary =
+    overLimit && !expanded ? fullText.slice(0, CLS_SUMMARY_COLLAPSED_LEN) + '…' : fullText;
   return (
     <div className="card space-y-2 !mb-0">
       <div className="flex items-center gap-2 flex-wrap">
@@ -132,8 +141,18 @@ function ClsCard({
         </div>
       )}
       <p className="text-xs leading-relaxed text-slate-400">
-        <HighlightedText text={hit.summary} query={query} />
+        <HighlightedText text={shownSummary} query={query} />
       </p>
+      {overLimit && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="inline-block text-[11px] text-slate-500 transition-colors hover:text-slate-300"
+        >
+          {expanded ? '收起' : '展开全文'}
+        </button>
+      )}
       {hit.mentions.length > 0 && (
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="text-[11px] text-slate-600">提及：</span>

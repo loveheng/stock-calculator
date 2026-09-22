@@ -26,6 +26,7 @@ import {
 import { useAppStore } from '../store';
 import { useAuthStore } from '../store/useAuthStore';
 import type { AppStoreExport } from '../store/types';
+import { PushNoticeCard } from '../components/settings/PushNoticeCard';
 
 type ConnectionStatus = 'unknown' | 'connected' | 'disconnected' | 'testing';
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
@@ -347,6 +348,9 @@ export default function WebDAVConfigPage() {
 
       {/* 服务端密文备份（登录即备份，M4）：置顶展示，零配置优先于 WebDAV 手动配置 */}
       <ServerBackupSection />
+
+      {/* 推送通知（Web Push）：订阅开关与权限状态 */}
+      <PushNoticeCard />
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">

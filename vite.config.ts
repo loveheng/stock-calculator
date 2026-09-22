@@ -70,6 +70,10 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
+        // 注入 Web Push 事件处理（public/push-sw.js：push / notificationclick）。
+        // 必须带版本参数：SW 更新检测靠 sw.js 字节变化，固定 URL 改 push-sw.js 内容
+        // 不会触发更新，用户端会一直跑旧推送逻辑——每次改 push-sw.js 递增 v
+        importScripts: ['push-sw.js?v=1'],
         // 显式设置 SPA 导航回退到 index.html，确保 SW 正确处理路由导航
         navigateFallback: 'index.html',
         // 导航回退拒绝列表：绝对不拦截 /api、/webdav 等代理/路由，

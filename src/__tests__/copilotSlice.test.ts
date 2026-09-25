@@ -39,6 +39,7 @@ vi.mock('../services/copilotService', () => ({
 }));
 
 import { useAppStore } from '../store';
+
 import { streamQuestion, fetchMessages, clearThread, saveCopilotTombstones, buildAskRequest } from '../services/copilotService';
 import type { CopilotContextData, CopilotMessage, PageContextSnapshot } from '../types/domain';
 
@@ -544,5 +545,55 @@ describe('事实数据变动检测（P0 时间隔离配套 UX）', () => {
     useAppStore.setState({ contextChangedScopes: { 'scope-purge': true } });
     await useAppStore.getState().purgeScopeOnEntityDelete('scope-purge');
     expect(useAppStore.getState().contextChangedScopes['scope-purge']).toBeUndefined();
+  });
+});
+
+describe('promptHints 画布能力提示（copilot-spec D33 条件携带）', () => {
+  it('canvas scope 且消息以触发词「自定义面板」开头才携带；常规消息/其他 scope 不带', async () => {
+    useAppStore.setState({
+      registry: {
+        canvas: makeBlockSnapshot('canvas', 'AI 选股台 · 自由画布', 'canvas:panel'),
+        home: makeBlockSnapshot('home', '首页', 'home:short_term'),
+      },
+      activeScopeId: 'canvas',
+    });
+    // 常规画布提问（无触发词）：零开销不带
+    await useAppStore.getState().sendMessage('总结画布');
+    let calls = (buildAskRequest as Mock).mock.calls;
+    expect((calls[calls.length - 1][5] as { promptHints?: string } | undefined)?.promptHints).toBeUndefined();
+
+    // 触发词开头（快捷按钮预填形态）：携带
+    await useAppStore.getState().sendMessage('自定义面板：帮我做腾讯速览卡');
+    calls = (buildAskRequest as Mock).mock.calls;
+    expect((calls[calls.length - 1][5] as { promptHints?: string }).promptHints).toContain('canvas_add_widget');
+
+    // 非 canvas scope 即使带触发词：不带
+    useAppStore.setState({ activeScopeId: 'home' });
+    await useAppStore.getState().sendMessage('自定义面板：测试');
+    calls = (buildAskRequest as Mock).mock.calls;
+    expect((calls[calls.length - 1][5] as { promptHints?: string } | undefined)?.promptHints).toBeUndefined();
+  });
+
+  it('重发路径按原消息内容重判：触发词消息携带，普通消息不带', async () => {
+    setActiveScope('canvas');
+    const failed: CopilotMessage = {
+      id: 'cmid-9', role: 'user', content: '自定义面板：持仓检查清单', status: 'failed',
+      retryable: true, clientMessageId: 'cmid-9',
+      contextOverview: JSON.stringify({ old: 1 }), ctime: 1,
+    };
+    useAppStore.setState({ threads: { canvas: [failed] } });
+    await useAppStore.getState().retryMessage('cmid-9');
+    let calls = (buildAskRequest as Mock).mock.calls;
+    expect((calls[calls.length - 1][5] as { promptHints?: string }).promptHints).toContain('canvas_add_widget');
+
+    const plain: CopilotMessage = {
+      id: 'cmid-10', role: 'user', content: '普通提问', status: 'failed',
+      retryable: true, clientMessageId: 'cmid-10',
+      contextOverview: JSON.stringify({ old: 2 }), ctime: 2,
+    };
+    useAppStore.setState({ threads: { canvas: [plain] } });
+    await useAppStore.getState().retryMessage('cmid-10');
+    calls = (buildAskRequest as Mock).mock.calls;
+    expect((calls[calls.length - 1][5] as { promptHints?: string } | undefined)?.promptHints).toBeUndefined();
   });
 });

@@ -27,6 +27,7 @@ import { createCustomStatsSlice } from './slices/customStatsSlice';
 import { createAnnouncementSlice } from './slices/announcementSlice';
 import { createSearchSlice } from './slices/searchSlice';
 import { createKgSlice } from './slices/kgSlice';
+import { createCanvasSlice } from './slices/canvasSlice';
 import { getIsSyncingFromRemote } from '../utils/persistence';
 import { loadCopilotTombstones, loadCopilotConsent } from '../services/copilotService';
 
@@ -76,7 +77,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   registry: {}, threads: {}, sending: false, activeScopeId: null, lastArchived: null,
   focusedBlock: null,
   // Copilot 动作后处理（V1 Action Pipeline）：全内存态，刷新即失
-  copilotNotice: null, pendingCopilotActions: [],
+  copilotNotice: null, pendingCopilotActions: [], copilotApprovedCanvasTypes: new Set(),
   // 事实数据变动提示（P2）：scope → 上次提问时快照相对上上轮是否变化
   contextChangedScopes: {},
   deletedScopes: loadCopilotTombstones(), consentAcknowledged: loadCopilotConsent(), copilotOpen: false,
@@ -105,6 +106,9 @@ export const useAppStore = create<AppStore>()((...a) => ({
   kgLoadingMore: false, kgMatchedEntities: [], kgTotalDays: 0,
   kgKeyword: null, kgEntityId: null, kgEntityName: null,
 
+  // 自由画布（区块态唯一权威在 canvasBlocks；800ms 防抖整块写回 canvasBoards）
+  canvasBlocks: [], canvasLabelSeq: 0, canvasLoaded: false, canvasSaveState: 'idle',
+
   ...createCoreSlice(...a),
   ...createStreamsSlice(...a),
   ...createRoundsSlice(...a),
@@ -118,6 +122,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createAnnouncementSlice(...a),
   ...createSearchSlice(...a),
   ...createKgSlice(...a),
+  ...createCanvasSlice(...a),
 }));
 
 /**

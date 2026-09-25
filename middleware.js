@@ -99,6 +99,13 @@ const UPSTREAMS = {
     headers: {},
     stripPrefix: false,
   },
+  // 股票经纪服务代理（画布 K 线/指标计算/AI 分析；保留原始路径前缀，不剥离 /api/broker；
+  // 与 /api/auth 同源部署，线上固定读 PROXY_UPSTREAMS.online）
+  '/api/broker': {
+    base: PROXY_UPSTREAMS.online.auth,
+    headers: {},
+    stripPrefix: false,
+  },
 };
 
 /** 匹配路径前缀（按长度降序，避免 `/api/eastmoney` 被 `/api` 误匹配）。 */
@@ -146,6 +153,7 @@ export const config = {
     '/api/announcement/:path*',
     '/api/search/:path*',
     '/api/kg/:path*',
+    '/api/broker/:path*',
   ],
 };
 

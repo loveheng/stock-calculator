@@ -37,6 +37,19 @@ vi.mock('../services/copilotService', () => ({
 
 import { useAppStore } from '../store';
 import { streamQuestion } from '../services/copilotService';
+import {
+  sanitizeCopilotActions,
+  asCanvasAddBlockPayload,
+  asCanvasSetStockPayload,
+  asCanvasUpdateTextPayload,
+  asCanvasSetMetricPayload,
+  asCanvasUpdateTablePayload,
+  asCanvasAddHLinePayload,
+  asCanvasAddTrendlinePayload,
+  asCanvasRemoveBlockPayload,
+  asCanvasRefreshPayload,
+} from '../utils/copilotActions';
+import { allCanvasOperationMeta, CANVAS_TEMPLATES } from '../utils/canvasTemplates';
 import type { CopilotContextData, CopilotMessage, PageContextSnapshot } from '../types/domain';
 
 const EMPTY_DATA: CopilotContextData = {
@@ -198,5 +211,97 @@ describe('响应挂载点集成（sendMessage / retryMessage → 动作仅执行
     await useAppStore.getState().sendMessage('普通提问');
     expect(useAppStore.getState().copilotNotice).toBeNull();
     expect(useAppStore.getState().threads.home).toHaveLength(2); // user + assistant
+  });
+});
+
+describe('canvas 动作注册表分发等价性（docs/free-canvas-template-registry.md §四/§五-5）', () => {
+  /** 九个 canvas_* 动作的最小合法载荷（守卫整形后通过）+ add_widget（DSL 动态模板） */
+  const VALID_PAYLOADS: Record<string, unknown> = {
+    add_block: { type: 'text', content: 'hi' },
+    add_widget: { dsl: { kind: 'stack', title: '面板', nodes: [{ c: 'divider' }] } },
+    refresh_klines: {},
+    set_stock: { blockId: 'A1', fullCode: 'sh600519', stockName: '茅台' },
+    update_text: { blockId: 'A1', content: 'x' },
+    set_metric: { blockId: 'A1', label: 'L', value: 1 },
+    update_table: { blockId: 'A1', columns: [{ key: 'c1', title: '列' }], rows: [{ c1: 'v' }] },
+    add_hline: { blockId: 'A1', price: 12.5 },
+    add_trendline: { blockId: 'A1', startTime: '2026-01-05', startPrice: 1, endTime: '2026-02-01', endPrice: 2 },
+    remove_block: { blockId: 'A1' },
+  };
+  /** 无参载荷恒通过的守卫（refresh_klines 无「垃圾载荷拒绝」语义） */
+  const GUARD_ALWAYS_PASS = new Set(['refresh_klines']);
+
+  it('注册表元数据覆盖全部 canvas_* 动作：tier 与 sanitize 分级一致、guard 与集中守卫行为一致', () => {
+    const meta = allCanvasOperationMeta();
+    for (const [op, payload] of Object.entries(VALID_PAYLOADS)) {
+      const type = `canvas_${op}`;
+      // ① 完备性：注册表登记了该操作
+      expect(meta.has(op), `${op} 未注册`).toBe(true);
+      // ② 分级等价：sanitize 白名单路由出的 tier === 注册表元数据 tier
+      const out = sanitizeCopilotActions([{ type, payload }]);
+      expect(out, `${op} sanitize 未通过`).toHaveLength(1);
+      expect(out[0].tier, `${op} tier 不一致`).toBe(meta.get(op)!.tier);
+      // ③ 守卫等价：合法载荷通过、垃圾载荷拒绝（refresh_klines 恒通过除外）
+      expect(meta.get(op)!.guard(payload), `${op} 合法载荷被拒`).not.toBeNull();
+      if (!GUARD_ALWAYS_PASS.has(op)) {
+        expect(meta.get(op)!.guard({ junk: 1 }), `${op} 垃圾载荷未拒`).toBeNull();
+      }
+    }
+    // annotate_block 不收编注册表（写分析结论维持独立分支逐条确认）
+    expect(meta.has('annotate_block')).toBe(false);
+  });
+
+  it('auto 级 canvas_add_block 经 handleCopilotActions 直执行（分发缺口修复回归）', () => {
+    const before = useAppStore.getState().canvasBlocks.length;
+    useAppStore.getState().handleCopilotActions([
+      { type: 'canvas_add_block', payload: { type: 'text', content: 'hi' } },
+    ]);
+    const blocks = useAppStore.getState().canvasBlocks;
+    expect(blocks.length).toBe(before + 1);
+    expect((blocks[blocks.length - 1].data as { content?: string }).content).toBe('hi');
+  });
+
+  it('auto 级 canvas_add_widget 直执行：widget 区块落库且 data.dsl 为规范化图纸；非法 DSL 静默丢弃', () => {
+    const before = useAppStore.getState().canvasBlocks.length;
+    useAppStore.getState().handleCopilotActions([
+      { type: 'canvas_add_widget', payload: { dsl: { kind: 'stack', title: '  速览  ', nodes: [{ c: 'metric', metric: { label: '最新价', value: '310.40' } }] } } },
+    ]);
+    const blocks = useAppStore.getState().canvasBlocks;
+    expect(blocks.length).toBe(before + 1);
+    const last = blocks[blocks.length - 1];
+    expect(last.type).toBe('widget');
+    const dsl = (last.data as { dsl?: { title?: string; nodes: unknown[] } }).dsl!;
+    expect(dsl.title).toBe('速览');
+    expect(dsl.nodes).toHaveLength(1);
+    // 非法 DSL：sanitize 白名单守卫整条拒绝，画布零变化
+    useAppStore.getState().handleCopilotActions([
+      { type: 'canvas_add_widget', payload: { dsl: { kind: 'stack', title: 'x', nodes: [{ c: 'iframe' }] } } },
+    ]);
+    expect(useAppStore.getState().canvasBlocks.length).toBe(before + 1);
+  });
+
+  it('confirm 级 canvas_set_stock：确认卡入队（带人话摘要）→ 执行经 runBlockTask 落地', async () => {
+    const blockId = useAppStore.getState().addCanvasBlock('kline');
+    useAppStore.getState().handleCopilotActions([
+      { type: 'canvas_set_stock', payload: { blockId, fullCode: 'sh600519', stockName: '茅台' } },
+    ]);
+    // confirm 级：不入执行，入队等拍板；摘要可读
+    const pending = useAppStore.getState().pendingCopilotActions;
+    expect(pending).toHaveLength(1);
+    expect(pending[0].summary).toContain('换股');
+    // 执行：经 runBlockTask（微任务链）落地
+    useAppStore.getState().executePendingCopilotAction(pending[0].id);
+    await new Promise((r) => setTimeout(r, 0));
+    const data = useAppStore.getState().canvasBlocks.find((b) => b.blockId === blockId)!.data as {
+      fullCode: string;
+      stockName: string;
+    };
+    expect(data.fullCode).toBe('sh600519');
+    expect(data.stockName).toBe('茅台');
+  });
+
+  it('未注册 canvas 操作静默丢弃口径不变（sanitize 白名单外整条丢弃）', () => {
+    useAppStore.getState().handleCopilotActions([{ type: 'canvas_not_registered', payload: {} }]);
+    expect(useAppStore.getState().pendingCopilotActions).toEqual([]);
   });
 });

@@ -13,6 +13,14 @@ import {
   COPILOT_ACTION_LIMIT,
   asNotifyPayload,
   asRunStatPayload,
+  asCanvasAddBlockPayload,
+  asCanvasAddWidgetPayload,
+  asCanvasSetMetricPayload,
+  asCanvasUpdateTablePayload,
+  asCanvasAddHLinePayload,
+  asCanvasAddTrendlinePayload,
+  asCanvasRemoveBlockPayload,
+  stripCopilotActionBlock,
 } from '../utils/copilotActions';
 import type { CopilotAction } from '../types/domain';
 
@@ -169,5 +177,162 @@ describe('asRunStatPayload（run_custom_stat 载荷守卫）', () => {
     expect(asRunStatPayload({ ...VALID, code: '注'.repeat(5462) })).toBeNull();
     // 5461 个中文字符 = 16383 字节 ≤ 16384：放行
     expect(asRunStatPayload({ ...VALID, code: '注'.repeat(5461) })).not.toBeNull();
+  });
+});
+
+describe('asCanvasAddBlockPayload（canvas_add_block 载荷守卫，auto 级）', () => {
+  const VALID = { type: 'kline', stockCode: 'sh600519' };
+
+  it('合法载荷通过，类型白名单外整条拒绝', () => {
+    expect(asCanvasAddBlockPayload(VALID)).toEqual(VALID);
+    expect(asCanvasAddBlockPayload({ type: 'kline', stockCode: 'SH600519' })).toEqual({ type: 'kline', stockCode: 'sh600519' });
+    expect(asCanvasAddBlockPayload({ type: 'malware' })).toBeNull();
+    expect(asCanvasAddBlockPayload({ type: 123 })).toBeNull();
+    expect(asCanvasAddBlockPayload(null)).toBeNull();
+  });
+
+  it('stockCode 必须腾讯形态（2字母+6数字），非法拒绝', () => {
+    expect(asCanvasAddBlockPayload({ type: 'kline', stockCode: '600519' })).toBeNull();
+    expect(asCanvasAddBlockPayload({ type: 'kline', stockCode: 'sh60-19' })).toBeNull();
+    expect(asCanvasAddBlockPayload({ type: 'kline', stockCode: 'SH600519X' })).toBeNull();
+  });
+
+  it('text 初始内容超长裁剪到 500', () => {
+    const p = asCanvasAddBlockPayload({ type: 'text', content: '字'.repeat(600) });
+    expect(p).not.toBeNull();
+    expect(p!.content!.length).toBe(500);
+  });
+});
+
+describe('asCanvasSetMetricPayload（canvas_set_metric 载荷守卫，confirm 级）', () => {
+  it('value 与 calc 至少一项，否则拒绝', () => {
+    expect(asCanvasSetMetricPayload({ blockId: 'A1', label: '目标价' })).toBeNull();
+    expect(asCanvasSetMetricPayload({ blockId: 'A1', label: '目标价', value: 12.5 })).not.toBeNull();
+    expect(asCanvasSetMetricPayload({ blockId: 'A1', label: '目标价', calc: '(12.5+3)*2' })).not.toBeNull();
+  });
+
+  it('calc 字符白名单（禁字母/标识符注入），非有限 value 拒绝', () => {
+    expect(asCanvasSetMetricPayload({ blockId: 'A1', label: 'x', calc: 'alert(1)' })).toBeNull();
+    expect(asCanvasSetMetricPayload({ blockId: 'A1', label: 'x', calc: '12.5+__proto__' })).toBeNull();
+    expect(asCanvasSetMetricPayload({ blockId: 'A1', label: 'x', value: Infinity })).toBeNull();
+    expect(asCanvasSetMetricPayload({ blockId: 'A1', label: 'x', calc: ' 1 + 2 * (3-1) ' })).not.toBeNull();
+  });
+});
+
+describe('asCanvasUpdateTablePayload（canvas_update_table 载荷守卫，confirm 级）', () => {
+  const COLS = [{ key: 'name', title: '名称' }, { key: 'px', title: '价格' }];
+
+  it('合法载荷通过；未知列/非字符串格静默剔除', () => {
+    const p = asCanvasUpdateTablePayload({ blockId: 'B2', columns: COLS, rows: [{ name: '茅台', px: '1700', hack: 'x', px2: 9 }] });
+    expect(p).not.toBeNull();
+    expect(p!.rows[0]).toEqual({ name: '茅台', px: '1700' });
+  });
+
+  it('列数超 10 / key 重复 / 空列 / 缺 rows 数组整条拒绝', () => {
+    expect(asCanvasUpdateTablePayload({ blockId: 'B2', columns: COLS, rows: [] })).not.toBeNull();
+    expect(asCanvasUpdateTablePayload({ blockId: 'B2', columns: [], rows: [] })).toBeNull();
+    expect(asCanvasUpdateTablePayload({
+      blockId: 'B2',
+      columns: Array.from({ length: 11 }, (_, i) => ({ key: `c${i}`, title: `列${i}` })),
+      rows: [],
+    })).toBeNull();
+    expect(asCanvasUpdateTablePayload({ blockId: 'B2', columns: [{ key: 'a', title: 'A' }, { key: 'a', title: 'A2' }], rows: [] })).toBeNull();
+    expect(asCanvasUpdateTablePayload({ blockId: 'B2', columns: COLS, rows: 'nope' })).toBeNull();
+  });
+
+  it('行数超 50 整条拒绝', () => {
+    const rows = Array.from({ length: 51 }, () => ({ name: 'x' }));
+    expect(asCanvasUpdateTablePayload({ blockId: 'B2', columns: COLS, rows })).toBeNull();
+  });
+});
+
+describe('canvas 划线/删除守卫（confirm 级）', () => {
+  it('asCanvasAddHLinePayload：price 必须有限数，label 可选裁剪', () => {
+    expect(asCanvasAddHLinePayload({ blockId: 'A1', price: 12.5 })).toEqual({ blockId: 'A1', price: 12.5 });
+    expect(asCanvasAddHLinePayload({ blockId: 'A1', price: '12.5' })).toBeNull();
+    expect(asCanvasAddHLinePayload({ blockId: 'A1', price: NaN })).toBeNull();
+    const p = asCanvasAddHLinePayload({ blockId: 'A1', price: 1, label: '标'.repeat(60) });
+    expect(p!.label!.length).toBe(40);
+  });
+
+  it('asCanvasAddTrendlinePayload：日期必须 YYYY-MM-DD，价格必须有限数', () => {
+    const ok = { blockId: 'A1', startTime: '2026-01-05', startPrice: 10, endTime: '2026-02-01', endPrice: 12 };
+    expect(asCanvasAddTrendlinePayload(ok)).toEqual(ok);
+    expect(asCanvasAddTrendlinePayload({ ...ok, startTime: '20260105' })).toBeNull();
+    expect(asCanvasAddTrendlinePayload({ ...ok, endPrice: Infinity })).toBeNull();
+  });
+
+  it('asCanvasRemoveBlockPayload：blockId 必填', () => {
+    expect(asCanvasRemoveBlockPayload({ blockId: 'C3' })).toEqual({ blockId: 'C3' });
+    expect(asCanvasRemoveBlockPayload({})).toBeNull();
+  });
+});
+
+describe('sanitizeCopilotActions 对 canvas 动作的路由', () => {
+  it('canvas_add_block 走 auto 分支（守卫整形后直出）', () => {
+    const out = sanitizeCopilotActions([{ type: 'canvas_add_block', payload: { type: 'kline', stockCode: 'sh600519' } }]);
+    expect(out).toHaveLength(1);
+    expect(out[0].tier).toBe('auto');
+    expect(out[0].payload).toEqual({ type: 'kline', stockCode: 'sh600519' });
+  });
+
+  it('canvas_set_stock 走 confirm 入队（守卫整形），非法载荷静默丢弃', () => {
+    const out = sanitizeCopilotActions([
+      { type: 'canvas_set_stock', payload: { blockId: 'A1', fullCode: 'sh600519' } },
+      { type: 'canvas_set_stock', payload: { blockId: 'A1', fullCode: '600519' } },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].tier).toBe('confirm');
+  });
+
+  it('canvas_refresh_klines 无参载荷恒通过（auto）', () => {
+    const out = sanitizeCopilotActions([{ type: 'canvas_refresh_klines', payload: {} }]);
+    expect(out).toHaveLength(1);
+    expect(out[0].tier).toBe('auto');
+  });
+});
+
+describe('asCanvasAddWidgetPayload（canvas_add_widget 载荷守卫，auto 级）', () => {
+  const VALID = { kind: 'stack', title: '面板', nodes: [{ c: 'divider' }] };
+
+  it('合法图纸通过且返回规范化 DSL；结构违规整条拒绝（单一入口 validateWidgetDsl）', () => {
+    expect(asCanvasAddWidgetPayload({ dsl: VALID })).toEqual({ dsl: VALID });
+    expect(asCanvasAddWidgetPayload({ dsl: { ...VALID, kind: 'flex' } })).toBeNull();
+    expect(asCanvasAddWidgetPayload({ dsl: { ...VALID, nodes: [{ c: 'iframe' }] } })).toBeNull();
+    expect(asCanvasAddWidgetPayload({})).toBeNull();
+    expect(asCanvasAddWidgetPayload(null)).toBeNull();
+  });
+
+  it('title/文本超长由校验器裁剪（非拒绝）', () => {
+    const p = asCanvasAddWidgetPayload({ dsl: { ...VALID, title: '标'.repeat(60) } });
+    expect(p).not.toBeNull();
+    expect(p!.dsl.title.length).toBe(40);
+  });
+
+  it('sanitize 路由：canvas_add_widget 走 auto 直出，非法 DSL 静默丢弃', () => {
+    const out = sanitizeCopilotActions([{ type: 'canvas_add_widget', payload: { dsl: VALID } }]);
+    expect(out).toHaveLength(1);
+    expect(out[0].tier).toBe('auto');
+    expect(sanitizeCopilotActions([{ type: 'canvas_add_widget', payload: { dsl: { junk: 1 } } }])).toHaveLength(0);
+  });
+});
+
+describe('stripCopilotActionBlock（动作外壳剥离，前端渲染双保险）', () => {
+  it('完整块整段移除，正文前后保留', () => {
+    const src = '已创建速览卡。\n\n<copilot-actions>\n{"actions":[{"type":"canvas_add_widget","payload":{"dsl":{}}}]}\n</copilot-actions>\n\n需要进一步分析吗？';
+    const out = stripCopilotActionBlock(src);
+    expect(out).not.toContain('copilot-actions');
+    expect(out).toContain('已创建速览卡。');
+    expect(out).toContain('需要进一步分析吗？');
+  });
+
+  it('流式半截块（未闭合）从起始标记截断，防 JSON 片段闪现', () => {
+    const out = stripCopilotActionBlock('正文开头<copilot-actions>\n{"actions":[{"type":"canvas_add');
+    expect(out).toBe('正文开头');
+  });
+
+  it('大小写变体容错；无块文本原样返回', () => {
+    expect(stripCopilotActionBlock('a<Copilot-Actions>x</Copilot-Actions>b')).toBe('ab');
+    expect(stripCopilotActionBlock('普通正文，无任何标签')).toBe('普通正文，无任何标签');
   });
 });

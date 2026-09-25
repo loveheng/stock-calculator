@@ -29,6 +29,15 @@ import {
   streamQuestion,
   toCopilotError,
 } from '../../services/copilotService';
+import { CANVAS_SCOPE_ID } from '../../utils/canvasSummary';
+import { tryInterceptDataQuery } from '../../utils/canvasDataQuery';
+import { buildCanvasPromptHints } from '../../utils/canvasTemplates';
+
+/** 画布能力提示（copilot-spec D33 条件携带）：仅 canvas scope 组装——公共段 + 命中触发词的
+ *  模板专属段（触发词/提示文本由注册表承载，与守卫同仓演进）；重发按原消息内容重判零状态 */
+function canvasPromptHints(scopeId: string, question: string): string | undefined {
+  return scopeId === CANVAS_SCOPE_ID ? buildCanvasPromptHints(question) : undefined;
+}
 
 /** 内存缓存上限：每会话仅保留尾部 20 条（更早历史经 keyset 分页从后端拉取） */
 const THREAD_TAIL_LIMIT = 20;
@@ -319,13 +328,50 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
       const trimmed = question.trim();
       if (!trimmed) return;
 
+      // ── 受限取数语法拦截（仅画布 scope，docs/free-canvas-template-registry.md §三）：
+      // 「标号 数据词」命中词表 → 本地直出数据卡片（用户可见 + 零 token），本轮不进 LLM；
+      // 卡片文本经后续轮 dataCards 携带（AI 可见，计入上下文）。取数失败也落 ⚠️ 卡片可见告知。
+      if (pageSnap.scopeId === CANVAS_SCOPE_ID) {
+        const pendingCard = tryInterceptDataQuery(trimmed, s.canvasBlocks);
+        if (pendingCard) {
+          const clientMessageId = newClientMessageId();
+          const cardText = await pendingCard
+            .then((c) => c.toPromptText())
+            .catch((e) => `⚠️ [数据获取失败] ${e instanceof Error ? e.message : '请稍后重试'}`);
+          const ctime = Math.floor(Date.now() / 1000);
+          const rows: CopilotMessage[] = [
+            { id: clientMessageId, role: 'user', content: trimmed, status: 'ok', clientMessageId, ctime },
+            { id: `card-${clientMessageId}`, role: 'system', content: cardText, status: 'ok', ctime },
+          ];
+          set((st) => ({
+            threads: { ...st.threads, [threadKey]: capThread([...(st.threads[threadKey] ?? []), ...rows]) },
+          }));
+          return; // 零 token 本地轮结束（不联网、不上报服务端）
+        }
+      }
+
       set({ sending: true });
       try {
         // 显式执行命令式快照：getState() + 纯引擎重算，禁读组件闭包
         const data = snapshot.getData();
         const clientMessageId = newClientMessageId();
+        // 数据卡片文本计入上下文（§三：卡片为本地行不进服务端历史，故每轮经 dataCards 显式携带；
+        // 取尾部 5 张防上下文膨胀，applySizeGuard 兜底总量）
+        const historyCards = (get().threads[threadKey] ?? [])
+          .filter((m) => m.role === 'system')
+          .slice(-5)
+          .map((m) => m.content);
         // sessionTitle 恒用页面标题（会话身份稳定）；区块口径经 focusBlockId 交后端编排
-        const request = buildAskRequest(pageSnap.title, trimmed, clientMessageId, data, blockId, opts);
+        const request = buildAskRequest(
+          pageSnap.title,
+          trimmed,
+          clientMessageId,
+          data,
+          blockId,
+          historyCards.length
+            ? { ...opts, promptHints: canvasPromptHints(pageSnap.scopeId, trimmed), extraDetail: { ...opts?.extraDetail, dataCards: historyCards } }
+            : { ...opts, promptHints: canvasPromptHints(pageSnap.scopeId, trimmed) },
+        );
         // 事实数据变动检测（P2）：本轮概览 vs 上轮用户行落库概览（必须在追加本轮 user 行之前取）
         markContextChanged(threadKey, lastUserOverview(threadKey), request.contextOverview);
         const userMsg: CopilotMessage = {
@@ -361,7 +407,9 @@ export const createCopilotSlice: StateCreator<AppStore, [], [], CopilotSlice> = 
       try {
         // 重发必须重采最新快照（D7）：旧 ephemeral 明细已阅后即焚
         const data = snapshot.getData();
-        const request = buildAskRequest(pageSnap.title, target.content, target.clientMessageId, data, blockId);
+        const request = buildAskRequest(pageSnap.title, target.content, target.clientMessageId, data, blockId, {
+          promptHints: canvasPromptHints(pageSnap.scopeId, target.content),
+        });
         // 事实数据变动检测（P2）：重采概览 vs 被重发行的落库概览（被重发行即上一轮提问）
         markContextChanged(threadKey, target.contextOverview, request.contextOverview);
         markPending(threadKey, messageId);

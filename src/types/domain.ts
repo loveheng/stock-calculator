@@ -163,6 +163,202 @@ export interface PlannedOrder {
   };
 }
 
+// ---- 自由画布（Free Canvas）----
+/** K 线区块趋势线段：起终点时间戳必须强等于 kline 序列中真实存在的交易日（YYYY-MM-DD） */
+export interface TrendLine {
+  id: string;
+  startTime: string;
+  startPrice: number;
+  endTime: string;
+  endPrice: number;
+}
+
+/** K 线区块关键水平线（createPriceLine，带语义标签） */
+export interface HLine {
+  id: string;
+  price: number;
+  label: string;
+}
+
+/** 区块备注：manual 用户手写（可编辑）| ai AI 生成（只读可删） */
+export interface BlockNote {
+  id: string;
+  source: 'manual' | 'ai';
+  content: string;
+  createdAt: string;
+}
+
+/** 表格模板列定义 */
+export interface CanvasTableColumn {
+  key: string;
+  title: string;
+}
+
+/** 简单图表数据点 */
+export interface CanvasChartPoint {
+  label: string;
+  value: number;
+}
+
+/** 区块数据多态（按 type 收窄） */
+export interface CanvasBlockData {
+  kline: {
+    fullCode: string;
+    stockName: string;
+    trendLines: TrendLine[];
+    hLines: HLine[];
+    maVisible: boolean;
+  };
+  table: {
+    columns: CanvasTableColumn[];
+    rows: Record<string, string>[];
+  };
+  file: {
+    fileName: string;
+    fileType: string;
+    /** canvasBlobs 表引用 id */
+    dataRef?: string;
+  };
+  chart: {
+    seriesType: 'line' | 'bar';
+    points: CanvasChartPoint[];
+    /** 绑定的 K 线区块标号（自动取收盘价序列） */
+    sourceBlockId?: string;
+  };
+  metric: {
+    label: string;
+    /** 手动固定值 */
+    value?: number;
+    /** 绑定区块取值 */
+    sourceBlockId?: string;
+    /** 取值路径（如 latestClose / rangeChange） */
+    sourcePath?: string;
+    /** 常量四则运算表达式（递归下降解析，禁 eval） */
+    calc?: string;
+    /** agent 指标（compute 端点结果，算完即弃写回本地）：value 取序列最后一个非 null 槽位 */
+    agent?: {
+      /** 指标计算名（能力端点白名单内） */
+      indicator: string;
+      /** 展示名 */
+      label: string;
+      /** 来源 K 线区块（切片出处） */
+      sourceBlockId: string;
+      /** 结果值（暖机期全 null 时为 null → 显示占位） */
+      value: number | null;
+      /** 计算失败标记（429/5xx/超时 → 「agent 指标暂不可用」占位） */
+      unavailable?: boolean;
+    };
+  };
+  image: {
+    /** canvasBlobs 表引用 id */
+    imageRef?: string;
+  };
+  text: {
+    content: string;
+  };
+  widget: {
+    /** DSL 声明式图纸（utils/widgetDsl.validateWidgetDsl 校验后的合法形态） */
+    dsl: WidgetDsl;
+  };
+}
+
+// ---- 画布 DSL 动态模板（widget 区块；docs/free-canvas-template-registry.md「DSL 动态模板」节）----
+// 安全原则：LLM 只输出受 schema 约束的 JSON 图纸，前端封闭白名单渲染，全链路零代码传输。
+
+/** 语气标记（决定配色） */
+export type WidgetTone = 'info' | 'warn' | 'danger';
+
+/** DSL 叶子组件白名单（8 种；容器 2 种 stack/grid，均不含可执行语义） */
+export type WidgetNodeKind =
+  | 'text'
+  | 'metric'
+  | 'kv'
+  | 'list'
+  | 'table'
+  | 'progress'
+  | 'tag'
+  | 'divider';
+
+/** DSL 节点（叶子）：c = 组件种类，其余字段按种类收窄（形状校验在 utils/widgetDsl） */
+export interface WidgetNode {
+  c: WidgetNodeKind;
+  text?: { content: string; tone?: WidgetTone };
+  metric?: { label: string; value: string; tone?: WidgetTone };
+  kv?: { rows: { label: string; value: string }[] };
+  list?: { title?: string; items: { text: string; tone?: WidgetTone }[] };
+  table?: { columns: string[]; rows: string[][] };
+  progress?: { label: string; value: number };
+  tag?: { tags: string[] };
+}
+
+/** widget 区块图纸：单层容器 + 叶子节点（不允许嵌套容器） */
+export interface WidgetDsl {
+  kind: 'stack' | 'grid';
+  title: string;
+  nodes: WidgetNode[];
+}
+
+// ---- 预告单（Advance Notice；views/AdvanceNotice + services/advanceNoticeService）----
+
+/** 预告单理由标签：固定枚举（结构化检索）+ reasonNote 自由文本补充 */
+export type ReasonTag = '业绩' | '政策' | '技术面' | '消息面' | '基本面' | '其他';
+
+/**
+ * 交易预告单：选股关注记录（区别于 plannedOrders 的执行意图——预告单是"待决策"备忘）。
+ * status.active/expired 中 expired 读取时按 expiresAt 派生，不落库（对齐 plannedOrders 纪律）。
+ */
+export interface AdvanceNotice {
+  id: string;
+  /** 股票完整代码（腾讯形态 sh600519） */
+  fullCode: string;
+  stockName: string;
+  reasonTag: ReasonTag;
+  /** 自由文本补充理由（≤200 字） */
+  reasonNote?: string;
+  /** 来源画布 id（一期只记不展开；P2 快照联动预留） */
+  sourceBoardId?: string;
+  /** active | cancelled（expired 为读取派生态，不写入） */
+  status: 'active' | 'cancelled';
+  /** 到期时间（ISO）；派生 expired */
+  expiresAt: string;
+  /** 有效期天数（1 | 3 | 7 | 14 | 30；续期 = 当前时间 + validityDays 重算） */
+  validityDays: number;
+}
+
+/** 画布区块类型 */
+export type CanvasBlockType = keyof CanvasBlockData;
+
+/** 画布区块：标号（A1/B2）为画布内唯一稳定句柄，删除后不复用 */
+export interface CanvasBlock {
+  blockId: string;
+  type: CanvasBlockType;
+  /** react-grid-layout 网格位置尺寸 */
+  layout: { x: number; y: number; w: number; h: number };
+  data: CanvasBlockData[CanvasBlockType];
+  notes: BlockNote[];
+}
+
+/** 画布实体（canvasBoards 表，行级契约；一期单画布 isDefault=true，模型支持多画布） */
+export interface CanvasBoardEntity {
+  id: string;
+  title: string;
+  blocks: CanvasBlock[];
+  isDefault: boolean;
+  /** 标号分配单调计数器（列优先协议；删除不复用的保证——与现存区块无关，只增不减） */
+  labelSeq?: number;
+  createdAt: string;
+  updatedAt: string;
+  isDeleted?: boolean;
+}
+
+/** 画布 Blob 存储实体（canvasBlobs 表，行级契约）：图片/文件二进制，区块 data 仅存引用 id */
+export interface CanvasBlobEntity {
+  id: string;
+  mime: string;
+  data: Blob;
+  createdAt: string;
+}
+
 // ---- 持久化实体类型（行级契约） ----
 /**
  * @description 持仓/批次相关 IndexedDB 实体（行级）类型。原先定义在 db/schema.ts，
@@ -377,21 +573,40 @@ export interface ContextBlockSnapshot {
   getData: () => CopilotContextData;
 }
 
+/**
+ * 聊天快捷按钮（页面上下文注册，GlobalCopilot 输入框上方常驻渲染）：
+ * 三模式分流——draft 填草稿（用户可改后发送）；send 直接走 sendMessage 管线（confirm 动作照常出确认卡）；
+ * local 本地拦截直执行（纯前端操作不经 AI，如建区块/刷新行情，handler 由注册页提供）。
+ */
+export interface CopilotQuickAction {
+  /** 按钮文案（≤12 字，胶囊 chip） */
+  label: string;
+  /** draft/send 模式的 prompt 话术（local 模式忽略） */
+  prompt?: string;
+  /** 执行模式，默认 draft */
+  mode?: 'draft' | 'send' | 'local';
+  /** local 模式的本地执行器（纯前端操作，结果经 app-toast 反馈） */
+  handler?: () => void;
+}
+
 /** 页面上下文快照（usePageContext 注册契约） */
 export interface PageContextSnapshot {
   scopeId: string;
   title: string;
   /** 命令式快照：实现必须 getState() + 纯引擎重算，禁闭包捕获组件态 */
   getData: () => CopilotContextData;
+  /** 快捷按钮条（可选；页面注册时自带，GlobalCopilot 输入框上方常驻渲染） */
+  quickActions?: CopilotQuickAction[];
   /** 区块级快照（V2 预留） */
   blocks?: ContextBlockSnapshot[];
 }
 
 /** Copilot 消息（前端内存态，映射后端 ai_chat_message 行） */
 export interface CopilotMessage {
-  /** 本地 id：user 行 = clientMessageId（ulid），assistant 行 = 后端消息 id 字符串 */
+  /** 本地 id：user 行 = clientMessageId（ulid），assistant 行 = 后端消息 id 字符串，system 卡片 = card-前缀 */
   id: string;
-  role: 'user' | 'assistant';
+  /** system = 受限取数数据卡片（本地拦截产线，不上报服务端、刷新即失；见 docs/free-canvas-template-registry.md §三） */
+  role: 'user' | 'assistant' | 'system';
   content: string;
   /** 生命周期：pending 排队/等待首块 → streaming 流式接收中（增量渲染）→ ok/failed 终态 */
   status: 'pending' | 'streaming' | 'ok' | 'failed';
@@ -428,6 +643,10 @@ export interface CopilotAskRequest {
   /** 任务类型（可选；缺省 = 现有聊天模板，行为零变化）。
    *  'custom_stat' = 自定义统计生成/迭代模板（后端 docs/custom-stats-api.md §2.1） */
   taskType?: string;
+  /** 画布能力提示（可选，copilot-spec D33；仅 canvas scope 携带）：前端常量承载
+   *  canvas_add_widget 图纸 schema 用法说明（utils/canvasWidgetPrompt），ephemeral 随请求
+   *  每轮上行不落库不打日志；后端按不可信输入处理（≤8KB 截断）原样拼接进系统提示固定区段 */
+  promptHints?: string;
 }
 
 /**
@@ -476,6 +695,101 @@ export interface CopilotRunStatPayload {
   prompt: string;
   /** 统计代码（≤16KB）：完整箭头函数表达式 (ctx) => CustomStatsResult */
   code: string;
+}
+
+/** annotate_block：AI 给画布区块写备注（confirm 级：写入用户内容必须确认；执行最后一刻校验区块存活） */
+export interface CopilotAnnotateBlockPayload {
+  /** 画布区块标号（如 A1）；存活校验在 canvasSlice.runBlockTask 执行时刻兜底 */
+  blockId: string;
+  /** 备注内容（≤200 字，守卫裁剪） */
+  content: string;
+}
+
+/** canvas_add_block：AI 新建画布区块（auto 级：只新增不覆盖；K线带 stockCode 时直接绑定标的） */
+export interface CopilotCanvasAddBlockPayload {
+  /** 区块类型（七类之一） */
+  type: CanvasBlockType;
+  /** K线区块可直接绑定标的（腾讯形态 sh600519）；其他类型忽略 */
+  stockCode?: string;
+  /** text 区块的初始内容（≤500 字）；其他类型忽略 */
+  content?: string;
+}
+
+/** canvas_set_stock：AI 给 K 线区块换股（confirm 级：覆盖用户已选标的） */
+export interface CopilotCanvasSetStockPayload {
+  blockId: string;
+  /** 腾讯形态代码（sh600519） */
+  fullCode: string;
+  /** 股票名（可选，缺省守卫不填） */
+  stockName?: string;
+}
+
+/** canvas_update_text：AI 覆写文本区块内容（confirm 级：覆盖用户内容） */
+export interface CopilotCanvasUpdateTextPayload {
+  blockId: string;
+  /** 新文本（≤500 字） */
+  content: string;
+}
+
+/** canvas_set_metric：AI 设置单指标区块（confirm 级：label+value 或常量四则 calc，二选一） */
+export interface CopilotCanvasSetMetricPayload {
+  blockId: string;
+  /** 指标标签（≤40 字） */
+  label: string;
+  /** 手动固定值（与 calc 二选一，优先 value） */
+  value?: number;
+  /** 常量四则表达式（如 "(12.5+3)*2"，禁脚本） */
+  calc?: string;
+}
+
+/** canvas_update_table：AI 写表格区块（confirm 级：整表覆写，守卫限 10 列 50 行） */
+export interface CopilotCanvasUpdateTablePayload {
+  blockId: string;
+  /** 列定义（key 唯一） */
+  columns: { key: string; title: string }[];
+  /** 行数据（键与 columns.key 对齐，缺失格为空串） */
+  rows: Record<string, string>[];
+}
+
+/** canvas_add_hline：AI 给 K 线区块加水平线（confirm 级：写划线数据） */
+export interface CopilotCanvasAddHLinePayload {
+  blockId: string;
+  /** 价格轴位置 */
+  price: number;
+  /** 标签（≤40 字，缺省取价格） */
+  label?: string;
+}
+
+/** canvas_add_trendline：AI 给 K 线区块加两点趋势线段（confirm 级：交易日吸附在执行时兜底） */
+export interface CopilotCanvasAddTrendlinePayload {
+  blockId: string;
+  /** 起点交易日（YYYY-MM-DD）+ 价格 */
+  startTime: string;
+  startPrice: number;
+  /** 终点交易日（YYYY-MM-DD）+ 价格 */
+  endTime: string;
+  endPrice: number;
+}
+
+/** canvas_remove_block：AI 删除画布区块（confirm 级：破坏性，执行最后一刻存活校验） */
+export interface CopilotCanvasRemoveBlockPayload {
+  blockId: string;
+}
+
+/** canvas_refresh_klines：AI 请求刷新画布全部 K 线行情（auto 级：只读行情刷新，无业务写） */
+export interface CopilotCanvasRefreshPayload {
+  /** 无参数载荷（占位，保持载荷对象统一形状） */
+  _none?: never;
+}
+
+/**
+ * canvas_add_widget：AI 新建 DSL 动态面板区块（auto 级：只读数据可视化，只新增不覆盖）。
+ * dsl 为 utils/widgetDsl.validateWidgetDsl 校验通过的规范化图纸（扁平单层、8 组件白名单）。
+ * 无 update 动作（拍板：改 = 删旧 canvas_remove_block + 加新 canvas_add_widget）。
+ */
+export interface CopilotCanvasAddWidgetPayload {
+  /** 校验后的 DSL 图纸（守卫整形，非 LLM 原始 JSON） */
+  dsl: WidgetDsl;
 }
 
 /** 提问响应 data */

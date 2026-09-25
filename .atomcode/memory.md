@@ -1,0 +1,4 @@
+- 用户协作偏好：需求开发时先给方案（含数据设计/落点），用户确认后才动手写代码；未获确认不要提前写实现。
+- 自由画布一期已确认决策：布局引擎引入 react-grid-layout；K线划线一期范围=关键水平线（createPriceLine，带标签）+ 两点趋势线段，复杂画笔工具不做。设计文档 docs/free-canvas-spec.md 待产出，未确认前不开发。
+- 自由画布存储决策：canvasBoards/canvasBlobs 不纳入 serversync 密文快照同步（含 Blob 体量大），跨设备迁移走 WebDAV 全量备份通道；画布为纯前端域，本地模板读写禁走服务端管道。
+- 后端数据架构定案（用户确认）：K线数据源=前端直连行情商代理上传（Client-Side Relay）；后端必须做旁路沉淀（MQ异步落库）+ 缺口目录 + 本地爬虫定向补全；个人使用场景，行情转存合规用户自担。三条生死线：复权基准统一（adjust_type 同源拼接）、连续性校验防瑞士奶酪、入口防重+形状校验。详见 docs/free-canvas-backend-integration.md §2.4。

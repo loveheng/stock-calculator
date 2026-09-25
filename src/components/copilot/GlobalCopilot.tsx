@@ -34,6 +34,7 @@ import ConfirmModal from '../ui/ConfirmModal';
 import CopilotActionCards from './CopilotActionCards';
 import CustomStatResultPanel from '../customStats/CustomStatResultPanel';
 import { prewarmSandbox } from '../../utils/customStats/client';
+import { stripCopilotActionBlock } from '../../utils/copilotActions';
 import type { CopilotMessage } from '../../types/domain';
 
 /** 空数组常量：避免 zustand selector 每次返回新引用触发多余重渲染 */
@@ -99,8 +100,29 @@ function MessageBubble({ message, sending, onRetry }: {
   onRetry: (id: string) => void;
 }) {
   const isUser = message.role === 'user';
+  // assistant 气泡渲染前剥离动作外壳块（后端提取协议；前端双保险防流式/历史泄漏露出 JSON）
+  const displayContent = isUser ? message.content : stripCopilotActionBlock(message.content);
   const overviewText = isUser ? formatOverview(message.contextOverview) : null;
   const anchorText = isUser ? formatAnchorLabel(message.timeAnchor) : null;
+
+  // 本地拦截数据卡片（system 行）：居中只读卡，内容 = toPromptText 文本（与 AI 所得同源）；
+  // ⚠️ 前缀（取数失败卡）转琥珀色区分
+  if (message.role === 'system') {
+    const isFailure = message.content.startsWith('⚠️');
+    return (
+      <div className="flex justify-center py-0.5">
+        <div
+          className={`max-w-[92%] whitespace-pre-wrap rounded-xl border px-3 py-2 text-xs leading-relaxed ${
+            isFailure
+              ? 'border-amber-600/40 bg-amber-900/15 text-amber-200/90'
+              : 'border-emerald-600/30 bg-emerald-900/20 text-emerald-200/90'
+          }`}
+        >
+          {message.content}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
@@ -113,7 +135,7 @@ function MessageBubble({ message, sending, onRetry }: {
           message.status === 'pending' ? 'opacity-60 animate-pulse' : ''
         }`}
       >
-        {message.content}
+        {displayContent}
         {/* V3 流式接收中：增量渲染 + 光标闪烁（pending 排队态仍走整泡 pulse） */}
         {message.status === 'streaming' && (
           <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-0.5 bg-blue-400 animate-pulse" />
@@ -162,6 +184,8 @@ export default function GlobalCopilot() {
   const unfocusBlock = useAppStore((s) => s.unfocusBlock);
   // 生效胶囊标题：区块聚焦优先，回落整页标题
   const pageTitle = useAppStore((s) => (s.activeScopeId ? s.registry[s.activeScopeId]?.title : undefined));
+  // 页面级快捷按钮条（quickActions）：随注册快照存于 registry，输入框上方常驻渲染
+  const quickActions = useAppStore((s) => (s.activeScopeId ? s.registry[s.activeScopeId]?.quickActions : undefined));
   const capsuleTitle = focusedBlockSnap?.title ?? pageTitle;
   // 生效会话线程键（V2.1 区块独立会话）：区块聚焦时为 scopeId:blockId（每条公告/日报
   // 各自独立会话），整页回落 scopeId；展示与历史加载共用此键，切换聚焦即切换会话
@@ -233,8 +257,8 @@ export default function GlobalCopilot() {
     bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [messages.length, sending]);
 
-  const handleSend = () => {
-    const q = draft.trim();
+  const handleSend = (overrideText?: string) => {
+    const q = (overrideText ?? draft).trim();
     if (!q || sending || offline || !activeScopeId) return;
     setDraft('');
     void sendMessage(q);
@@ -386,6 +410,33 @@ export default function GlobalCopilot() {
 
         {/* 输入区 */}
         <div className="p-2.5 border-t border-slate-700">
+          {/* 页面级快捷按钮条（quickActions 三模式）：draft 填草稿 / send 直发（走 sendMessage 管线，
+              confirm 动作照常出确认卡）/ local 本地拦截直执行（纯前端操作不经 AI） */}
+          {quickActions && quickActions.length > 0 && (
+            <div className="mb-2 flex gap-1.5 overflow-x-auto pb-0.5">
+              {quickActions.map((qa) => (
+                <button
+                  key={qa.label}
+                  type="button"
+                  onClick={() => {
+                    if (qa.mode === 'local') qa.handler?.();
+                    else if (qa.mode === 'send') handleSend(qa.prompt ?? '');
+                    else setDraft(qa.prompt ?? '');
+                  }}
+                  disabled={sending && qa.mode === 'send'}
+                  className={
+                    'whitespace-nowrap flex-shrink-0 rounded-full border px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50 ' +
+                    (qa.mode === 'local'
+                      ? 'border-emerald-600/50 bg-emerald-900/20 text-emerald-300 hover:border-emerald-400/70'
+                      : 'border-slate-600/70 bg-slate-800/60 text-slate-300 hover:border-blue-500/60 hover:text-blue-300')
+                  }
+                  title={qa.mode === 'local' ? '本地直接执行（不经 AI）' : qa.mode === 'send' ? '直接发送' : '填入输入框，可修改后发送'}
+                >
+                  {qa.label}
+                </button>
+              ))}
+            </div>
+          )}
           {/* 区块聚焦快捷提问气泡（V2 Click-to-Focus）：点击填入草稿，可编辑后发送 */}
           {focusedBlockSnap?.suggestedPrompts && focusedBlockSnap.suggestedPrompts.length > 0 && (
             <div className="mb-2 flex gap-1.5 overflow-x-auto pb-0.5">
@@ -431,7 +482,7 @@ export default function GlobalCopilot() {
               </button>
             ) : (
               <button
-                onClick={handleSend}
+                onClick={() => handleSend()}
                 disabled={!draft.trim() || offline || !capsuleTitle}
                 className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium disabled:opacity-40 disabled:hover:bg-blue-600 transition-colors"
               >

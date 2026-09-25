@@ -175,6 +175,8 @@ export function newClientMessageId(): string {
  * @param opts.taskType 任务类型（可选；'custom_stat' → 后端路由自定义统计生成模板）
  * @param opts.extraDetail 追加进 detail 的临时键（如自定义统计的 sampleRows/draftContext），
  *                         同样受 applySizeGuard 体积护栏约束
+ * @param opts.promptHints 画布能力提示（可选，D33；仅 canvas scope 传入）：ephemeral
+ *                         随请求每轮上行，后端原样拼接进系统提示（不落库不打日志）
  */
 export function buildAskRequest(
   sessionTitle: string,
@@ -182,7 +184,7 @@ export function buildAskRequest(
   clientMessageId: string,
   data: CopilotContextData,
   focusBlockId?: string,
-  opts?: { taskType?: string; extraDetail?: Record<string, unknown> },
+  opts?: { taskType?: string; extraDetail?: Record<string, unknown>; promptHints?: string },
 ): CopilotAskRequest {
   const merged: CopilotContextData = opts?.extraDetail
     ? { ...data, detail: { ...data.detail, ...opts.extraDetail } }
@@ -200,6 +202,7 @@ export function buildAskRequest(
     // Spring Boot 默认忽略未知字段，后端未升级前向后兼容
     ...(focusBlockId ? { focusBlockId } : {}),
     ...(opts?.taskType ? { taskType: opts.taskType } : {}),
+    ...(opts?.promptHints ? { promptHints: opts.promptHints } : {}),
   };
 }
 

@@ -36,8 +36,8 @@ PWA（静态产物 + 零依赖 Node 代理层）以容器方式跑在 Cloud Run 
 ## 一键部署
 
 ```sh
-./scripts/deploy-cloud-run.sh <GCP项目ID>              # 默认区域 us-central1
-./scripts/deploy-cloud-run.sh <GCP项目ID> asia-east1   # 指定区域
+toolbox run dcr <GCP项目ID>              # 默认区域 us-central1
+toolbox run dcr <GCP项目ID> asia-east1   # 指定区域
 ```
 
 脚本会：设置项目 → 启用 run/cloudbuild/artifactregistry API →
@@ -69,7 +69,7 @@ PWA（静态产物 + 零依赖 Node 代理层）以容器方式跑在 Cloud Run 
 
 ```sh
 # 重新部署（源码变更后再跑一次脚本即可；仅 dist 需要重构建）
-./scripts/deploy-cloud-run.sh <GCP项目ID>
+toolbox run dcr <GCP项目ID>
 
 # 覆盖上游地址（例如把认证/OCR 指到另一个 Spring Boot 实例）
 gcloud run services update stock-calculator --region us-central1 \

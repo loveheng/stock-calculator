@@ -27,9 +27,11 @@ import {
   LogIn,
   LogOut,
   Search,
+  LayoutDashboard,
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
 import AuthGate from './components/ui/AuthGate';
+import Toast from './components/ui/Toast';
 import GlobalCopilot from './components/copilot/GlobalCopilot';
 import CopilotNoticeModal from './components/copilot/CopilotNoticeModal';
 import { useLoadCoreData } from './hooks/useDataLoader';
@@ -47,6 +49,7 @@ import WebDAVConfig from './views/WebDAVConfig';
 import SandboxPlayback from './views/SandboxPlayback';
 import BatchImport from './views/BatchImport';
 import NewsSearch from './views/NewsSearch';
+import StockCanvas from './views/StockCanvas';
 
 /**
  * 导航菜单配置项。
@@ -67,6 +70,7 @@ const NAV_ITEMS = [
   { path: '/fee-config', label: '费率配置', icon: Settings },
   { path: '/webdav', label: '云端同步', icon: Cloud },
   { path: '/batch-import', label: '批量导入', icon: ClipboardList },
+  { path: '/stock-canvas', label: 'AI 选股台', icon: LayoutDashboard },
 ];
 
 /**
@@ -237,6 +241,9 @@ function AppLayout() {
       {/* AI 动作全局强制提醒弹窗（V1 Action Pipeline：notify 动作落地态） */}
       <CopilotNoticeModal />
 
+      {/* 全局 Toast 宿主（app-toast CustomEvent 消费端，全页面共用） */}
+      <Toast />
+
       {/* 主内容区 */}
       <main className="main-area flex-1 min-h-screen w-full">
         {/* 顶部栏 */}
@@ -264,6 +271,7 @@ function AppLayout() {
             <Route path="/fee-config" element={<FeeConfig />} />
             <Route path="/webdav" element={<WebDAVConfig />} />
             <Route path="/batch-import" element={<BatchImport />} />
+            <Route path="/stock-canvas" element={<StockCanvas />} />
           </Routes>
         </div>
       </main>

@@ -8,6 +8,10 @@
 
 import Dexie, { type Table } from 'dexie';
 import type { BaseEntity, PositionEntity, PositionBatchEntity, PositionAdjustmentEntity, PositionEventEntity, CustomStatsResult } from '../types/domain';
+import type { CanvasBoardEntity, CanvasBlobEntity } from '../types/domain';
+
+// 自由画布实体（权威定义在 types/domain.ts；此处 re-export 保持既有导入路径兼容）
+export type { CanvasBoardEntity, CanvasBlobEntity };
 
 // 持仓相关实体（行级契约）已下沉 types/domain.ts 零依赖叶子；此处 re-export 保持既有导入路径兼容。
 // v9：positionAdjustments/positionEvents 两表实体同规则下沉（被 services/positionAdjustmentPort 引用，权威定义必须在 domain）
@@ -523,6 +527,13 @@ const STORES_V13 = {
   customStats: 'id, kind, pinned, pinnedAt, updatedAt, isDeleted',
 } as const;
 
+/** v15：新增 canvasBoards（自由画布）+ canvasBlobs（画布 Blob 存储）两表 */
+const STORES_V15 = {
+  ...STORES_V13,
+  canvasBoards: 'id, isDefault, updatedAt, isDeleted',
+  canvasBlobs: 'id, createdAt',
+} as const;
+
 /**
  * 交易账本 IndexedDB 数据库（Dexie 封装，库名 TradingLedgerDB_v3）。
  *
@@ -577,6 +588,12 @@ export class TradingLedgerDB extends Dexie {
   /** 自定义统计定义表（AI 生成代码，端上沙箱执行） */
   customStats!: Table<CustomStatEntity, string>;
 
+  /** 自由画布表（区块数组 JSON 内嵌列；一期单画布 isDefault=true） */
+  canvasBoards!: Table<CanvasBoardEntity, string>;
+
+  /** 画布 Blob 存储表（图片/文件二进制，区块 data 仅存引用 id） */
+  canvasBlobs!: Table<CanvasBlobEntity, string>;
+
   /**
    * 初始化数据库结构（版本链 v2→v11）。
    *
@@ -614,6 +631,7 @@ export class TradingLedgerDB extends Dexie {
     this.version(11).stores(STORES_V11 as Record<string, string | null>);
     this.version(12).stores(STORES_V12 as Record<string, string | null>);
     this.version(13).stores(STORES_V13 as Record<string, string | null>);
+    this.version(15).stores(STORES_V15 as Record<string, string | null>);
   }
 }
 

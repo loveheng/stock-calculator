@@ -44,6 +44,11 @@ import type {
   CustomStatDefinition,
   CustomStatsResult,
   HomeTimeRange,
+  CanvasBlock,
+  CanvasBlockType,
+  CanvasBlockData,
+  TrendLine,
+  HLine,
 } from '../types/domain';
 
 /** 自定义统计草稿（内存态单槽位，刷新即失；attempt = 第 N 版） */
@@ -112,7 +117,17 @@ export interface PendingCopilotAction {
   label: string;
   /** 动作参数（sanitize 阶段原样保留，执行器落地前按类型二次校验） */
   payload: Record<string, unknown>;
+  /** 入队时生成的人话摘要（思维流场景按载荷生成，如「给 A3 加水平线 12.50」） */
+  summary?: string;
 }
+
+/**
+ * 画布动作会话内降级集合（思维流机制）：confirm 级画布动作被用户执行过一次后，
+ * 同类型后续动作在本会话（内存态，刷新即失）内自动放行，不再逐条弹确认卡——
+ * 「一次确认、同类放行」，保持对话驱动画布的操作连续性。
+ * 仅放行 canvas_* 前缀动作（annotate_block 维持逐条确认，因其写的是分析结论）。
+ */
+export type CopilotApprovedCanvasTypes = Set<string>;
 
 /** 提问附加选项：任务类型路由与临时上下文键（自定义统计生成/迭代复用 sendMessage 通道） */
 export interface CopilotSendOptions {
@@ -307,6 +322,34 @@ export interface AppStoreActions {
   loadMoreKgTimeline: () => Promise<void>;
   /** 重置图谱时间轴状态回初始态（进行中的首拉/续拉一并作废；内存态，刷新即回初始态） */
   resetKgTimeline: () => void;
+
+  // -- 自由画布（Free Canvas） --
+  /** 加载默认画布（无则空画布；置 canvasLoaded=true） */
+  loadCanvas: () => Promise<void>;
+  /** 添加区块：分配标号（列优先不复用）+ 默认尺寸 + 首个空闲格；返回标号 */
+  addCanvasBlock: (type: CanvasBlockType, data?: CanvasBlockData[CanvasBlockType]) => string;
+  /** 删除区块（引用它的区块由视图层弹确认后一并降级处理） */
+  removeCanvasBlock: (blockId: string) => void;
+  /** 更新区块 data（整块替换该区块 data） */
+  updateCanvasBlockData: (blockId: string, data: CanvasBlockData[CanvasBlockType]) => void;
+  /** RGL onLayoutChange 回写布局（防抖落库） */
+  updateCanvasLayouts: (layouts: { blockId: string; layout: CanvasBlock['layout'] }[]) => void;
+  /** K线区块追加趋势线段（交易日吸附由组件层保证） */
+  addTrendLine: (blockId: string, line: Omit<TrendLine, 'id'>) => void;
+  /** K线区块追加水平线 */
+  addHLine: (blockId: string, line: Omit<HLine, 'id'>) => void;
+  /** 删除一条划线（kind: 'trend' | 'h'） */
+  removeDrawing: (blockId: string, kind: 'trend' | 'h', lineId: string) => void;
+  /** 清空区块全部划线 */
+  clearDrawings: (blockId: string) => void;
+  /** 追加备注（manual 手写 / ai 生成只读）；返回备注 id */
+  addBlockNote: (blockId: string, content: string, source: 'manual' | 'ai') => string;
+  /** 删除备注 */
+  removeBlockNote: (blockId: string, noteId: string) => void;
+  /** 行情保鲜：画布内全部 K 线区块绕内存缓存增量刷新；返回成功/失败标的 */
+  refreshCanvasKlines: () => Promise<{ ok: string[]; failed: string[] }>;
+  /** 动作消费队列：同 blockId 串行 + 执行最后一刻存活校验（不存在静默丢弃） */
+  runBlockTask: (blockId: string, task: () => Promise<void> | void) => Promise<void>;
 }
 
 /** 完整的 Store 状态 + Action */
@@ -323,6 +366,16 @@ export interface AppStore extends AppStoreActions {
   longTermRecords: LongTermRecord[];
   plannedOrders: PlannedOrder[];
   persistError: string | null;
+
+  // -- 自由画布（Free Canvas） --
+  /** 画布区块数组（唯一权威态；变更后 800ms 防抖整块写回 canvasBoards） */
+  canvasBlocks: CanvasBlock[];
+  /** 标号分配单调计数器（列优先协议，只增不减——删除不复用的保证） */
+  canvasLabelSeq: number;
+  /** 画布是否已完成首次加载 */
+  canvasLoaded: boolean;
+  /** 保存状态指示（工具条「保存中/已保存」） */
+  canvasSaveState: 'idle' | 'saving';
 
   // -- 服务端密文同步（登录即备份，M3） --
   /** 服务端推送进行中（UI 态镜像；跨标签页并发互斥由 services/serverSync 管线承担） */
@@ -417,6 +470,8 @@ export interface AppStore extends AppStoreActions {
   copilotNotice: { title: string; message: string; severity: 'info' | 'warning' | 'danger' } | null;
   /** 待确认动作队列（confirm 级，仅内存态，用户执行/忽略后出队） */
   pendingCopilotActions: PendingCopilotAction[];
+  /** 画布动作会话内降级集合：执行过一次的 canvas_* confirm 类型在此登记，后续同类自动放行（内存态，刷新即失） */
+  copilotApprovedCanvasTypes: CopilotApprovedCanvasTypes;
 
   // -- 事实数据变动提示（P0 时间隔离配套 UX） --
   /** 各 scope 上次提问时快照概览相对上上轮是否变化（提问时由 copilotSlice 重算；

@@ -187,30 +187,30 @@ function AccountArea() {
     return (
       <button
         onClick={() => setAuthModalOpen(true)}
-        className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+        className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-medium transition-colors"
       >
-        <LogIn className="w-3.5 h-3.5" />
+        <LogIn className="w-3 h-3" />
         登录
       </button>
     );
   }
 
   return (
-    <div className="ml-auto flex items-center gap-2 min-w-0">
-      {/* 头像常驻；显示名改为悬停展开（默认收拢，不占顶部栏空间），完整邮箱走 title 悬浮提示 */}
-      <div className="group flex items-center min-w-0 cursor-default" title={email}>
-        <UserAvatar email={email} size={26} />
-        <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-xs text-slate-300 opacity-0 transition-all duration-200 group-hover:ml-1.5 group-hover:max-w-[96px] group-hover:opacity-100">
-          {deriveDisplayName(email)}
-        </span>
-      </div>
-      <button
-        onClick={() => void logout()}
-        className="tap-target flex items-center justify-center w-8 h-8 rounded-full border border-slate-700 hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-400 text-slate-400 text-xs transition-colors"
-        title="退出登录（本地账本数据保留）"
-        aria-label="退出登录（本地账本数据保留）"
-      >
-        <LogOut className="w-3.5 h-3.5" />
+    <div className="ml-auto flex items-center gap-1.5 min-w-0">
+    {/* 头像常驻；显示名改为悬停展开（默认收拢，不占顶部栏空间），完整邮箱走 title 悬浮提示 */}
+    <div className="group flex items-center min-w-0 cursor-default" title={email}>
+      <UserAvatar email={email} size={22} />
+      <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[11px] text-slate-300 opacity-0 transition-all duration-200 group-hover:ml-1.5 group-hover:max-w-[80px] group-hover:opacity-100">
+        {deriveDisplayName(email)}
+      </span>
+    </div>
+    <button
+      onClick={() => void logout()}
+      className="tap-target flex items-center justify-center w-7 h-7 rounded-full border border-slate-700 hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-400 text-slate-400 text-[11px] transition-colors"
+      title="退出登录（本地账本数据保留）"
+      aria-label="退出登录（本地账本数据保留）"
+    >
+      <LogOut className="w-3 h-3" />
       </button>
     </div>
   );
@@ -298,7 +298,7 @@ function AppLayout() {
       {/* 主内容区 */}
       <main className="main-area flex-1 min-w-0 min-h-screen w-full">
         {/* 顶部栏 */}
-        <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-xl border-b border-slate-800 px-4 py-3 flex items-center gap-3 md:px-6">
+        <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-xl border-b border-slate-800 px-4 py-2 flex items-center gap-3 md:px-6">
           {/* 移动端：打开抽屉 */}
           <button
             className="menu-btn md:hidden p-2 rounded-lg hover:bg-slate-800 text-slate-400 transition-colors"
@@ -321,7 +321,7 @@ function AppLayout() {
               <PanelLeftClose className="w-5 h-5" />
             )}
           </button>
-          <h2 className="text-base font-semibold text-slate-200">{pageTitle}</h2>
+          <h2 className="text-sm font-semibold text-slate-200">{pageTitle}</h2>
           <AccountArea />
         </header>
 

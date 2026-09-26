@@ -11,6 +11,7 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff, Loader2, LogIn, UserPlus } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
+import { showToast } from '../../utils/toast';
 
 type Tab = 'login' | 'register';
 
@@ -30,8 +31,6 @@ export default function AuthModal() {
   const setAuthModalOpen = useAuthStore((s) => s.setAuthModalOpen);
   const setResetModalOpen = useAuthStore((s) => s.setResetModalOpen);
 
-  const showToast = (msg: string) =>
-    window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
 
   const switchTab = (next: Tab) => {
     setTab(next);

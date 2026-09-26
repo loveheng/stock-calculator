@@ -19,6 +19,7 @@ import { parseOcrFile, extractImageFromClipboard, revokeObjectUrl, validateImage
 import { loadStoredAuthSession } from '../../services/authSession';
 import { useAuthStore } from '../../store/useAuthStore';
 import { generateTxFingerprint } from '../../utils/dedup';
+import { showToast } from '../../utils/toast';
 import { mergeImportedTradesToPositions } from '../../utils/importMerger';
 import type { ImportDraftRow, GroupRiskLevel } from '../../types/import';
 import type { StockSearchItem } from '../../types/stock';
@@ -48,7 +49,7 @@ export default function BatchImportPage() {
   const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
-  const showToast = useCallback((msg: string, duration = 4000) => {
+  const showLocalToast = useCallback((msg: string, duration = 4000) => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     setToast(msg);
     requestAnimationFrame(() => requestAnimationFrame(() => setToastVisible(true)));
@@ -62,14 +63,14 @@ export default function BatchImportPage() {
   useEffect(() => {
     const handler = (e: Event) => {
       const msg = (e as CustomEvent<string>).detail;
-      showToast(msg, 4000);
+      showLocalToast(msg, 4000);
     };
     window.addEventListener('app-toast', handler);
     return () => {
       window.removeEventListener('app-toast', handler);
       if (toastTimer.current) window.clearTimeout(toastTimer.current);
     };
-  }, [showToast]);
+  }, [showLocalToast]);
 
   // 历史库指纹
   const history = useMemo(() => buildHistoryFromStore(positions, longTermRecords), [positions, longTermRecords]);
@@ -163,12 +164,12 @@ export default function BatchImportPage() {
   const handlePasteText = useCallback(async (text?: string) => {
     const txt = text ?? (await navigator.clipboard.readText().catch(() => ''));
     if (!txt) {
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: '⚠️ 剪贴板为空' }));
+      showToast('⚠️ 剪贴板为空');
       return;
     }
     const raw = parseClipboardText(txt);
     if (raw.length === 0) {
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: '⚠️ 剪贴板数据格式无法解析' }));
+      showToast('⚠️ 剪贴板数据格式无法解析');
       return;
     }
     const newRows = raw.map((r) => {
@@ -178,7 +179,7 @@ export default function BatchImportPage() {
     const deduped = completeDedupCheck(newRows, history);
     const missingCodeCount = newRows.filter((r) => !r.fullCode).length;
     setRows((prev) => [...prev, ...deduped]);
-    window.dispatchEvent(new CustomEvent('app-toast', { detail: '✅ 已导入 ' + newRows.length + ' 条交易' + (missingCodeCount > 0 ? '，其中 ' + missingCodeCount + ' 条缺少代码待补全' : '') }));
+    showToast('✅ 已导入 ' + newRows.length + ' 条交易' + (missingCodeCount > 0 ? '，其中 ' + missingCodeCount + ' 条缺少代码待补全' : ''));
   }, [positions, plannedOrders, history]);
 
   const handleFileDrop = useCallback(async (file: File) => {
@@ -189,12 +190,12 @@ export default function BatchImportPage() {
       // 前端图片预检
       const validation = await validateImage(file);
       if (!validation.valid) {
-        window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${validation.message}` }));
+        showToast(`❌ ${validation.message}`);
         return;
       }
       // 登录守门：/api/import 已纳入会话保护，未登录直接引导登录（避免拿到 401 再解释）
       if (!loadStoredAuthSession()?.token) {
-        window.dispatchEvent(new CustomEvent('app-toast', { detail: '⚠️ 交割单截图识别需登录，文本/CSV 粘贴导入无需登录' }));
+        showToast('⚠️ 交割单截图识别需登录，文本/CSV 粘贴导入无需登录');
         useAuthStore.getState().setAuthModalOpen(true);
         return;
       }
@@ -216,7 +217,7 @@ export default function BatchImportPage() {
 
       if (newRows.length === 0) {
         setOcrStatus({ loading: false, message: '' });
-        window.dispatchEvent(new CustomEvent('app-toast', { detail: '❌ 未能从截图中识别到有效的成交记录，请确认是否为已成交流水明细' }));
+        showToast('❌ 未能从截图中识别到有效的成交记录，请确认是否为已成交流水明细');
         return;
       }
 
@@ -224,10 +225,10 @@ export default function BatchImportPage() {
       const missingCodeCount = newRows.filter((r) => !r.fullCode).length;
       setRows((prev) => [...prev, ...deduped]);
       setOcrStatus({ loading: false, message: '✅ 成功识别出 ' + newRows.length + ' 笔成交记录' + (missingCodeCount > 0 ? '，其中 ' + missingCodeCount + ' 条缺少代码' : '') + '，请核对明细' });
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: '✅ 成功识别出 ' + newRows.length + ' 笔成交记录' + (missingCodeCount > 0 ? '，' + missingCodeCount + ' 条缺少代码待补全' : '') }));
+      showToast('✅ 成功识别出 ' + newRows.length + ' 笔成交记录' + (missingCodeCount > 0 ? '，' + missingCodeCount + ' 条缺少代码待补全' : ''));
     } catch (e: any) {
       setOcrStatus({ loading: false, message: '' });
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${e.message}` }));
+      showToast(`❌ ${e.message}`);
     }
   }, [positions, plannedOrders, history]);
 
@@ -266,9 +267,9 @@ export default function BatchImportPage() {
     const invalid = targetRows.filter((r) => !isCommitReady(r));
     if (valid.length === 0) {
       const hasMissingCode = invalid.some((r) => !r.fullCode);
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: hasMissingCode
+      showToast(hasMissingCode
         ? '⚠️ 所选记录缺少股票代码或数据不完整，请补全后再过账'
-        : '⚠️ 所选记录均被防重/风控拦截，没有可过账的数据' }));
+        : '⚠️ 所选记录均被防重/风控拦截，没有可过账的数据');
       return;
     }
     setCommitting(true);
@@ -313,7 +314,7 @@ export default function BatchImportPage() {
         ? '；' + invalid.length + ' 条不完整/歧义未过账（' + missingCodeCount + ' 条缺码），已保留待补全'
         : '；' + invalid.length + ' 条被防重/风控拦截未过账';
     }
-    window.dispatchEvent(new CustomEvent('app-toast', { detail: toastDetail }));
+    showToast(toastDetail);
   }, [positions, feeConfig, addBatch, addStreamRecord, addPosition, markPlanExecuted, plannedOrders]);
 
   const handleCommitAll = useCallback(() => handleCommitRows(rows), [handleCommitRows, rows]);

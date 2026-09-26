@@ -36,6 +36,7 @@ export const COPILOT_MOCK = import.meta.env.VITE_COPILOT_MOCK === '1';
 export type CopilotErrorSubCode =
   | 'CONTEXT_TOO_LARGE'
   | 'RATE_LIMIT_EXCEEDED'
+  | 'REQUEST_IN_FLIGHT'
   | 'UPSTREAM_ERROR'
   | 'SESSION_NOT_FOUND'
   | 'UNAUTHENTICATED'
@@ -45,6 +46,8 @@ export type CopilotErrorSubCode =
 const SUB_CODE_FEEDBACK: Record<CopilotErrorSubCode, { code: number; hint: string; retryable: boolean }> = {
   CONTEXT_TOO_LARGE: { code: 413, hint: '当前数据量较大，请缩小时间筛选范围后再试', retryable: false },
   RATE_LIMIT_EXCEEDED: { code: 429, hint: '今日 AI 调用已达上限，明日再试', retryable: false },
+  // 409 并发冲突：上一问仍在处理中（后端信封无 subCode，经 CODE_FALLBACK 兜底入此）
+  REQUEST_IN_FLIGHT: { code: 409, hint: '上一次提问仍在处理中，请稍后再试', retryable: true },
   UPSTREAM_ERROR: { code: 503, hint: 'AI 服务暂不可用，请稍后重试', retryable: true },
   SESSION_NOT_FOUND: { code: 404, hint: '会话已清理，请重新提问', retryable: true },
   UNAUTHENTICATED: { code: 401, hint: '请先登录后再使用 AI 助手', retryable: false },
@@ -57,6 +60,7 @@ const CODE_FALLBACK: Record<number, CopilotErrorSubCode> = {
   429: 'RATE_LIMIT_EXCEEDED',
   413: 'CONTEXT_TOO_LARGE',
   404: 'SESSION_NOT_FOUND',
+  409: 'REQUEST_IN_FLIGHT',
 };
 
 /** Copilot 统一错误：message 供 Toast/日志，hint 供失败气泡展示，retryable 决定是否出「重发」按钮 */
@@ -278,7 +282,7 @@ async function consumeAskStream(
       const subCode: CopilotErrorSubCode =
         payload.subCode && SUB_CODE_FEEDBACK[payload.subCode as CopilotErrorSubCode]
           ? (payload.subCode as CopilotErrorSubCode)
-          : 'UPSTREAM_ERROR';
+          : CODE_FALLBACK[payload.code ?? 0] ?? 'UPSTREAM_ERROR';
       throw new CopilotApiError(payload.code ?? 503, subCode, payload.message || SUB_CODE_FEEDBACK[subCode].hint);
     }
     // 未知事件忽略（向前兼容）

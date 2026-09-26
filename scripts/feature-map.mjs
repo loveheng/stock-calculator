@@ -35,12 +35,15 @@ const GROUPS = [
   ['calc（涨跌幅计算器）', ['changerate']],
   ['copilot（AI 助手）', ['copilot', 'pagecontext']],
   ['guide（选股引导）', ['guide', 'briefcard']],
-  ['canvas（自由画布/AI 选股台）', ['canvas', 'stockcanvas', 'widgetdsl']],
-  ['announcement（公告订阅）', ['announcement']],
+  ['canvas（自由画布/AI 选股台）', ['canvas', 'stockcanvas', 'widgetdsl', 'brokerservice']],
+  ['announcement（公告订阅）', ['announcement', 'pushnotice', 'pushservice']],
+  ['monitor（价格预告单监控/通知管理）', ['monitor', 'settings']],
   ['customstat（自定义统计）', ['customstat']],
   ['search（资讯搜索）', ['search', 'newssearch']],
   ['kg（新闻联播图谱）', ['kgpanel', 'kgtimeline', 'kgentity', 'kgevent', 'kgshared', 'kgservice', 'kgslice', 'kgtext', 'types/kg']],
-  ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'usedataloader', 'bootstrap', 'persistence', 'store/index', 'store/types', 'store/utils', 'db/index', 'db/schema', 'domain', 'installprompt', 'confirmmodal', 'toast', 'migration', 'cleanundefined', 'idgenerator']],
+  // shared 置于具体业务域之后、app 之前（先具体后一般）：跨页复用资产，避免被单业务域抢组
+  ['shared（公共 UI/共享资产）', ['modetabs', 'emptystate', 'useplanexecutor', 'planfilter', 'toast']],
+  ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'usedataloader', 'bootstrap', 'persistence', 'store/index', 'store/types', 'store/utils', 'db/index', 'db/schema', 'domain', 'installprompt', 'confirmmodal', 'migration', 'cleanundefined', 'idgenerator']],
 ];
 
 const ROLES = [

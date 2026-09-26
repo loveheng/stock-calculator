@@ -239,6 +239,8 @@ export interface CanvasBlockData {
   file: {
     fileName: string;
     fileType: string;
+    /** 文件字节数（文档区块元信息条展示；存量块无此字段按缺省处理） */
+    fileSize?: number;
     /** canvasBlobs 表引用 id */
     dataRef?: string;
   };
@@ -387,6 +389,16 @@ export interface CanvasBoardEntity {
   createdAt: string;
   updatedAt: string;
   isDeleted?: boolean;
+}
+
+/** 画布列表项（轻量元数据：blocks 不进列表态，避免整块大对象常驻内存） */
+export interface CanvasBoardMeta {
+  id: string;
+  title: string;
+  /** 区块数量（列表卡片展示用） */
+  blockCount: number;
+  updatedAt: string;
+  isDefault: boolean;
 }
 
 /** 画布 Blob 存储实体（canvasBlobs 表，行级契约）：图片/文件二进制，区块 data 仅存引用 id */

@@ -17,7 +17,7 @@ import type { CanvasBlock } from '../../types/domain';
 const TYPE_LABEL: Record<CanvasBlock['type'], string> = {
   kline: 'K线',
   table: '表格',
-  file: '文件',
+  file: '文档',
   chart: '图表',
   metric: '指标',
   image: '图片',

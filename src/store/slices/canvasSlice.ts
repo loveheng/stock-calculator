@@ -21,7 +21,17 @@ import type {
 import { nextBlockId, nextLayout } from '../../utils/canvasLayout';
 import { getCanvasTemplate } from '../../utils/canvasTemplates';
 import { safePersist } from '../../utils/persistence';
-import { saveBoard, loadBoard, refreshAllKlines } from '../../services/canvasService';
+import {
+  saveBoard,
+  loadBoard,
+  refreshAllKlines,
+  listBoards,
+  createBoard,
+  renameBoard,
+  deleteBoard,
+  ensureDefaultBoard,
+  DEFAULT_CANVAS_ID,
+} from '../../services/canvasService';
 import { generateId } from '../../utils/idGenerator';
 import type { AppStore } from '../types';
 
@@ -31,19 +41,19 @@ const PERSIST_DEBOUNCE_MS = 800;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * 防抖调度：触发时读取最新 blocks + labelSeq 整块写回（每次触发重置计时器）。
+ * 防抖调度：触发时读取最新 blocks + labelSeq 整块写回当前画布（每次触发重置计时器）。
  * @param getState - 触发时刻的状态读取器（防抖窗口内的多次变更合并为一次落库）
  * @param onSettled - 落库结算回调（保存态指示翻转用）
  */
 function scheduleCanvasPersist(
-  getState: () => { blocks: CanvasBlock[]; labelSeq: number },
+  getState: () => { boardId: string; blocks: CanvasBlock[]; labelSeq: number },
   onSettled?: () => void,
 ): void {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    const { blocks, labelSeq } = getState();
-    void safePersist(() => saveBoard(blocks, labelSeq))
+    const { boardId, blocks, labelSeq } = getState();
+    void safePersist(() => saveBoard(blocks, labelSeq, boardId))
       .then(() => onSettled?.())
       .catch(() => onSettled?.());
   }, PERSIST_DEBOUNCE_MS);
@@ -74,6 +84,11 @@ function enqueueBlockTask(blockId: string, task: () => Promise<void> | void): Pr
 export type CanvasSlice = Pick<
   AppStore,
   | 'loadCanvas'
+  | 'loadCanvasBoards'
+  | 'switchCanvasBoard'
+  | 'createCanvasBoard'
+  | 'renameCanvasBoard'
+  | 'deleteCanvasBoard'
   | 'addCanvasBlock'
   | 'removeCanvasBlock'
   | 'updateCanvasBlockData'
@@ -89,11 +104,14 @@ export type CanvasSlice = Pick<
 >;
 
 export const createCanvasSlice: StateCreator<AppStore, [], [], CanvasSlice> = (set, get) => {
+  /** 落库目标画布 id（首载完成前为空，兜底默认画布，杜绝写入空 id 行） */
+  const targetBoardId = () => get().canvasBoardId || DEFAULT_CANVAS_ID;
+
   /** 统一变更出口：set 新 blocks → 防抖落库（保存态指示同步翻转） */
   const applyBlocks = (blocks: CanvasBlock[]) => {
     set({ canvasBlocks: blocks, canvasSaveState: 'saving' });
     scheduleCanvasPersist(
-      () => ({ blocks: get().canvasBlocks, labelSeq: get().canvasLabelSeq }),
+      () => ({ boardId: targetBoardId(), blocks: get().canvasBlocks, labelSeq: get().canvasLabelSeq }),
       () => {
         // 防抖窗口内无新调度才回 idle（否则保持 saving）
         if (!persistTimer) set({ canvasSaveState: 'idle' });
@@ -101,15 +119,90 @@ export const createCanvasSlice: StateCreator<AppStore, [], [], CanvasSlice> = (s
     );
   };
 
+  /** 取消待执行的防抖落库（用于删除当前画布：目标即将消失，无需补写） */
+  const cancelPendingPersist = () => {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+  };
+
+  /** 立即落盘当前画布（切换/新建画布前调用，避免防抖窗口内的变更写进另一块画布） */
+  const flushPersist = async () => {
+    cancelPendingPersist();
+    const { canvasBlocks, canvasLabelSeq } = get();
+    await safePersist(() => saveBoard(canvasBlocks, canvasLabelSeq, targetBoardId()));
+  };
+
   return {
     loadCanvas: async () => {
-      const board = await loadBoard();
+      // 兜底：确保至少有一块画布（存量单画布数据即 DEFAULT_CANVAS_ID，天然成为列表首块）
+      const boardId = await ensureDefaultBoard();
+      const [board, boards] = await Promise.all([loadBoard(boardId), listBoards()]);
       set({
+        canvasBoardId: boardId,
+        canvasBoards: boards,
         canvasBlocks: board?.blocks ?? [],
         canvasLabelSeq: board?.labelSeq ?? 0,
         canvasLoaded: true,
         canvasSaveState: 'idle',
       });
+    },
+
+    loadCanvasBoards: async () => {
+      set({ canvasBoards: await listBoards() });
+    },
+
+    switchCanvasBoard: async (boardId) => {
+      if (boardId === get().canvasBoardId) return;
+      await flushPersist();
+      const board = await loadBoard(boardId);
+      set({
+        canvasBoardId: boardId,
+        canvasBlocks: board?.blocks ?? [],
+        canvasLabelSeq: board?.labelSeq ?? 0,
+        canvasSaveState: 'idle',
+      });
+    },
+
+    createCanvasBoard: async (title) => {
+      await flushPersist();
+      const board = await createBoard(title?.trim() || '新建画布');
+      set({
+        canvasBoardId: board.id,
+        canvasBoards: await listBoards(),
+        canvasBlocks: [],
+        canvasLabelSeq: 0,
+        canvasSaveState: 'idle',
+      });
+      return board.id;
+    },
+
+    renameCanvasBoard: async (boardId, title) => {
+      await renameBoard(boardId, title.trim() || '未命名画布');
+      set({ canvasBoards: await listBoards() });
+    },
+
+    deleteCanvasBoard: async (boardId) => {
+      cancelPendingPersist();
+      await deleteBoard(boardId);
+      let boards = await listBoards();
+      // 删光了 → 重建默认画布，保证永远有画布可画
+      if (boards.length === 0) {
+        await ensureDefaultBoard();
+        boards = await listBoards();
+      }
+      // 删的是当前画布 → 切到列表首块（默认画布优先）
+      if (boardId === get().canvasBoardId) {
+        const next = await loadBoard(boards[0].id);
+        set({
+          canvasBoardId: boards[0].id,
+          canvasBlocks: next?.blocks ?? [],
+          canvasLabelSeq: next?.labelSeq ?? 0,
+          canvasSaveState: 'idle',
+        });
+      }
+      set({ canvasBoards: boards });
     },
 
     addCanvasBlock: (type, data) => {

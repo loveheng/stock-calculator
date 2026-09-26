@@ -29,6 +29,8 @@ import type {
   SearchScope,
 } from '../types/search';
 import IntentFilterTabs from '../components/search/IntentFilterTabs';
+import ModeTabs from '../components/ui/ModeTabs';
+import SwipeTabPanel from '../components/ui/SwipeTabPanel';
 import PromptTemplates from '../components/search/PromptTemplates';
 import StockProfileCard from '../components/search/StockProfileCard';
 import ResultCardList from '../components/search/ResultCardList';
@@ -44,6 +46,10 @@ const MODE_TABS: Array<{ id: NewsPageMode; label: string; icon: typeof Search }>
   { id: 'search', label: '资讯检索', icon: Newspaper },
   { id: 'kg', label: '新闻联播图谱', icon: Network },
 ];
+
+/** 滑动切换顺序（与 Tab 条视觉顺序一致） */
+const NEWS_TAB_ORDER: readonly NewsPageMode[] = MODE_TABS.map((t) => t.id);
+
 
 const SCOPE_LABEL: Record<SearchScope, string> = {
   announcement: '持仓公告',
@@ -268,33 +274,14 @@ export default function NewsSearch() {
   return (
     <div className="space-y-4">
       {/* 页级模式切换：资讯检索 / 新闻联播图谱 */}
-      <div className="flex gap-2 overflow-x-auto py-0.5" role="tablist" aria-label="资讯页模式">
-        {MODE_TABS.map(({ id, label, icon: Icon }) => {
-          const active = id === mode;
-          return (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => setMode(id)}
-              className={`tap-target flex flex-shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-xs font-semibold transition-colors ${
-                active
-                  ? 'border-blue-500/40 bg-blue-600/20 text-blue-200'
-                  : 'border-slate-800 bg-slate-900/60 text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              {label}
-            </button>
-          );
-        })}
-      </div>
+      <ModeTabs tabs={MODE_TABS} value={mode} onChange={setMode} ariaLabel="资讯页模式" />
 
-      {mode === 'kg' ? (
-        <KgPanel />
-      ) : (
-        <>
+      {/* 内容区左右滑动切换模式（移动端 Pivot 手势；桌面无 touch 不生效） */}
+      <SwipeTabPanel order={NEWS_TAB_ORDER} value={mode} onChange={setMode}>
+        {mode === 'kg' ? (
+          <KgPanel />
+        ) : (
+          <>
       {/* 搜索框 + 预置模板（D8 三不原则：永不弹空白 Chat） */}
       <div className="card space-y-3">
         <div className="flex gap-2">
@@ -426,6 +413,7 @@ export default function NewsSearch() {
       )}
         </>
       )}
+      </SwipeTabPanel>
     </div>
   );
 }

@@ -107,7 +107,8 @@ export const useAppStore = create<AppStore>()((...a) => ({
   kgKeyword: null, kgEntityId: null, kgEntityName: null,
 
   // 自由画布（区块态唯一权威在 canvasBlocks；800ms 防抖整块写回 canvasBoards）
-  canvasBlocks: [], canvasLabelSeq: 0, canvasLoaded: false, canvasSaveState: 'idle',
+  // canvasBoardId 由 loadCanvas 兜底赋值（ensureDefaultBoard 保证至少一块）
+  canvasBoardId: '', canvasBoards: [], canvasBlocks: [], canvasLabelSeq: 0, canvasLoaded: false, canvasSaveState: 'idle',
 
   ...createCoreSlice(...a),
   ...createStreamsSlice(...a),

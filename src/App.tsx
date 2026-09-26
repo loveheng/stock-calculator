@@ -11,7 +11,7 @@
  */
 
 import React, { useState } from 'react';
-import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
   Home,
   BarChart3,
@@ -33,12 +33,14 @@ import {
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
 import AuthGate from './components/ui/AuthGate';
+import UserAvatar from './components/ui/UserAvatar';
 import Toast from './components/ui/Toast';
 import GlobalCopilot from './components/copilot/GlobalCopilot';
 import CopilotNoticeModal from './components/copilot/CopilotNoticeModal';
 import { useLoadCoreData } from './hooks/useDataLoader';
 import { useAppStore } from './store';
 import { useAuthStore } from './store/useAuthStore';
+import { deriveDisplayName } from './utils/userIdentity';
 
 // --- 页面视图导入（静态导入，非懒加载） ---
 import HomePage from './views/Home';
@@ -46,7 +48,7 @@ import ChangeRate from './views/ChangeRate';
 import TCalculator from './views/TCalculator';
 import CostAveraging from './views/CostAveraging';
 import Statistics from './views/Statistics';
-import FeeConfig from './views/FeeConfig';
+import SettingsPage from './views/Settings';
 import WebDAVConfig from './views/WebDAVConfig';
 import SandboxPlayback from './views/SandboxPlayback';
 import BatchImport from './views/BatchImport';
@@ -69,7 +71,7 @@ const NAV_ITEMS = [
   { path: '/news', label: '资讯', icon: Search },
   { path: '/sandbox', label: '沙盘复盘', icon: FlaskConical },
   { path: '/statistics', label: '数据统计', icon: PieChart },
-  { path: '/fee-config', label: '费率配置', icon: Settings },
+  { path: '/settings', label: '设置', icon: Settings },
   { path: '/webdav', label: '云端同步', icon: Cloud },
   { path: '/batch-import', label: '批量导入', icon: ClipboardList },
   { path: '/stock-canvas', label: 'AI 选股台', icon: LayoutDashboard },
@@ -167,8 +169,8 @@ function Sidebar({ onNavigate, collapsed }: { onNavigate: () => void; collapsed:
 /**
  * 顶部栏右侧账户入口（E2EE 鉴权 D6）。
  *
- * @description 未登录 → "登录"按钮打开 AuthModal；已登录 → 邮箱 + 退出按钮。
- *              initialized 前渲染同宽占位，避免会话恢复期间闪烁。
+ * @description 未登录 → "登录"按钮打开 AuthModal；已登录 → 邮箱派生头像（显示名默认收拢、
+ *              悬停展开）+ 圆形退出按钮。initialized 前渲染同宽占位，避免会话恢复期间闪烁。
  *              登出仅销毁会话与密钥缓存，本地 Dexie 账本数据保留。
  */
 // ---- 顶部栏账户区 ----
@@ -179,7 +181,7 @@ function AccountArea() {
   const setAuthModalOpen = useAuthStore((s) => s.setAuthModalOpen);
   const logout = useAuthStore((s) => s.logout);
 
-  if (!initialized) return <div className="ml-auto w-[76px]" aria-hidden="true" />;
+  if (!initialized) return <div className="ml-auto w-[66px]" aria-hidden="true" />;
 
   if (!isAuthenticated) {
     return (
@@ -195,19 +197,20 @@ function AccountArea() {
 
   return (
     <div className="ml-auto flex items-center gap-2 min-w-0">
-      <span
-        className="text-xs text-slate-400 truncate max-w-[160px] hidden sm:inline"
-        title={email}
-      >
-        {email}
-      </span>
+      {/* 头像常驻；显示名改为悬停展开（默认收拢，不占顶部栏空间），完整邮箱走 title 悬浮提示 */}
+      <div className="group flex items-center min-w-0 cursor-default" title={email}>
+        <UserAvatar email={email} size={26} />
+        <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-xs text-slate-300 opacity-0 transition-all duration-200 group-hover:ml-1.5 group-hover:max-w-[96px] group-hover:opacity-100">
+          {deriveDisplayName(email)}
+        </span>
+      </div>
       <button
         onClick={() => void logout()}
-        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-700 hover:border-red-500/60 hover:text-red-400 text-slate-400 text-xs transition-colors"
+        className="tap-target flex items-center justify-center w-8 h-8 rounded-full border border-slate-700 hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-400 text-slate-400 text-xs transition-colors"
         title="退出登录（本地账本数据保留）"
+        aria-label="退出登录（本地账本数据保留）"
       >
         <LogOut className="w-3.5 h-3.5" />
-        退出
       </button>
     </div>
   );
@@ -332,7 +335,9 @@ function AppLayout() {
             <Route path="/news" element={<NewsSearch />} />
             <Route path="/sandbox" element={<SandboxPlayback />} />
             <Route path="/statistics" element={<Statistics />} />
-            <Route path="/fee-config" element={<FeeConfig />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            {/* 旧入口兼容：费率配置已并入设置页子菜单 */}
+            <Route path="/fee-config" element={<Navigate to="/settings" replace />} />
             <Route path="/webdav" element={<WebDAVConfig />} />
             <Route path="/batch-import" element={<BatchImport />} />
             <Route path="/stock-canvas" element={<StockCanvas />} />

@@ -27,6 +27,15 @@
  *   （不在剔除名单内），无 Cookie/CSRF 面。
  *   本地开发时由 Vite 的 server.proxy 完成同等转发。
  *
+ * 【同源后端业务路由清单（防漏配）】
+ *   与 /api/auth 同源（同一 Spring Boot）的业务路由共 8 条：auth / announcement /
+ *   search / kg / broker / guide / copilot / sync。**新增路由必须同时改两处**：
+ *   ① 本文件 UPSTREAMS 映射表；② 底部 config.matcher。
+ *   只改 UPSTREAMS 不改 matcher = Vercel 根本不触发中间件，请求被 vercel.json
+ *   的全量 rewrite 回落到 index.html（HTTP 200 + HTML，前端 JSON 解析失败）；
+ *   该坑已三度复现（guide 2026-09-26 / copilot / sync）。
+ *   本地开发时均由 Vite 的 server.proxy 完成同等转发（见 vite.config.ts）。
+ *
  * 【设计】
  *   1. OPTIONS 预检直接返回 200（解决 405）。
  *   2. 静态上游注入业务头（Referer / User-Agent 等），剥离 Vercel 内部头
@@ -106,6 +115,20 @@ const UPSTREAMS = {
     headers: {},
     stripPrefix: false,
   },
+  // Copilot AI 助手代理（SSE 流式响应透传；保留原始路径前缀，不剥离 /api/copilot；
+  // 与 /api/auth 同源部署——缺此条目时线上提问会落到 SPA 回落返回 index.html）
+  '/api/copilot': {
+    base: PROXY_UPSTREAMS.online.auth,
+    headers: {},
+    stripPrefix: false,
+  },
+  // 服务端密文同步代理（登录即备份；保留原始路径前缀，不剥离 /api/sync；
+  // 与 /api/auth 同源部署，保证 Bearer token 互认）
+  '/api/sync': {
+    base: PROXY_UPSTREAMS.online.auth,
+    headers: {},
+    stripPrefix: false,
+  },
   // 选股引导（画布 brief 个股档案块取数通道；保留原始路径前缀，不剥离 /api/guide；
   // 与 /api/broker 同源部署——缺此条目时线上 brief 块取数会落到 SPA 回落，同 vite 代理 2026-09-26 之坑）
   '/api/guide': {
@@ -161,8 +184,25 @@ export const config = {
     '/api/search/:path*',
     '/api/kg/:path*',
     '/api/broker/:path*',
+    '/api/guide/:path*',
+    '/api/copilot/:path*',
+    '/api/sync/:path*',
   ],
 };
+
+// --------------------------------------------------------------
+// 漏配自检（非致命）：UPSTREAMS 每条路由都必须在 matcher 有对应条目。
+// 漏配 = Vercel 不触发中间件 → vercel.json 全量 rewrite 回落 index.html
+// （HTTP 200 + HTML，前端 JSON 解析失败报「服务响应异常」），该坑已三度复现。
+// 只 console.warn 不 throw：误判不应放大成整站不可用，靠部署日志暴露。
+// --------------------------------------------------------------
+const MATCHED_PREFIXES = new Set(config.matcher.map((m) => m.replace(/\/:path\*$/, '')));
+const UNMATCHED_ROUTES = Object.keys(UPSTREAMS).filter((p) => !MATCHED_PREFIXES.has(p));
+if (UNMATCHED_ROUTES.length > 0) {
+  console.warn(
+    `[middleware] 已配上游但未配 matcher 的路由：${UNMATCHED_ROUTES.join(', ')}——线上会回落 SPA 返回 HTML`,
+  );
+}
 
 // ============================================================
 // 3. 中间件处理函数

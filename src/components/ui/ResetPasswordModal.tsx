@@ -17,14 +17,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Eye, EyeOff, KeyRound, Loader2, MailCheck } from 'lucide-react';
 import { validateMnemonic } from '../../services/mnemonicService';
 import { useAuthStore } from '../../store/useAuthStore';
+import { showToast } from '../../utils/toast';
 
 type Step = 'email' | 'verify';
 
 const RESEND_COOLDOWN_S = 60;
 
-function showToast(msg: string): void {
-  window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
-}
 
 export default function ResetPasswordModal() {
   const requestRecoveryCode = useAuthStore((s) => s.requestRecoveryCode);

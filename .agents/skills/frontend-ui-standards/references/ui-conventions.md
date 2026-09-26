@@ -130,3 +130,101 @@ Wrap unrelated header actions (订阅公告 / 问AI / 删除) in one group and s
   {/* chevron lives OUTSIDE this group so header-click still toggles */}
 </div>
 ```
+
+---
+
+## 5. Reuse-first: shared building blocks
+
+Look these up (via `stock-calculator-index`) before writing anything new. Reuse, don't re-derive.
+Names below are component names; resolve the exact file path with the index skill.
+
+| Need | Use | Notes |
+|------|-----|-------|
+| Page/section tab switcher | `ModeTabs` | `variant`: `outline` (page-level, e.g. 资讯/AI 选股台) · `solid` (filter scope) · `segmented` (equal-width, reuses `.tab-bar`/`.tab-btn`) |
+| Page-level swipe container | `SwipeTabPanel` | wraps the active submenu panel; `order` (ids in visual order) + `value` + `onChange` mirror `ModeTabs`; inner horizontal-scroll/drag children tag `data-swipe-ignore` |
+| Empty list / no data | `EmptyState` | `variant`: `card` · `dashed` · `panel`; `icon` / `title` / `description` / `action` |
+| Confirm dialog | `ConfirmModal` | `confirmLabel` or `confirmText`, `danger` |
+| Plan order cards | `PlanOrderList` (wraps `PlanOrderCard`) | own domain `components/plan/`; inject `quotes` if the page already polls |
+| Plan execution | hook `usePlanExecutor` | options: `silent` (page has its own toast) · `requirePosition` · `onExecuted` (page-specific side effects, e.g. 履约审计) |
+| Plan filter predicate | `filterDisplayablePlans` / `filterActivePlans` (`utils`) | single source of the 3-day display window; views and Copilot snapshots must share it |
+| Toast | `showToast` (`utils`) | never inline `window.dispatchEvent(new CustomEvent('app-toast', …))` |
+
+### ModeTabs (the only `rounded-full` allowed)
+
+```tsx
+// module-level constant: keeps the array identity stable
+const MODE_TABS: Array<{ id: PageMode; label: string; icon: typeof LayoutGrid }> = [
+  { id: 'plans', label: '计划单', icon: ClipboardList },
+  { id: 'boards', label: '画布列表', icon: Layers },
+  { id: 'canvas', label: '画布', icon: LayoutGrid },
+];
+
+<ModeTabs tabs={MODE_TABS} value={mode} onChange={setMode} ariaLabel="AI 选股台模式" />
+<ModeTabs tabs={TABS} value={scope} onChange={onChange} ariaLabel="检索范围" variant="solid" />
+<ModeTabs tabs={LEDGER_TABS} value={tab} onChange={setTab} ariaLabel="仓位管理模式" variant="segmented" />
+```
+
+- Mode is a **memory-state** switch (`useState`), not a route and not a store slice — switching tabs must not unmount-and-lose the underlying data (that state lives in its own slice).
+- 3 variants is the ceiling; a 4th tab shape = new component.
+- For **page-level peer sections** (multiple switchable blocks on one page), pair `ModeTabs` with
+  `SwipeTabPanel` so mobile users swipe between sections — see §6.
+
+---
+
+## 6. Page-level submenu + swipe (ModeTabs + SwipeTabPanel)
+
+When a page has multiple **peer** sections the user switches between, render them as a page-level
+submenu, NOT a hand-written `<div className="flex ...">` button row:
+
+```tsx
+import type { ElementType } from 'react';
+import { Wallet, Target } from 'lucide-react';
+import ModeTabs from '../components/ui/ModeTabs';
+import SwipeTabPanel from '../components/ui/SwipeTabPanel';
+
+type CostTab = 'ledger' | 'target';
+
+// module-level constant: stable array identity across renders
+const COST_TABS: ReadonlyArray<{ id: CostTab; label: string; icon: ElementType }> = [
+  { id: 'ledger', label: '仓位管理', icon: Wallet },
+  { id: 'target', label: '目标成本推算', icon: Target },
+];
+// swipe order MUST match the visual order of ModeTabs tabs
+const COST_TAB_ORDER: readonly CostTab[] = COST_TABS.map((t) => t.id);
+
+export default function CostAveraging() {
+  const [tab, setTab] = useState<CostTab>('ledger');
+
+  return (
+    <div className="page-container space-y-5 pb-[env(safe-area-inset-bottom)]">
+      {/* page-level submenu (mobile: swipe to switch) */}
+      <ModeTabs tabs={COST_TABS} value={tab} onChange={setTab} ariaLabel="中长期交易子菜单" />
+
+      <SwipeTabPanel order={COST_TAB_ORDER} value={tab} onChange={setTab} className="space-y-5">
+        {tab === 'ledger' ? <PositionLedger /> : <TargetCostCalculator />}
+      </SwipeTabPanel>
+    </div>
+  );
+}
+```
+
+- Render **only the active panel** inside `SwipeTabPanel` (single child, a ternary on `tab`); each
+  panel component renders its own `space-y-4` container — do not also wrap them in an outer `.card`
+  with a redundant `<h3>` title.
+- Inner children that need their own horizontal scroll/drag (wide tables, canvas RGL blocks) must
+  be tagged `data-swipe-ignore` so the gesture hands off to inner scrolling (see `SwipeTabPanel` doc).
+- Exact component paths resolve via the `stock-calculator-index` skill; do not hardcode volatile paths.
+
+### EmptyState
+
+```tsx
+<EmptyState icon={ClipboardList} title="暂无计划单" description="在交易页创建计划后，会在这里统一跟进" />
+<EmptyState variant="dashed" title="暂无计划单，创建后可在执行前看到价格对比变化" />
+<EmptyState variant="panel" title="暂无仓位数据" />
+```
+
+### Duplication markers (Rule of Three)
+
+- 2nd occurrence of a **structural** twin → leave `// TODO-REUSE: <candidate name>`.
+- A **verbatim copy** is extracted immediately at the 2nd occurrence — no marker needed.
+- After extracting: `npx tsc --noEmit` + `npx vitest run` + `node scripts/check-layers.mjs`.

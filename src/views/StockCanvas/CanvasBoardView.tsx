@@ -1,15 +1,14 @@
 /**
- * @file StockCanvas.tsx
- * @description AI 选股台 · 自由画布页（spec §二）：顶部工具条（保存态/刷新行情/AI 助手）+
- *              左侧模板面板（八类模板，点击添加）+ RGL 网格画布区（拖拽/缩放/自由排列）+
- *              空画布引导（spec §十）。AI 上下文经 useCanvasContext 注册（scopeId=canvas），
- *              聊天复用全局 GlobalCopilot 浮窗。
- * @layer UI
+ * @file CanvasBoardView.tsx
+ * @description AI 选股台 · 画布 Tab：顶部工具条（当前画布名/保存态/刷新行情/AI 助手）+
+ *              RGL 网格画布区（拖拽/缩放/自由排列）+ 空画布引导（模板网格 / 对话创建）。
+ *              由 StockCanvas/index.tsx（页级 Tab 壳层）持有；加载画布由壳层统一触发。
+ * @layer View
  * @storage_impact 经 store canvasSlice 读写（800ms 防抖落库 canvasBoards）；本组件不直连 db。
  * @author 开发团队
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import GridLayout, { type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import {
@@ -17,14 +16,13 @@ import {
   Bot,
   Plus,
 } from 'lucide-react';
-import { useAppStore } from '../store';
-import { useCanvasContext } from '../hooks/useCanvasContext';
-import { CANVAS_GRID, DEFAULT_LAYOUT } from '../utils/canvasLayout';
-import type { CanvasBlock, CanvasBlockType } from '../types/domain';
-import { CANVAS_TEMPLATES } from '../utils/canvasTemplates';
-import CanvasBlockFrame from '../components/canvas/CanvasBlockFrame';
-import CanvasBlockContent from '../components/canvas/CanvasBlockContent';
-import ConfirmModal from '../components/ui/ConfirmModal';
+import { useAppStore } from '../../store';
+import { CANVAS_GRID } from '../../utils/canvasLayout';
+import type { CanvasBlock, CanvasBlockType } from '../../types/domain';
+import { CANVAS_TEMPLATES } from '../../utils/canvasTemplates';
+import CanvasBlockFrame from '../../components/canvas/CanvasBlockFrame';
+import CanvasBlockContent from '../../components/canvas/CanvasBlockContent';
+import ConfirmModal from '../../components/ui/ConfirmModal';
 
 /** 手动入口模板条目——注册表派生（单一事实源 utils/canvasTemplates）；aiOnly 模板（widget）不进手动入口，仅 canvas_add_widget 动作可创建 */
 const TEMPLATES: { type: CanvasBlockType; label: string; icon: React.ElementType }[] = (
@@ -36,7 +34,7 @@ const TEMPLATES: { type: CanvasBlockType; label: string; icon: React.ElementType
  */
 function useContainerWidth(ref: React.RefObject<HTMLDivElement | null>): number {
   const [width, setWidth] = useState(0);
-  useEffect(() => {
+  React.useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
@@ -50,17 +48,16 @@ function useContainerWidth(ref: React.RefObject<HTMLDivElement | null>): number 
 }
 
 /**
- * AI 选股台 · 自由画布页面组件。
+ * AI 选股台 · 画布 Tab 内容组件。
  *
- * @description 挂载时 loadCanvas（一次性）；区块布局经 RGL onLayoutChange 回写
- *              （与现态 diff 后才写，防回环）；删除区块时若被其他区块引用则弹级联确认。
+ * @description 区块布局经 RGL onLayoutChange 回写（与现态 diff 后才写，防回环）；
+ *              删除区块时若被其他区块引用则弹级联确认。
  * @returns {JSX.Element} 自由画布视图
  */
-export default function StockCanvas() {
+export default function CanvasBoardView() {
   const canvasBlocks = useAppStore((s) => s.canvasBlocks);
-  const canvasLoaded = useAppStore((s) => s.canvasLoaded);
   const canvasSaveState = useAppStore((s) => s.canvasSaveState);
-  const loadCanvas = useAppStore((s) => s.loadCanvas);
+  const boardTitle = useAppStore((s) => s.canvasBoards.find((b) => b.id === s.canvasBoardId)?.title ?? '自由画布');
   const addCanvasBlock = useAppStore((s) => s.addCanvasBlock);
   const removeCanvasBlock = useAppStore((s) => s.removeCanvasBlock);
   const updateCanvasLayouts = useAppStore((s) => s.updateCanvasLayouts);
@@ -73,12 +70,6 @@ export default function StockCanvas() {
   const [pendingRemove, setPendingRemove] = useState<CanvasBlock | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const width = useContainerWidth(canvasRef);
-
-  useCanvasContext();
-
-  useEffect(() => {
-    if (!canvasLoaded) void loadCanvas();
-  }, [canvasLoaded, loadCanvas]);
 
   // RGL 布局（i=blockId；minW/minH 按 §七 网格参数）
   const rglLayout: Layout = useMemo(
@@ -158,16 +149,16 @@ export default function StockCanvas() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] gap-3">
+    <div className="flex h-full gap-3">
       {/* 主区：工具条 + 画布（模板面板已移除——添加入口收敛到工具条「+ 添加」下拉与空态模板网格） */}
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-2">
-          <h2 className="text-sm font-semibold text-slate-200">自由画布</h2>
-          <span className="text-xs text-slate-500">
+          <h2 className="truncate text-sm font-semibold text-slate-200">{boardTitle}</h2>
+          <span className="shrink-0 text-xs text-slate-500">
             {canvasSaveState === 'saving' ? '保存中…' : '已保存'}
           </span>
           {/* 常驻添加入口：任意时刻可手动加模板（下拉选择，不依赖左侧面板开合） */}
-          <div className="relative">
+          <div className="relative shrink-0">
             <button
               className="flex items-center gap-1 rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 hover:border-blue-500/60 hover:text-blue-300"
               onClick={() => setAddMenuOpen((v) => !v)}
@@ -197,7 +188,7 @@ export default function StockCanvas() {
               </>
             )}
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <button
               className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
               onClick={onRefresh}
@@ -221,7 +212,7 @@ export default function StockCanvas() {
         <div ref={canvasRef} className="min-h-0 flex-1 overflow-auto rounded-xl border border-slate-800 bg-slate-950/40 p-2">
           {canvasBlocks.length === 0 ? (
             /* 空画布引导（spec §十）：模板直选 + 对话创建并列，手动/对话双入口对等 */
-            <div className="flex h-full min-h-[320px] w-full flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed border-slate-700 text-slate-500">
+            <div className="flex h-full min-h-[280px] w-full flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed border-slate-700 text-slate-500">
               <p className="text-sm">您的画布空空如也 —— 选一个模板开始，或让 AI 帮你搭</p>
               <div className="grid grid-cols-4 gap-2">
                 {TEMPLATES.map(({ type, label, icon: Icon }) => (

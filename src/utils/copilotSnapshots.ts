@@ -27,6 +27,7 @@ import {
   processAllStreams,
 } from './tStreamEngine';
 import { recalculatePosition } from './calculator';
+import { filterDisplayablePlans, filterActivePlans } from './planFilter';
 import type { FeeConfig } from './mathUtils';
 
 /** builder 显式入参（AppStore 结构子集，由调用方传 useAppStore.getState()） */
@@ -521,20 +522,11 @@ export function buildHomePositionContext(src: CopilotSnapshotSource): CopilotCon
 export function buildHomePlanContext(src: CopilotSnapshotSource): CopilotContextData {
   const nowMs = Date.now();
 
-  // 视图 homePlans 展示列表口径（过期/已执行仅过期后 3 天窗口内仍展示，供复盘）
-  const displayWindowMs = 3 * 86_400_000;
-  const plans = src.plannedOrders.filter((p) => {
-    if (p.status === 'cancelled') return false;
-    if (p.status === 'expired' || p.status === 'executed') {
-      return nowMs - new Date(p.expiresAt).getTime() <= displayWindowMs;
-    }
-    return true;
-  });
+  // 视图 homePlans 展示列表口径（与 utils/planFilter 同源：过期/已执行仅 3 天窗口内仍展示）
+  const plans = filterDisplayablePlans(src.plannedOrders, { now: nowMs });
 
   // 视图 1g「N 个待执行」口径：status=active 且未过期（时间实时判断，不信任 status 滞后）
-  const activePlans = plans.filter(
-    (p) => p.status === 'active' && new Date(p.expiresAt).getTime() > nowMs,
-  );
+  const activePlans = filterActivePlans(plans, nowMs);
 
   // 行情价读取：注入桥缺省/价格非法时返回 null（降级语义，区别于「偏离为 0」）
   const priceOf = (fullCode: string): number | null => {

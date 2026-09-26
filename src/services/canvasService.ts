@@ -11,42 +11,141 @@
 import { SessionExpiredError } from './apiClient';
 import { loadStoredAuthSession } from './authSession';
 import { getCanvasTemplate } from '../utils/canvasTemplates';
-import type { CanvasBlock, CanvasBoardEntity, CanvasBlobEntity } from '../types/domain';
+import type { CanvasBlock, CanvasBoardEntity, CanvasBoardMeta, CanvasBlobEntity } from '../types/domain';
 
-/** 一期默认画布 id（单画布；多画布二期扩展时改为列表管理） */
+/**
+ * 一期默认画布 id（多画布下的兜底画布：列表为空时以其重建，保证永远有画布可画）。
+ * 存量数据（单画布时期写入的行）即此 id，升级后天然成为列表里的第一块画布。
+ */
 export const DEFAULT_CANVAS_ID = 'canvas-default';
 
 /**
- * 加载默认画布（无则返回 null，由调用方决定初始化空画布）。
+ * 加载指定画布（无则返回 null，由调用方决定初始化空画布）。
+ * @param {string} boardId - 画布 id（缺省为默认画布）
  * @returns {Promise<CanvasBoardEntity | null>} 画布实体或 null
  */
-export async function loadBoard(): Promise<CanvasBoardEntity | null> {
+export async function loadBoard(boardId: string = DEFAULT_CANVAS_ID): Promise<CanvasBoardEntity | null> {
   const { db } = await import('../db/index');
-  const board = await db.canvasBoards.get(DEFAULT_CANVAS_ID);
+  const board = await db.canvasBoards.get(boardId);
   return board && !board.isDeleted ? board : null;
 }
 
 /**
  * 整块保存画布（区块数组 JSON 内嵌列，整块序列化写回——天然规避 Dexie 同 tick 隐式 put 覆盖陷阱）。
- * 不存在则创建（isDefault=true）。
+ * 不存在则创建（默认画布 isDefault=true）。
  * @param {CanvasBlock[]} blocks - 全量区块数组（含 layout/notes）
  * @param {number} labelSeq - 标号分配单调计数器（只增不减，删除不复用的保证）
+ * @param {string} boardId - 目标画布 id（缺省为默认画布）
  */
-export async function saveBoard(blocks: CanvasBoardEntity['blocks'], labelSeq: number): Promise<void> {
+export async function saveBoard(
+  blocks: CanvasBoardEntity['blocks'],
+  labelSeq: number,
+  boardId: string = DEFAULT_CANVAS_ID,
+): Promise<void> {
   const { db } = await import('../db/index');
   const now = new Date().toISOString();
-  const existing = await db.canvasBoards.get(DEFAULT_CANVAS_ID);
+  const existing = await db.canvasBoards.get(boardId);
   const board: CanvasBoardEntity = {
-    id: DEFAULT_CANVAS_ID,
-    title: existing?.title ?? '我的画布',
+    id: boardId,
+    title: existing?.title ?? (boardId === DEFAULT_CANVAS_ID ? '我的画布' : '新建画布'),
     blocks,
-    isDefault: true,
+    isDefault: boardId === DEFAULT_CANVAS_ID || existing?.isDefault === true,
     labelSeq,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     isDeleted: false,
   };
   await db.canvasBoards.put(board);
+}
+
+/**
+ * 列出全部未删除画布（轻量元数据；默认画布置顶，其余按更新时间倒序）。
+ * @returns {Promise<CanvasBoardMeta[]>} 画布列表元数据
+ */
+export async function listBoards(): Promise<CanvasBoardMeta[]> {
+  const { db } = await import('../db/index');
+  const all = await db.canvasBoards.toArray();
+  return all
+    .filter((b) => !b.isDeleted)
+    .map((b) => ({
+      id: b.id,
+      title: b.title,
+      blockCount: b.blocks.length,
+      updatedAt: b.updatedAt,
+      isDefault: b.isDefault,
+    }))
+    .sort((a, b) => {
+      if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+      return b.updatedAt.localeCompare(a.updatedAt);
+    });
+}
+
+/**
+ * 新建空白画布（非默认画布）。
+ * @param {string} title - 画布标题
+ * @returns {Promise<CanvasBoardEntity>} 新建的画布实体
+ */
+export async function createBoard(title = '新建画布'): Promise<CanvasBoardEntity> {
+  const { db } = await import('../db/index');
+  const { generateId } = await import('../utils/idGenerator');
+  const now = new Date().toISOString();
+  const board: CanvasBoardEntity = {
+    id: generateId(),
+    title,
+    blocks: [],
+    isDefault: false,
+    labelSeq: 0,
+    createdAt: now,
+    updatedAt: now,
+    isDeleted: false,
+  };
+  await db.canvasBoards.put(board);
+  return board;
+}
+
+/**
+ * 重命名画布（保留其余字段，仅改 title）。
+ * @param {string} boardId - 画布 id
+ * @param {string} title - 新标题
+ */
+export async function renameBoard(boardId: string, title: string): Promise<void> {
+  const { db } = await import('../db/index');
+  const board = await db.canvasBoards.get(boardId);
+  if (!board) return;
+  await db.canvasBoards.put({ ...board, title, updatedAt: new Date().toISOString() });
+}
+
+/**
+ * 删除画布（软删除 isDeleted=true：与其他域一致，保留可恢复性）。
+ * @param {string} boardId - 画布 id
+ */
+export async function deleteBoard(boardId: string): Promise<void> {
+  const { db } = await import('../db/index');
+  const board = await db.canvasBoards.get(boardId);
+  if (!board) return;
+  await db.canvasBoards.put({ ...board, isDeleted: true, isDefault: false, updatedAt: new Date().toISOString() });
+}
+
+/**
+ * 兜底保证至少存在一块画布：有则返回列表首块（默认画布优先），无则以默认 id 重建空画布。
+ * @returns {Promise<string>} 可安全使用的画布 id
+ */
+export async function ensureDefaultBoard(): Promise<string> {
+  const boards = await listBoards();
+  if (boards.length > 0) return boards[0].id;
+  const { db } = await import('../db/index');
+  const now = new Date().toISOString();
+  await db.canvasBoards.put({
+    id: DEFAULT_CANVAS_ID,
+    title: '我的画布',
+    blocks: [],
+    isDefault: true,
+    labelSeq: 0,
+    createdAt: now,
+    updatedAt: now,
+    isDeleted: false,
+  });
+  return DEFAULT_CANVAS_ID;
 }
 
 /**

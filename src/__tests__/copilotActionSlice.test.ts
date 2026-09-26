@@ -261,6 +261,22 @@ describe('canvas 动作注册表分发等价性（docs/free-canvas-template-regi
     expect((blocks[blocks.length - 1].data as { content?: string }).content).toBe('hi');
   });
 
+  it('同一响应两条 canvas_add_block（brief+kline 同码）：两块都落地且各绑定标的（用户事故复现回归）', () => {
+    const before = useAppStore.getState().canvasBlocks.length;
+    useAppStore.getState().handleCopilotActions([
+      { type: 'canvas_add_block', payload: { type: 'brief', stockCode: 'sz002594' } },
+      { type: 'canvas_add_block', payload: { type: 'kline', stockCode: 'sz002594' } },
+    ]);
+    const blocks = useAppStore.getState().canvasBlocks;
+    expect(blocks.length).toBe(before + 2);
+    const brief = blocks.find((b) => b.type === 'brief');
+    const kline = blocks.find((b) => b.type === 'kline');
+    expect(brief).toBeDefined();
+    expect(kline).toBeDefined();
+    expect((brief!.data as { stockId?: string }).stockId).toBe('sz002594');
+    expect((kline!.data as { fullCode?: string }).fullCode).toBe('sz002594');
+  });
+
   it('auto 级 canvas_add_widget 直执行：widget 区块落库且 data.dsl 为规范化图纸；非法 DSL 静默丢弃', () => {
     const before = useAppStore.getState().canvasBlocks.length;
     useAppStore.getState().handleCopilotActions([

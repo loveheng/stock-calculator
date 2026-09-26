@@ -11,11 +11,12 @@
 
 import { Newspaper, Pin, Sparkles } from 'lucide-react';
 import type { SearchScope } from '../../types/search';
+import ModeTabs from '../ui/ModeTabs';
 
-const TABS: Array<{ scope: SearchScope; label: string; icon: typeof Pin }> = [
-  { scope: 'announcement', label: '持仓公告', icon: Pin },
-  { scope: 'cls', label: '财联社电报', icon: Newspaper },
-  { scope: 'composite', label: 'AI 智能综合', icon: Sparkles },
+const TABS: Array<{ id: SearchScope; label: string; icon: typeof Pin }> = [
+  { id: 'announcement', label: '持仓公告', icon: Pin },
+  { id: 'cls', label: '财联社电报', icon: Newspaper },
+  { id: 'composite', label: 'AI 智能综合', icon: Sparkles },
 ];
 
 interface IntentFilterTabsProps {
@@ -23,29 +24,9 @@ interface IntentFilterTabsProps {
   onChange: (scope: SearchScope) => void;
 }
 
+/**
+ * 资讯检索意图分流 Tabs：视觉为实心胶囊变体，结构与行为复用通用 ModeTabs。
+ */
 export default function IntentFilterTabs({ scope, onChange }: IntentFilterTabsProps) {
-  return (
-    <div className="flex gap-2 overflow-x-auto py-1" role="tablist" aria-label="检索范围">
-      {TABS.map(({ scope: s, label, icon: Icon }) => {
-        const active = s === scope;
-        return (
-          <button
-            key={s}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(s)}
-            className={`tap-target flex flex-shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-              active
-                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
-                : 'bg-slate-800/70 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-            }`}
-          >
-            <Icon className="h-3.5 w-3.5" />
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  );
+  return <ModeTabs tabs={TABS} value={scope} onChange={onChange} ariaLabel="检索范围" variant="solid" />;
 }

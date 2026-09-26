@@ -11,8 +11,12 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2, ChevronRight } from 'lucide-react';
+import type { ElementType } from 'react';
+import { Plus, X, Archive, ChevronDown, ChevronUp, CheckCircle, Trash2, ChevronRight, Wallet, Target } from 'lucide-react';
 import { useAppStore } from '../store';
+import { showToast } from '../utils/toast';
+import { filterDisplayablePlans } from '../utils/planFilter';
+import { usePlanExecutor } from '../hooks/usePlanExecutor';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind, evaluateDynamicPyramid, computePositionLifecycleSummary } from '../utils/mathUtils';
 import { recomputePositionSnapshot, getCloseBlockReason, generateId, calcBatchExecution } from '../store';
 import { useStreamResults } from '../hooks/useStreamResults';
@@ -29,7 +33,9 @@ import type { StockSearchItem } from '../types/stock';
 import type { PlannedOrder } from '../store/types';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
-import PlanOrderCard from '../components/PlanOrderCard';
+import ModeTabs from '../components/ui/ModeTabs';
+import SwipeTabPanel from '../components/ui/SwipeTabPanel';
+import PlanOrderList from '../components/plan/PlanOrderList';
 import AnnouncementSubscribeButton from '../components/ui/AnnouncementSubscribeButton';
 import { useLiveQuotes } from '../hooks/useLiveQuotes';
 
@@ -273,7 +279,6 @@ function PositionLedger() {
   const streamResults = useStreamResults();
   const plannedOrders = useAppStore((s) => s.plannedOrders);
   const setPlannedOrder = useAppStore((s) => s.setPlannedOrder);
-  const markPlanExecuted = useAppStore((s) => s.markPlanExecuted);
   const cancelPlan = useAppStore((s) => s.cancelPlan);
 
   // ---- 计划单状态 ----
@@ -284,20 +289,11 @@ function PositionLedger() {
   const [planAmount, setPlanAmount] = useState('');
   const [planValidity, setPlanValidity] = useState(3);
 
-  // 过滤出中长期上下文的计划单
-  const longTermPlans = useMemo(() => {
-    const now = Date.now();
-    const displayWindow = 3 * 24 * 60 * 60 * 1000;
-    return plannedOrders.filter((p) => {
-      if (p.status === 'cancelled') return false;
-      if (p.context !== 'long-term' && p.context !== 'both') return false;
-      if (p.status === 'expired' || p.status === 'executed') {
-        const expiresAt = new Date(p.expiresAt).getTime();
-        return (now - expiresAt) <= displayWindow;
-      }
-      return true;
-    });
-  }, [plannedOrders]);
+  // 过滤出中长期上下文的计划单（context 白名单：long-term / both）
+  const longTermPlans = useMemo(
+    () => filterDisplayablePlans(plannedOrders, { contexts: ['long-term', 'both'] }),
+    [plannedOrders],
+  );
 
   const planQuoteCodes = useMemo(() => longTermPlans.map((p) => p.fullCode), [longTermPlans]);
   const { quotes: planQuotes } = useLiveQuotes(planQuoteCodes);
@@ -343,73 +339,46 @@ function PositionLedger() {
     setPlanValidity(3);
   };
 
-  // 计划单执行：创建批次 + 标记已执行
+  // 计划单执行：批次记账 + 标记已执行统一走 usePlanExecutor（中长期语义：无底仓即失败）
+  const executePlan = usePlanExecutor({
+    requirePosition: true,
+    // 【执行履约审计】量化执行滑点与纪律偏离（计划 vs 实际成交）—— 页面特有副作用挂 onExecuted
+    onExecuted: ({ order, actualPrice, actualAmount, long }) => {
+      if (!long) return;
+      const pos = long.position;
+      const type = long.type;
+      const calc = long.calc;
+      const slippagePct = order.plannedPrice > 0 ? ((actualPrice - order.plannedPrice) / order.plannedPrice) * 100 : 0;
+      // 加权均价冲击：执行前底仓 WAC vs 执行后 WAC（由 calcBatchExecution 给出新成本）
+      const priorBuys = pos.batches.filter((b) => (b.type === 'open' || b.type === 'add') && b.amount > 0 && b.price > 0);
+      const priorTotalAmt = priorBuys.reduce((s, b) => s + b.amount, 0);
+      const priorTotalCost = priorBuys.reduce((s, b) => s + b.price * b.amount, 0);
+      const priorWac = priorTotalAmt > 0 ? priorTotalCost / priorTotalAmt : 0;
+      const wacImpactPct = priorWac > 0 && type === 'add' ? ((calc.newCost - priorWac) / priorWac) * 100 : 0;
+      recordAudit('planned_order_executed', 'planned_order', order.id, 'success', {
+        before: {
+          plannedPrice: order.plannedPrice,
+          plannedAmount: order.plannedAmount,
+          planPyramidScore: order.planPyramidHealth?.score,
+          planPyramidLevel: order.planPyramidHealth?.level,
+        },
+        after: { actualPrice, actualAmount, newCost: calc.newCost, newAmount: calc.newAmount },
+        tags: {
+          fullCode: order.fullCode,
+          direction: order.direction,
+          planPrice: String(order.plannedPrice),
+          actualPrice: String(actualPrice),
+          slippagePct: slippagePct.toFixed(2),
+          wacShockPct: wacImpactPct.toFixed(2),
+          planPyramidScore: order.planPyramidHealth ? String(order.planPyramidHealth.score) : 'n/a',
+          planPyramidLevel: order.planPyramidHealth?.level ?? 'n/a',
+        },
+      });
+    },
+  });
   const handlePlanExecute = (order: PlannedOrder, actualPrice: number, actualAmount: number, note: string) => {
-    const pos = positions.find((p) => p.fullCode === order.fullCode && !p.isClosed);
-    if (!pos) {
-      window.dispatchEvent(new CustomEvent('app-toast', { detail: '❌ 未找到对应持仓，请先建仓' }));
-      return;
-    }
-    const type = order.direction === 'buy' ? 'add' : 'reduce';
-    const calc = calcBatchExecution(pos, type, actualPrice, actualAmount, feeConfig);
-    const now = new Date().toISOString();
-    const batch: PositionBatch = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      timestamp: now,
-      type,
-      price: actualPrice,
-      amount: type === 'add' ? actualAmount : -actualAmount,
-      costAfter: calc.newCost,
-      amountAfter: calc.newAmount,
-      note: note || undefined,
-      fee: calc.totalFee,
-    };
-    addBatch(pos.id, batch, {
-      currentCost: calc.newCost,
-      currentAmount: calc.newAmount,
-      realizedPnL: calc.newRealizedPnL,
-      totalInvested: calc.newTotalInvested,
-    });
-    const isAchieved = order.direction === 'buy' ? actualPrice <= order.plannedPrice : actualPrice >= order.plannedPrice;
-    markPlanExecuted(order.id, {
-      executedAt: now,
-      actualPrice,
-      actualAmount,
-      note: note || undefined,
-      isAchieved,
-      newCost: calc.newCost,
-      newAmount: calc.newAmount,
-      newTotalInvested: calc.newTotalInvested,
-      totalFee: calc.totalFee,
-    });
-    // 【执行履约审计】量化执行滑点与纪律偏离（计划 vs 实际成交）
-    const slippagePct = order.plannedPrice > 0 ? ((actualPrice - order.plannedPrice) / order.plannedPrice) * 100 : 0;
-    // 加权均价冲击：执行前底仓 WAC vs 执行后 WAC（由 calcBatchExecution 给出新成本）
-    const priorBuys = pos.batches.filter((b) => (b.type === 'open' || b.type === 'add') && b.amount > 0 && b.price > 0);
-    const priorTotalAmt = priorBuys.reduce((s, b) => s + b.amount, 0);
-    const priorTotalCost = priorBuys.reduce((s, b) => s + b.price * b.amount, 0);
-    const priorWac = priorTotalAmt > 0 ? priorTotalCost / priorTotalAmt : 0;
-    const wacImpactPct = priorWac > 0 && type === 'add' ? ((calc.newCost - priorWac) / priorWac) * 100 : 0;
-    recordAudit('planned_order_executed', 'planned_order', order.id, 'success', {
-      before: {
-        plannedPrice: order.plannedPrice,
-        plannedAmount: order.plannedAmount,
-        planPyramidScore: order.planPyramidHealth?.score,
-        planPyramidLevel: order.planPyramidHealth?.level,
-      },
-      after: { actualPrice, actualAmount, newCost: calc.newCost, newAmount: calc.newAmount },
-      tags: {
-        fullCode: order.fullCode,
-        direction: order.direction,
-        planPrice: String(order.plannedPrice),
-        actualPrice: String(actualPrice),
-        slippagePct: slippagePct.toFixed(2),
-        wacShockPct: wacImpactPct.toFixed(2),
-        planPyramidScore: order.planPyramidHealth ? String(order.planPyramidHealth.score) : 'n/a',
-        planPyramidLevel: order.planPyramidHealth?.level ?? 'n/a',
-      },
-    });
-    window.dispatchEvent(new CustomEvent('app-toast', { detail: `✅ 计划单已执行 · ${order.stockName}` }));
+    const res = executePlan(order, actualPrice, actualAmount, note);
+    if (!res.ok && res.reason) showToast(res.reason);
   };
 
   // ---- 折叠状态 ----
@@ -1281,33 +1250,22 @@ function PositionLedger() {
         </div>
       )}
 
-      {longTermPlans.length === 0 ? (
-        <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-          暂无计划单，创建后可在执行前看到价格对比变化
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {longTermPlans.map((p) => (
-            <PlanOrderCard
-              key={p.id}
-              order={p}
-              quote={planQuotes[p.fullCode] ?? null}
-              position={positions.find((pos) => pos.fullCode === p.fullCode && !pos.isClosed) ?? null}
-              feeConfig={feeConfig}
-              onEdit={(order) => {
-                setPlanStock({ fullCode: order.fullCode, Name: order.stockName, ShortName: '', Code: order.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' });
-                setPlanDirection(order.direction);
-                setPlanPrice(String(order.plannedPrice));
-                setPlanAmount(String(order.plannedAmount));
-                setPlanValidity(order.validityDays);
-                setPlanFormOpen(true);
-              }}
-              onExecute={handlePlanExecute}
-              onCancel={(id) => cancelPlan(id)}
-            />
-          ))}
-        </div>
-      )}
+      <PlanOrderList
+        orders={longTermPlans}
+        quotes={planQuotes}
+        emptyVariant="dashed"
+        emptyTitle="暂无计划单，创建后可在执行前看到价格对比变化"
+        onEdit={(order) => {
+          setPlanStock({ fullCode: order.fullCode, Name: order.stockName, ShortName: '', Code: order.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' });
+          setPlanDirection(order.direction);
+          setPlanPrice(String(order.plannedPrice));
+          setPlanAmount(String(order.plannedAmount));
+          setPlanValidity(order.validityDays);
+          setPlanFormOpen(true);
+        }}
+        onExecute={handlePlanExecute}
+        onCancel={(id) => cancelPlan(id)}
+      />
     </div>
 
     {/* 重复建仓提示 */}
@@ -1564,34 +1522,29 @@ function TargetCostCalculator() {
  * @returns {JSX.Element} 成本分摊页面视图
  * @note 页面挂载即通过 Store 读取 positions/batches（由 useLoadCoreData 按需加载）
  */
+/** 页级 Tab 类型 */
+type CostTab = 'ledger' | 'target';
+
+/** 页级子菜单：ledger = 仓位管理（多批次建仓实盘账本），target = 目标成本推算 */
+const COST_TABS: ReadonlyArray<{ id: CostTab; label: string; icon: ElementType }> = [
+  { id: 'ledger', label: '仓位管理', icon: Wallet },
+  { id: 'target', label: '目标成本推算', icon: Target },
+];
+
+/** 滑动切换顺序（与 Tab 条视觉顺序一致） */
+const COST_TAB_ORDER: readonly CostTab[] = COST_TABS.map((t) => t.id);
+
 export default function CostAveraging() {
-  const [tab, setTab] = useState<'ledger' | 'target'>('ledger');
+  const [tab, setTab] = useState<CostTab>('ledger');
 
   return (
-    <div className="page-container pb-[env(safe-area-inset-bottom)]">
-      <div className="card">
-        <h3>仓位管理</h3>
+    <div className="page-container space-y-5 pb-[env(safe-area-inset-bottom)]">
+      {/* 页级子菜单：仓位管理 / 目标成本推算（移动端可左右滑动切换） */}
+      <ModeTabs tabs={COST_TABS} value={tab} onChange={setTab} ariaLabel="中长期交易子菜单" />
 
-        <div className="tab-bar">
-          <button
-            className={`tab-btn ${tab === 'ledger' ? 'active' : ''}`}
-            onClick={() => setTab('ledger')}
-          >
-            建仓
-          </button>
-          <button
-            className={`tab-btn ${tab === 'target' ? 'active' : ''}`}
-            onClick={() => setTab('target')}
-          >
-            目标成本推算
-          </button>
-        </div>
-
-        <div className="tab-content">
-          {tab === 'ledger' ? <PositionLedger /> : <TargetCostCalculator />}
-        </div>
-
-      </div>
+      <SwipeTabPanel order={COST_TAB_ORDER} value={tab} onChange={setTab} className="space-y-5">
+        {tab === 'ledger' ? <PositionLedger /> : <TargetCostCalculator />}
+      </SwipeTabPanel>
     </div>
   );
 }

@@ -38,6 +38,7 @@ import {
 } from '../../utils/copilotActions';
 import { allCanvasOperationMeta, getCanvasTemplate } from '../../utils/canvasTemplates';
 import { prewarmSandbox } from '../../utils/customStats/client';
+import { showToast } from '../../utils/toast';
 
 /** 待确认动作 id 序列（内存态，无需 ulid 级别防撞） */
 let pendingSeq = 0;
@@ -209,7 +210,7 @@ function dispatchCanvasAction(get: () => AppStore, type: string, payload: Saniti
   // toast 仅浏览器反馈通道：node 环境（单测/SSR）无 window，静默跳过防崩溃
   const toast = (msg: string) => {
     if (typeof window === 'undefined') return;
-    window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
+    showToast(msg);
   };
   const summary = summarizeCanvasAction(type, payload);
   // 执行成功反馈（区块已删时 runBlockTask 静默跳过任务，此处以 toast 说明执行结果边界）

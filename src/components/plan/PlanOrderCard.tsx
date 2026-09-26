@@ -9,17 +9,17 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Edit3, CheckCircle, XCircle, Clock, TrendingUp, TrendingDown, AlertTriangle, ArrowRight, ChevronDown, ChevronUp } from 'lucide-react';
-import type { PlannedOrder, Position } from '../store/types';
-import { evaluateDynamicPyramid, type DynamicPyramidResult, type FeeConfig } from '../utils/mathUtils';
-import type { StockQuoteSummary } from '../types/stock';
-import { calcBatchExecution } from '../store/utils';
+import type { PlannedOrder, Position } from '../../store/types';
+import { evaluateDynamicPyramid, type DynamicPyramidResult, type FeeConfig } from '../../utils/mathUtils';
+import type { StockQuoteSummary } from '../../types/stock';
+import { calcBatchExecution } from '../../store/utils';
 import {
   findLatestShortProject,
   computeShortTermTrial,
   type ShortTrialProject,
   type ShortTrialResult,
-} from '../utils/shortTermTrial';
-import ConfirmModal from './ui/ConfirmModal';
+} from '../../utils/shortTermTrial';
+import ConfirmModal from '../ui/ConfirmModal';
 
 /** 计划单方向徽章配色 */
 const DIRECTION_STYLES: Record<string, string> = {

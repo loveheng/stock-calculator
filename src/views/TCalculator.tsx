@@ -12,12 +12,16 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import {
   useAppStore,
   generateId,
   type Position,
   type RoundTxn,
 } from '../store';
+import { showToast } from '../utils/toast';
+import { filterDisplayablePlans } from '../utils/planFilter';
+import { usePlanExecutor } from '../hooks/usePlanExecutor';
 import { useStreamResults } from '../hooks/useStreamResults';
 import { ledgerService } from '../services/ledgerService';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
@@ -27,7 +31,6 @@ import { usePageContext } from '../hooks/usePageContext';
 import { buildTProjectContext } from '../utils/copilotSnapshots';
 import BlockFocusButton from '../components/copilot/BlockFocusButton';
 import { calcTradeFees, roundTo, matchSecurityKind, type FeeConfig } from '../utils/mathUtils';
-import { toShortTrialProject } from '../utils/shortTermTrial';
 import {
   validateStreamTrade,
   createInitialState,
@@ -47,7 +50,8 @@ import {
 import { RiskController, type SellValidationResult } from '../risk';
 import StockAutocomplete from '../components/ui/StockAutocomplete';
 import ConfirmModal from '../components/ui/ConfirmModal';
-import PlanOrderCard from '../components/PlanOrderCard';
+import PlanOrderList from '../components/plan/PlanOrderList';
+import EmptyState from '../components/ui/EmptyState';
 import AnnouncementSubscribeButton from '../components/ui/AnnouncementSubscribeButton';
 import type { StockQuoteSummary, StockSearchItem } from '../types/stock';
 import type { PlannedOrder } from '../store/types';
@@ -91,27 +95,27 @@ function pnlColor(value: number): string {
 function StreamStatusBadge({ result }: { result: StockStreamResult }) {
   if (result.status === 'CLEARED') {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-blue-500/15 text-blue-400">
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-blue-500/15 text-blue-400">
         ✓ 已完全结清
       </span>
     );
   }
   if (result.status === 'SHORT_PENDING') {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-amber-500/15 text-amber-400">
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-amber-500/15 text-amber-400">
         倒T待回补 {result.shortPendingAmount} 股
       </span>
     );
   }
   if (result.status === 'PARTIAL') {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-sky-500/15 text-sky-400">
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-sky-500/15 text-sky-400">
         部分对冲 (剩 {result.netPendingAmount} 股待对冲)
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-slate-700 text-slate-300">
+    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-slate-700 text-slate-300">
       待对冲
     </span>
   );
@@ -155,7 +159,7 @@ function StepNodeCard({
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="text-slate-500 font-mono tabular-nums">#{node.index}</span>
-          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
             isBuy ? 'bg-blue-500/15 text-blue-400' : 'bg-purple-500/15 text-purple-400'
           }`}>
             {isBuy ? '买入' : '卖出'}
@@ -215,7 +219,7 @@ function SettlementCardView({ card }: { card: TSettlementCard }) {
   return (
     <div className="rounded-lg border border-slate-600 bg-slate-800/80 p-3 space-y-2 text-xs">
       <div className="flex items-center justify-between gap-2">
-        <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${colorClass}`}>
+        <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${colorClass}`}>
           {card.label}
         </span>
         <span className="text-[10px] text-slate-500">{card.mode === 'long' ? '正T' : '倒T'}</span>
@@ -294,7 +298,7 @@ function DefenseOverflowModal({
               key={opt.key}
               type="button"
               onClick={() => onSelect(opt.key)}
-              className="w-full text-left px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-sm text-slate-200 transition-colors"
+              className="tap-target w-full text-left px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-sm text-slate-200 transition-colors"
             >
               {opt.label}
             </button>
@@ -304,7 +308,7 @@ function DefenseOverflowModal({
           <button
             type="button"
             onClick={onCancel}
-            className="text-xs text-slate-500 hover:text-slate-300"
+            className="tap-target text-xs text-slate-500 hover:text-slate-300 rounded-lg px-2"
           >
             取消
           </button>
@@ -482,6 +486,8 @@ function TStateMachinePanel({
  *  - result: 该标的的流水池撮合结果
  *  - basePosition: 对应底仓持仓（用于超卖校验与划转）
  *  - quote: 该标的最新实时行情（批量请求返回，无行情时为 null）
+ *  - isExpanded: 详细面板是否展开（页面级 expandedIds 统一管控，支持展开全部/收起全部）
+ *  - onToggleExpand: 头部点击的展开/收起回调
  * @returns {JSX.Element} 短线项目卡片视图
  * @note 写操作均委托 Store Action 落库并触发级联重算；超卖/数量校验由
  *       validateStreamTrade 在录入前拦截
@@ -491,6 +497,8 @@ function CurrentProjectCard({
   basePosition,
   feeConfig,
   quote,
+  isExpanded,
+  onToggleExpand,
   onAppend,
   onQuickHedge,
 }: {
@@ -498,6 +506,8 @@ function CurrentProjectCard({
   basePosition: Position | undefined;
   feeConfig: FeeConfig | undefined;
   quote: StockQuoteSummary | null;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
   onAppend: () => void;
   onQuickHedge: () => void;
 }) {
@@ -509,7 +519,7 @@ function CurrentProjectCard({
   );
   const transferToPosition = useAppStore((s) => s.transferToPosition);
   const settleShortRound = useAppStore((s) => s.settleShortRound);
-  const addToast = (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
+  const addToast = (msg: string) => showToast(msg);
 
   const baseHolding = basePosition?.currentAmount ?? 0;
 
@@ -596,40 +606,63 @@ function CurrentProjectCard({
   })();
 
   return (
-    <div className="card space-y-3 !mb-0">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+    <div className="card !p-0 !mb-0 overflow-hidden w-full max-w-4xl mx-auto">
+      {/* === 紧凑头部（点击整行展开/收起详细面板） === */}
+      <div
+        className="tap-target flex flex-wrap items-center gap-x-2 gap-y-1 p-3 cursor-pointer select-none"
+        onClick={onToggleExpand}
+      >
+        <div className="flex items-center gap-2 min-w-0 flex-wrap flex-1">
           <span className="font-semibold text-slate-200 truncate">{result.stockName}</span>
           <span className="text-xs text-slate-500 shrink-0">{result.fullCode}</span>
-          <span className="text-xs bg-slate-700/80 text-slate-200 px-1.5 py-0.5 rounded-full font-bold shrink-0">
+          <span className="text-xs bg-slate-700/80 text-slate-200 px-1.5 py-0.5 rounded font-bold shrink-0">
             {roundCode}
           </span>
-          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${result.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded font-bold shrink-0 ${result.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
             {result.mode === 'short' ? '倒T' : '正T'}
           </span>
           <StreamStatusBadge result={result} />
           {quote && quote.currentPrice > 0 && (
-            <span className={`text-xs px-2 py-0.5 rounded-full font-bold shrink-0 ${quote.changePercent >= 0 ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+            <span className={`text-xs px-2 py-0.5 rounded font-bold shrink-0 ${quote.changePercent >= 0 ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
               现价 ¥{quote.currentPrice.toFixed(3)}（{quote.changePercent >= 0 ? '+' : ''}
               {quote.changePercent.toFixed(2)}%）
             </span>
           )}
+          {basePosition && basePosition.currentAmount === 0 ? (
+            <span className="text-xs text-amber-300 shrink-0 bg-amber-500/10 px-2 py-0.5 rounded">
+              底仓出空
+            </span>
+          ) : baseHolding > 0 ? (
+            <span className="text-xs text-slate-400 shrink-0">
+              底仓 <b className="text-slate-200">{baseHolding}</b> 股
+            </span>
+          ) : null}
         </div>
-        {basePosition && basePosition.currentAmount === 0 ? (
-          <span className="text-xs text-amber-300 shrink-0 bg-amber-500/10 px-2 py-0.5 rounded-full">
-            底仓出空
-          </span>
-        ) : baseHolding > 0 ? (
-          <span className="text-xs text-slate-400 shrink-0">
-            底仓 <b className="text-slate-200">{baseHolding}</b> 股
-          </span>
-        ) : null}
-        {/* 公告订阅切换（仅订阅/取消订阅；fullCode 归一化失败时不渲染） */}
-        <AnnouncementSubscribeButton fullCode={result.fullCode} />
-        {/* V2 Click-to-Focus：按标的区块聚焦入口（聚焦后浮窗胶囊显示该标的短线项目） */}
-        <BlockFocusButton scopeId={projectScopeId} blockId={`${projectScopeId}:project`} />
+        <div className="flex items-center shrink-0 ml-auto gap-1">
+          {/* 操作组合：订阅公告 / 问 AI 收进同一组；移动端由 tap-target 保证 44px 热区 */}
+          <div
+            className="flex items-center gap-1 rounded-lg bg-slate-900/60 p-1"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <AnnouncementSubscribeButton fullCode={result.fullCode} />
+            <BlockFocusButton
+              scopeId={projectScopeId}
+              blockId={`${projectScopeId}:project`}
+              className="tap-target"
+            />
+          </div>
+          {/* 箭头置于操作组之外：点击仍走头部的展开/收起 */}
+          <div className="tap-target flex items-center justify-center w-11 h-11">
+            <ChevronRight
+              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+            />
+          </div>
+        </div>
       </div>
 
+      {/* === 展开态：详细面板（移动/宽屏同为单列，统一 60vh 上限 + 内部滚动；内容不足时按实际高度收缩，不留空白） === */}
+      {isExpanded && (
+        <div className="p-3 pt-0 space-y-3 max-h-[60vh] overflow-y-auto">
       {/* 当前项目指标（移动端 2×2 紧凑布局） */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <div className="bg-slate-900 rounded-lg p-2 min-w-0">
@@ -723,7 +756,7 @@ function CurrentProjectCard({
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                           entry.direction === 'buy'
                             ? 'bg-blue-500/15 text-blue-400'
                             : 'bg-purple-500/15 text-purple-400'
@@ -802,18 +835,19 @@ function CurrentProjectCard({
         </div>
       )}
 
-      <div className="pt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
+      {/* 操作按钮：合并为一组，沿用 .btn 统一样式；移动端由 tap-target 保证 44px 触摸热区 */}
+      <div className="pt-3 grid grid-cols-2 md:grid-cols-4 gap-1 rounded-lg bg-slate-900/60 p-1">
         <button
           type="button"
           onClick={onAppend}
-          className="col-span-2 md:col-span-2 btn btn-primary !py-3"
+          className="col-span-2 md:col-span-2 btn btn-primary flex-1 tap-target"
         >
           + 追加记录
         </button>
         <button
           type="button"
           onClick={onQuickHedge}
-          className={`col-span-1 md:col-span-1 btn !py-3 ${
+          className={`col-span-1 md:col-span-1 btn flex-1 tap-target ${
             remainingQty > 0
               ? 'bg-amber-500 hover:bg-amber-400 text-slate-900'
               : 'bg-slate-800 text-slate-500 cursor-not-allowed'
@@ -826,14 +860,15 @@ function CurrentProjectCard({
         <button
           type="button"
           onClick={result.mode === 'short' ? handleSettleShort : handleTransfer}
-          className="col-span-1 md:col-span-1 btn btn-warning !py-3"
+          className="col-span-1 md:col-span-1 btn btn-warning flex-1 tap-target"
           disabled={result.mode !== 'short' && result.netPendingAmount <= 0}
         >
           {result.mode === 'short' ? '结算 / 转底仓' : '一键划转底仓'}
         </button>
       </div>
-
-      </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -847,22 +882,27 @@ function CurrentProjectCard({
  *              提供「删除战报」操作，自动级联撤销归并底仓数据。
  * @param {{ round: TRound; onRemove: (id) => { ok: boolean; message?: string } }} props
  *  - round: 归档战报记录（列表加载为轮次摘要，不含明细；卡片挂载时预取一次明细用于推导买/卖均价）
+ *  - isExpanded: 成交明细面板是否展开（页面级 expandedIds 统一管控，支持展开全部/收起全部）
+ *  - onToggleExpand: 头部点击的展开/收起回调
  *  - onRemove: 删除回调，返回删除结果
  * @returns {JSX.Element} 战报卡片视图
  * @note 删除属于写操作，通过 store.removeRound 落库，自动处理归并回滚
  */
 function ArchiveRoundCard({
   round,
+  isExpanded,
+  onToggleExpand,
   onRemove,
 }: {
   round: NonNullable<ReturnType<typeof useAppStore.getState>['tRounds']>[number];
+  isExpanded: boolean;
+  onToggleExpand: () => void;
   onRemove: (id: string) => { ok: boolean; message?: string };
 }) {
-  const [showTxns, setShowTxns] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // 成交明细按需加载：列表加载器只返回轮次摘要（不含 transactions）。
   // 为在卡片主体直接呈现「买/卖均价」，需在挂载时预取一次明细；
-  // 展开/收起仅切换可视性（toggleTxns），不再重复查询。
+  // 展开/收起仅切换可视性（页面级 archiveExpandedIds），不再重复查询。
   const [txns, setTxns] = useState<RoundTxn[]>([]);
   const [txnsLoading, setTxnsLoading] = useState(false);
   const txnsLoadedRef = useRef(false);
@@ -879,8 +919,6 @@ function ArchiveRoundCard({
   useEffect(() => {
     loadTxns();
   }, [loadTxns]);
-  // 明细已在挂载时预取（见 loadTxns/useEffect），此处仅切换展开/收起。
-  const toggleTxns = () => setShowTxns((v) => !v);
 
   const hasMerge = round.transferAmount && round.transferAmount > 0;
   const mergeLabel = round.mode === 'long' ? '正T归并' : '倒T归并';
@@ -903,42 +941,52 @@ function ArchiveRoundCard({
     : `确认删除本条历史战报？`;
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-2">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+    <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+      {/* === 紧凑头部（点击整行展开/收起成交明细） === */}
+      <div
+        className="tap-target flex flex-wrap items-center gap-x-2 gap-y-1 p-3 cursor-pointer select-none"
+        onClick={onToggleExpand}
+      >
+        <div className="flex items-center gap-2 min-w-0 flex-wrap flex-1">
           <span className="font-semibold text-slate-200 truncate">{round.stockName}</span>
-          <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full font-bold shrink-0">
+          <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded font-bold shrink-0">
             {round.roundCode}
           </span>
-          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded font-bold shrink-0 ${round.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
             {round.mode === 'short' ? '倒T' : '正T'}
           </span>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {round.settleType === 'transfer' && round.sellAmount === 0 ? (
             <>
-              <span className="text-xs bg-slate-700/15 text-slate-200 px-1.5 py-0.5 rounded-full font-bold shrink-0">平仓</span>
-              <span className="text-xs bg-purple-500/15 text-purple-400 px-1.5 py-0.5 rounded-full font-bold shrink-0">划转</span>
+              <span className="text-xs bg-slate-700/15 text-slate-200 px-1.5 py-0.5 rounded font-bold shrink-0">平仓</span>
+              <span className="text-xs bg-purple-500/15 text-purple-400 px-1.5 py-0.5 rounded font-bold shrink-0">划转</span>
             </>
           ) : round.settleType === 'transfer' ? (
             <>
-              <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
+              <span className={`text-xs px-1.5 py-0.5 rounded font-bold shrink-0 ${round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
                 {round.win ? '盈利' : '亏损'}
               </span>
-              <span className="text-xs bg-purple-500/15 text-purple-400 px-1.5 py-0.5 rounded-full font-bold shrink-0">划转</span>
+              <span className="text-xs bg-purple-500/15 text-purple-400 px-1.5 py-0.5 rounded font-bold shrink-0">划转</span>
             </>
           ) : (
-            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold shrink-0 ${(round.sellAmount ?? 0) > 0 ? (round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400') : 'bg-slate-700/15 text-slate-200'}`}>
+            <span className={`text-xs px-1.5 py-0.5 rounded font-bold shrink-0 ${(round.sellAmount ?? 0) > 0 ? (round.win ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400') : 'bg-slate-700/15 text-slate-200'}`}>
               {(round.sellAmount ?? 0) > 0 ? (round.win ? '盈利' : '亏损') : '平仓'}
             </span>
           )}
           {hasMerge && (
-            <span className="text-xs bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded-full font-bold shrink-0">
+            <span className="text-xs bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded font-bold shrink-0">
               {mergeLabel}
             </span>
           )}
         </div>
+        <div className="tap-target flex items-center justify-center w-11 h-11 shrink-0">
+          <ChevronRight
+            className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+          />
+        </div>
       </div>
+      <div className="px-3 pb-3 space-y-2">
       <div className="text-xs text-slate-500">
         {new Date(round.openedAt ?? '').toLocaleDateString()} ~ {new Date(round.closedAt ?? '').toLocaleDateString()} · 持股 {round.holdingDays ?? 0} 天 · {round.tradeCount ?? 0} 笔
         {round.totalFees ? ` · 规费合计 ¥${round.totalFees.toFixed(2)}` : ''}
@@ -979,17 +1027,10 @@ function ArchiveRoundCard({
           </div>
         </div>
       </div>
-      <div>
-        <button
-          onClick={toggleTxns}
-          className="tap-target text-[11px] text-blue-400 hover:text-blue-300 underline"
-        >
-          {showTxns
-            ? '▾ 收起成交明细'
-            : `▸ 查看成交明细（${txns.length > 0 ? txns.length : round.tradeCount ?? 0} 笔）`}
-        </button>
-        {showTxns && (
-          <div className="mt-2 space-y-1 bg-slate-900 rounded-lg p-2 max-h-48 overflow-y-auto">
+      {/* === 展开态：成交明细面板（移动端 60vh 上限+内部滚动、短内容收缩；宽屏固定 60vh 撑满最大高度、超出滚动） === */}
+      {isExpanded && (
+        <div className="max-h-[60vh] overflow-y-auto md:h-[60vh]">
+          <div className="space-y-1 bg-slate-900 rounded-lg p-2">
             {txnsLoading ? (
               <div className="text-[11px] text-slate-500 py-1">成交明细加载中…</div>
             ) : txns.length > 0 ? (
@@ -1049,14 +1090,20 @@ function ArchiveRoundCard({
               <div className="text-[11px] text-slate-500 py-1">暂无成交明细</div>
             )}
           </div>
-        )}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2 pt-1">
+        <span className="text-[11px] text-slate-500">
+          成交明细 {txns.length > 0 ? txns.length : round.tradeCount ?? 0} 笔
+        </span>
+        <button
+          onClick={() => setShowDeleteConfirm(true)}
+          className="tap-target text-[11px] text-slate-500 hover:text-red-400 underline rounded-lg px-2"
+        >
+          删除战报
+        </button>
       </div>
-      <button
-        onClick={() => setShowDeleteConfirm(true)}
-        className="tap-target text-[11px] text-slate-500 hover:text-red-400 underline"
-      >
-        删除战报
-      </button>
+      </div>
 
       <ConfirmModal
         open={showDeleteConfirm}
@@ -1068,7 +1115,7 @@ function ArchiveRoundCard({
         onConfirm={() => {
           const result = onRemove(round.id);
           if (!result.ok && result.message) {
-            window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${result.message}` }));
+            showToast(`❌ ${result.message}`);
           }
           setShowDeleteConfirm(false);
         }}
@@ -1147,15 +1194,26 @@ export default function TCalculator() {
   const clearStreams = useAppStore((s) => s.clearStreams);
   const plannedOrders = useAppStore((s) => s.plannedOrders);
   const setPlannedOrder = useAppStore((s) => s.setPlannedOrder);
-  const markPlanExecuted = useAppStore((s) => s.markPlanExecuted);
   const cancelPlan = useAppStore((s) => s.cancelPlan);
   const results = useStreamResults();
 
   // 仅展示进行中的短线项目（CLEARED = 池内流水已全部配对并自动归档为战报，不再属于当前项目）
   const activeResults = useMemo(() => results.filter((r) => r.status !== 'CLEARED'), [results]);
 
+  // 项目卡片展开态：页面级统一管控（键 = 标的 fullCode），供「展开全部 / 收起全部」批量切换
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const expandAll = () => setExpandedIds(new Set(activeResults.map((r) => r.fullCode)));
+  const collapseAll = () => setExpandedIds(new Set());
+
   // 【短线/中长期强隔离】短线试算项目池：由进行中的短线项目派生，供计划单卡片短线试算匹配（绝不包含中长期底仓）
-  const shortTrialProjects = useMemo(() => activeResults.map(toShortTrialProject), [activeResults]);
 
   // 表单状态
   const [stock, setStock] = useState<StockSearchItem | null>(null);
@@ -1201,7 +1259,7 @@ export default function TCalculator() {
   const toastTimer = useRef<number | null>(null);
 
   /** 统一显示 Toast 并自动消失 */
-  const showToast = useCallback((msg: string, duration = 4000) => {
+  const showLocalToast = useCallback((msg: string, duration = 4000) => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     setToast(msg);
     // 下一帧触发淡入
@@ -1217,14 +1275,14 @@ export default function TCalculator() {
   useEffect(() => {
     const handler = (e: Event) => {
       const msg = (e as CustomEvent<string>).detail;
-      showToast(msg, 4000);
+      showLocalToast(msg, 4000);
     };
     window.addEventListener('app-toast', handler);
     return () => {
       window.removeEventListener('app-toast', handler);
       if (toastTimer.current) window.clearTimeout(toastTimer.current);
     };
-  }, [showToast]);
+  }, [showLocalToast]);
 
   // 持仓清零自动结清 Toast：由各录入入口（主表单 handleSubmit / 底部面板 submitAp）
   // 基于 addStreamRecord 返回的 cleared 标志触发；v8 下 CLEARED 轮次会立即归档为
@@ -1288,7 +1346,7 @@ export default function TCalculator() {
     const a = parseFloat(amount);
     if (validation && !validation.valid) {
       // 倒T首笔卖出底仓校验失败（缺少持仓/超可卖数量）-> 阻止提交并弹出 Toast
-      showToast(`🛑 ${validation.error ?? '输入无效'}`, 4000);
+      showLocalToast(`🛑 ${validation.error ?? '输入无效'}`, 4000);
       setError(validation.error ?? '输入无效');
       return;
     }
@@ -1311,13 +1369,13 @@ export default function TCalculator() {
     const result = await addStreamRecord(record);
     // Store 层兜底校验拒绝（倒T首笔卖出缺少底仓/超可卖数量）-> 阻止提交并弹出 Toast
     if (result?.rejected) {
-      showToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`, 4000);
+      showLocalToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`, 4000);
       setError(result.rejectedReason ?? '校验未通过');
       return;
     }
     // 自动结清：本轮短线全部配对完成，Round 已归档
     if (result.cleared) {
-      showToast(`🎉 本轮短线已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
+      showLocalToast(`🎉 本轮短线已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
     }
     setPrice('');
     setAmount('');
@@ -1328,58 +1386,28 @@ export default function TCalculator() {
   // ---- 计划单（短线上下文） ----
   // 【短线/中长期强隔离】短线页只展示/管理 context === 'short-term' 的计划单，
   // 严禁穿透到 both/long-term；短线侧永不向 CostAveraging 的 Position 写计划结果。
-  const shortTermPlans = useMemo(() => {
-    const now = Date.now();
-    const displayWindow = 3 * 24 * 60 * 60 * 1000;
-    return plannedOrders.filter((p) => {
-      if (p.status === 'cancelled') return false;
-      if (p.context !== 'short-term') return false;
-      if (p.status === 'expired' || p.status === 'executed') {
-        const expiresAt = new Date(p.expiresAt).getTime();
-        return (now - expiresAt) <= displayWindow;
-      }
-      return true;
-    });
-  }, [plannedOrders]);
+  const shortTermPlans = useMemo(
+    () => filterDisplayablePlans(plannedOrders, { contexts: ['short-term'] }),
+    [plannedOrders],
+  );
 
+  // 执行链路统一走 usePlanExecutor（短线页自带本地 Toast，故 silent）
+  const executePlan = usePlanExecutor({ silent: true });
   const handlePlanExecute = useCallback((order: PlannedOrder, actualPrice: number, actualAmount: number, note: string) => {
-    const direction = order.direction;
-    const txnFee = calcTradeFees(actualPrice, actualAmount, direction, feeConfig).total;
-    const record: TStreamRecord = {
-      id: generateId(),
-      timestamp: new Date().toISOString(),
-      fullCode: order.fullCode,
-      stockName: order.stockName,
-      direction,
-      price: actualPrice,
-      amount: actualAmount,
-      fee: roundTo(txnFee, 2),
-      note: note || undefined,
-    };
-    const result = addStreamRecord(record);
-    if (result?.rejected) {
-      showToast(`🛑 ${result.rejectedReason ?? '校验未通过'}`, 4000);
+    const res = executePlan(order, actualPrice, actualAmount, note);
+    if (!res.ok) {
+      showLocalToast(res.reason ?? '🛑 校验未通过', 4000);
       return;
     }
-    const isAchieved = order.direction === 'buy' ? actualPrice <= order.plannedPrice : actualPrice >= order.plannedPrice;
-    markPlanExecuted(order.id, {
-      executedAt: new Date().toISOString(),
-      actualPrice,
-      actualAmount,
-      note: note || undefined,
-      isAchieved,
-      avgPrice: result?.avgPrice,
-      netProfit: result?.netProfit,
-    });
-    showToast(`✅ 计划单已执行 · ${order.stockName}`, 3000);
-  }, [addStreamRecord, markPlanExecuted, feeConfig, showToast]);
+    showLocalToast(`✅ 计划单已执行 · ${order.stockName}`, 3000);
+  }, [executePlan, showLocalToast]);
 
   const handleCreatePlan = () => {
-    if (!planStock?.fullCode) { showToast('请选择股票', 3000); return; }
+    if (!planStock?.fullCode) { showLocalToast('请选择股票', 3000); return; }
     const p = parseFloat(planPrice);
     const a = parseFloat(planAmount);
-    if (!p || p <= 0) { showToast('请输入有效价格', 3000); return; }
-    if (!a || a <= 0) { showToast('请输入有效数量', 3000); return; }
+    if (!p || p <= 0) { showLocalToast('请输入有效价格', 3000); return; }
+    if (!a || a <= 0) { showLocalToast('请输入有效数量', 3000); return; }
     const now = new Date();
     const expiresAt = new Date(now.getTime() + planValidity * 24 * 60 * 60 * 1000);
     const order: PlannedOrder = {
@@ -1402,7 +1430,7 @@ export default function TCalculator() {
     setPlanAmount('');
     setPlanDirection('buy');
     setPlanValidity(3);
-    showToast(`📋 计划单已创建 · ${order.stockName}`, 3000);
+    showLocalToast(`📋 计划单已创建 · ${order.stockName}`, 3000);
   };
 
   const planQuoteCodes = useMemo(() => shortTermPlans.map((p) => p.fullCode), [shortTermPlans]);
@@ -1428,6 +1456,19 @@ export default function TCalculator() {
       cumulative: recentArchivedRounds.reduce((s, r) => s + r.netProfit, 0),
     };
   }, [recentArchivedRounds]);
+
+  // 归档战报展开态（成交明细）：页面级统一管控（键 = round.id）
+  const [archiveExpandedIds, setArchiveExpandedIds] = useState<Set<string>>(new Set());
+  const toggleArchiveExpand = useCallback((id: string) => {
+    setArchiveExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const expandAllArchive = () => setArchiveExpandedIds(new Set(recentArchivedRounds.map((r) => r.id)));
+  const collapseAllArchive = () => setArchiveExpandedIds(new Set());
 
   // 汇总卡片口径：包含已结清（CLEARED）轮次在内，累计已实现净收益与「今日战报归档库」累计口径一致
   const totalPending = results.reduce((s, r) => s + Math.max(0, r.netPendingAmount), 0);
@@ -1561,7 +1602,7 @@ export default function TCalculator() {
     if (apValidation && !apValidation.valid) {
       const msg = apValidation.error ?? '输入无效';
       setApError(msg);
-      showToast(`🛑 ${msg}`, 4000);
+      showLocalToast(`🛑 ${msg}`, 4000);
       return;
     }
     const secType = apStock?.SecurityType ?? '';
@@ -1585,12 +1626,12 @@ export default function TCalculator() {
     if (result?.rejected) {
       const msg = result.rejectedReason ?? '校验未通过';
       setApError(msg);
-      showToast(`🛑 ${msg}`, 4000);
+      showLocalToast(`🛑 ${msg}`, 4000);
       return;
     }
     // 自动结清：本轮短线全部配对完成，Round 已归档
     if (result.cleared) {
-      showToast(`🎉 本轮短线已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
+      showLocalToast(`🎉 本轮短线已完全结清！累计净盈亏：¥${(result.netProfit ?? 0).toFixed(2)}`, 5000);
     }
     setSheetOpen(false);
     setSheetFullCode(null);
@@ -1623,7 +1664,7 @@ export default function TCalculator() {
           <span className="mr-3">{toast}</span>
           <button
             onClick={() => { setToastVisible(false); setTimeout(() => setToast(null), 300); }}
-            className="text-slate-400 hover:text-white transition-colors text-base leading-none"
+            className="tap-target text-slate-400 hover:text-white transition-colors text-base leading-none"
             aria-label="关闭"
           >
             ✕
@@ -1676,7 +1717,7 @@ export default function TCalculator() {
         <div className="grid grid-cols-2 gap-2 mb-4">
           <button
             onClick={() => setDirection('buy')}
-            className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            className={`tap-target flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
               direction === 'buy'
                 ? 'bg-blue-600 text-white shadow-lg'
                 : 'bg-slate-900 text-slate-400 hover:bg-slate-700'
@@ -1687,7 +1728,7 @@ export default function TCalculator() {
           </button>
           <button
             onClick={() => setDirection('sell')}
-            className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            className={`tap-target flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
               direction === 'sell'
                 ? 'bg-blue-600 text-white shadow-lg'
                 : 'bg-slate-900 text-slate-400 hover:bg-slate-700'
@@ -1816,24 +1857,40 @@ export default function TCalculator() {
       {/* 当前项目（移动端默认折叠） */}
       <div className="space-y-3">
         <MobileCollapse title="当前短线项目" defaultCollapsed={true} badge={`${activeResults.length} 个项目`}>
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-200 hidden md:block">当前短线项目</h3>
-          {activeResults.length > 0 && (
+        <div className="flex items-center justify-between gap-2 flex-wrap px-1">
+          <span className="text-xs text-slate-500">进行中项目（{activeResults.length}）</span>
+          <div className="flex items-center gap-1">
+            {activeResults.length > 0 && (
+              <>
+                <button
+                  onClick={() => {
+                    if (window.confirm('确认清空全部短线流水？')) clearStreams();
+                  }}
+                  className="tap-target text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-slate-800"
+                >
+                  清空流水池
+                </button>
+                <span className="text-slate-700">|</span>
+              </>
+            )}
             <button
-              onClick={() => {
-                if (window.confirm('确认清空全部短线流水？')) clearStreams();
-              }}
-              className="text-xs text-slate-500 hover:text-red-400 underline"
+              onClick={expandAll}
+              className="tap-target text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded hover:bg-slate-800"
             >
-              清空流水池
+              展开全部
             </button>
-          )}
+            <span className="text-slate-700">|</span>
+            <button
+              onClick={collapseAll}
+              className="tap-target text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded hover:bg-slate-800"
+            >
+              收起全部
+            </button>
+          </div>
         </div>
 
         {activeResults.length === 0 ? (
-          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            暂无进行中的短线项目（已自动归档的战报请在下方「今日战报归档库」查看）
-          </div>
+          <EmptyState variant="dashed" title="暂无进行中的短线项目（已自动归档的战报请在下方「今日战报归档库」查看）" />
         ) : (
           activeResults.map((r) => {
             return (
@@ -1843,6 +1900,8 @@ export default function TCalculator() {
                 basePosition={positions.find((p) => p.fullCode === r.fullCode && !p.isClosed)}
                 feeConfig={feeConfig}
                 quote={quotes[r.fullCode] ?? null}
+                isExpanded={expandedIds.has(r.fullCode)}
+                onToggleExpand={() => toggleExpand(r.fullCode)}
                 onAppend={() => openAppendFor(r.fullCode)}
                 onQuickHedge={() => openQuickHedgeFor(r.fullCode)}
               />
@@ -1865,7 +1924,7 @@ export default function TCalculator() {
         {!planFormOpen ? (
           <button
             onClick={() => setPlanFormOpen(true)}
-            className="w-full py-2 text-xs text-slate-400 hover:text-slate-200 border border-dashed border-slate-700 rounded-lg hover:border-slate-600 transition-colors"
+            className="tap-target w-full py-2 text-xs text-slate-400 hover:text-slate-200 border border-dashed border-slate-700 rounded-lg hover:border-slate-600 transition-colors"
           >
             + 添加计划单
           </button>
@@ -1875,7 +1934,7 @@ export default function TCalculator() {
               <span className="text-xs font-semibold text-slate-300">新建计划单</span>
               <button
                 onClick={() => { setPlanFormOpen(false); setPlanStock(null); }}
-                className="text-xs text-slate-500 hover:text-slate-300"
+                className="tap-target text-xs text-slate-500 hover:text-slate-300 rounded-lg px-2"
               >
                 ✕
               </button>
@@ -1889,7 +1948,7 @@ export default function TCalculator() {
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => setPlanDirection('buy')}
-                className={`text-xs rounded-lg py-2 font-medium transition-colors ${
+                className={`tap-target text-xs rounded-lg py-2 font-medium transition-colors ${
                   planDirection === 'buy' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'
                 }`}
               >
@@ -1897,7 +1956,7 @@ export default function TCalculator() {
               </button>
               <button
                 onClick={() => setPlanDirection('sell')}
-                className={`text-xs rounded-lg py-2 font-medium transition-colors ${
+                className={`tap-target text-xs rounded-lg py-2 font-medium transition-colors ${
                   planDirection === 'sell' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400'
                 }`}
               >
@@ -1936,7 +1995,7 @@ export default function TCalculator() {
                   <button
                     key={d}
                     onClick={() => setPlanValidity(d)}
-                    className={`flex-1 text-xs py-1.5 rounded-lg transition-colors ${
+                    className={`tap-target flex-1 text-xs py-1.5 rounded-lg transition-colors ${
                       planValidity === d ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                     }`}
                   >
@@ -1947,7 +2006,7 @@ export default function TCalculator() {
             </div>
             <button
               onClick={handleCreatePlan}
-              className="w-full text-xs py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+              className="tap-target w-full text-xs py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
             >
               确认创建
             </button>
@@ -1955,42 +2014,30 @@ export default function TCalculator() {
         )}
 
         {/* 计划单列表 */}
-        {shortTermPlans.length === 0 ? (
-          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            暂无计划单，创建后可在执行前看到价格对比变化
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {shortTermPlans.map((p) => (
-              <PlanOrderCard
-                key={p.id}
-                order={p}
-                quote={planQuotes[p.fullCode] ?? null}
-                position={positions.find((pos) => pos.fullCode === p.fullCode && !pos.isClosed) ?? null}
-                feeConfig={feeConfig}
-                shortProjects={shortTrialProjects}
-                onEdit={(order) => {
-                  setPlanStock({ fullCode: order.fullCode, Name: order.stockName, ShortName: '', Code: order.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' });
-                  setPlanDirection(order.direction);
-                  setPlanPrice(String(order.plannedPrice));
-                  setPlanAmount(String(order.plannedAmount));
-                  setPlanValidity(order.validityDays);
-                  setPlanFormOpen(true);
-                }}
-                onExecute={handlePlanExecute}
-                onCancel={(id) => cancelPlan(id)}
-              />
-            ))}
-          </div>
-        )}
+        <PlanOrderList
+          orders={shortTermPlans}
+          quotes={planQuotes}
+          emptyVariant="dashed"
+          emptyTitle="暂无计划单，创建后可在执行前看到价格对比变化"
+          onEdit={(order) => {
+            setPlanStock({ fullCode: order.fullCode, Name: order.stockName, ShortName: '', Code: order.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' });
+            setPlanDirection(order.direction);
+            setPlanPrice(String(order.plannedPrice));
+            setPlanAmount(String(order.plannedAmount));
+            setPlanValidity(order.validityDays);
+            setPlanFormOpen(true);
+          }}
+          onExecute={handlePlanExecute}
+          onCancel={(id) => cancelPlan(id)}
+        />
       </div>
 
       {/* 归档历史库 */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
           <h3 className="text-base font-semibold text-slate-200">🏆 近期记录归档（近14天）</h3>
           {recentArchivedRounds.length > 0 && (
-            <div className="text-xs text-slate-400 flex items-center gap-3">
+            <div className="text-xs text-slate-400 flex items-center gap-3 flex-wrap">
               <span>
                 胜率{' '}
                 <b className={archiveStats.rate >= 50 ? 'text-red-400' : 'text-green-400'}>
@@ -2003,24 +2050,40 @@ export default function TCalculator() {
                   {formatCurrency(archiveStats.cumulative)}
                 </b>
               </span>
+              <span className="text-slate-700">|</span>
+              <button
+                onClick={expandAllArchive}
+                className="tap-target text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded hover:bg-slate-800"
+              >
+                展开全部
+              </button>
+              <span className="text-slate-700">|</span>
+              <button
+                onClick={collapseAllArchive}
+                className="tap-target text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded hover:bg-slate-800"
+              >
+                收起全部
+              </button>
             </div>
           )}
         </div>
 
         {archivedLoading ? (
-          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            加载历史战报数据...
-          </div>
+          <EmptyState variant="dashed" title="加载历史战报数据..." />
         ) : recentArchivedRounds.length === 0 ? (
-          <div className="bg-slate-800 border border-dashed border-slate-700 rounded-xl p-8 text-center text-sm text-slate-500">
-            近14天暂无已完成战报
-          </div>
+          <EmptyState variant="dashed" title="近14天暂无已完成战报" />
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {[...recentArchivedRounds]
               .sort((a, b) => new Date(b.closedAt ?? b.openedAt).getTime() - new Date(a.closedAt ?? a.openedAt).getTime())
               .map((round) => (
-                <ArchiveRoundCard key={round.id} round={round} onRemove={(id) => removeRound(id)} />
+                <ArchiveRoundCard
+                  key={round.id}
+                  round={round}
+                  isExpanded={archiveExpandedIds.has(round.id)}
+                  onToggleExpand={() => toggleArchiveExpand(round.id)}
+                  onRemove={(id) => removeRound(id)}
+                />
               ))}
           </div>
         )}
@@ -2132,7 +2195,7 @@ export default function TCalculator() {
                     key={c.label}
                     type="button"
                     onClick={() => setApAmount(String(c.qty))}
-                    className="tap-target text-xs px-3 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700"
+                    className="tap-target text-xs px-3 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700"
                   >
                     {c.label}
                   </button>
@@ -2141,7 +2204,7 @@ export default function TCalculator() {
                   <button
                     type="button"
                     onClick={() => setApPrice(String(roundTo(apQuote.currentPrice, 3)))}
-                    className="tap-target text-xs px-3 rounded-full bg-slate-800 text-blue-300 hover:bg-slate-700"
+                    className="tap-target text-xs px-3 rounded-lg bg-slate-800 text-blue-300 hover:bg-slate-700"
                   >
                     用最新价
                   </button>

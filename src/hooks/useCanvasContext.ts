@@ -9,10 +9,12 @@
  * @author 开发团队
  */
 
+import { useEffect } from 'react';
 import { useAppStore } from '../store';
 import { usePageContext } from './usePageContext';
 import { CANVAS_SCOPE_ID, buildCanvasSummary, blockDataSummary, blockSummaryLine } from '../utils/canvasSummary';
 import { getCanvasTemplate } from '../utils/canvasTemplates';
+import { prefetchDocExcerpts, buildDocExcerptText, buildDocExcerptSection } from '../utils/canvasDocText';
 import type {
   CanvasBlock,
   CanvasBlockData,
@@ -40,17 +42,25 @@ function toBlockSnapshot(b: CanvasBlock): ContextBlockSnapshot {
     suggestedPrompts:
       b.type === 'kline'
         ? [`分析 ${b.blockId} 的 K 线形态`, `给 ${b.blockId} 加一条支撑位备注`]
-        : [`总结 ${b.blockId} 的内容`, `给 ${b.blockId} 加备注`],
+        : b.type === 'file'
+          ? [`总结 ${b.blockId} 文档的要点`, `基于 ${b.blockId} 文档给出结论`]
+          : [`总结 ${b.blockId} 的内容`, `给 ${b.blockId} 加备注`],
     getData: () => {
       // 命令式快照：getState() 现场取最新区块（禁闭包捕获渲染态）
       const cur = useAppStore.getState().canvasBlocks.find((x) => x.blockId === b.blockId);
       const overview: Record<string, string | number | boolean> = cur
         ? { 标号: cur.blockId, 类型: cur.type, 备注数: cur.notes.length }
         : { 标号: b.blockId, 已删除: true };
+      // 文档块：正文前 2000 字摘录（预取缓存同步读；不可提取格式回一句占位说明）
+      const excerpt = cur ? buildDocExcerptText(cur) : null;
       return {
         overview,
         timeAnchor: nowAnchor(),
-        detail: { block: cur ?? null, 摘要: cur ? blockSummaryLine(cur) : '区块已删除' },
+        detail: {
+          block: cur ?? null,
+          摘要: cur ? blockSummaryLine(cur) : '区块已删除',
+          ...(excerpt ? { 文档正文摘录: excerpt } : {}),
+        },
         units: {},
       };
     },
@@ -65,6 +75,11 @@ function toBlockSnapshot(b: CanvasBlock): ContextBlockSnapshot {
 export function useCanvasContext(): void {
   const canvasBlocks = useAppStore((s) => s.canvasBlocks);
 
+  // 文档正文预取：getData 契约同步 → 摘录必须先落内存缓存（区块变化/换文档即重取）
+  useEffect(() => {
+    void prefetchDocExcerpts(canvasBlocks);
+  }, [canvasBlocks]);
+
   // 快捷按钮条（画布首批配置）：local 类按钮闭包读 getState()（命令式纪律，禁捕获渲染态）
   const quickActions: CopilotQuickAction[] = [
     // -- local：纯前端操作，本地拦截直执行（不经 AI，零 token） --
@@ -74,7 +89,7 @@ export function useCanvasContext(): void {
     { label: '加指标', mode: 'local', handler: () => useAppStore.getState().addCanvasBlock('metric') },
     { label: '加文本', mode: 'local', handler: () => useAppStore.getState().addCanvasBlock('text') },
     { label: '加图片', mode: 'local', handler: () => useAppStore.getState().addCanvasBlock('image') },
-    { label: '加文件', mode: 'local', handler: () => useAppStore.getState().addCanvasBlock('file') },
+    { label: '加文档', mode: 'local', handler: () => useAppStore.getState().addCanvasBlock('file') },
     {
       label: '刷新行情',
       mode: 'local',
@@ -101,6 +116,8 @@ export function useCanvasContext(): void {
       const blocks = useAppStore.getState().canvasBlocks;
       const klineCount = blocks.filter((b) => b.type === 'kline').length;
       const noteCount = blocks.reduce((n, b) => n + b.notes.length, 0);
+      // 文档正文摘录汇总（无文档块 = 省略该键，零额外 token；总量自限见 canvasDocText）
+      const docExcerpts = buildDocExcerptSection(blocks);
       return {
         overview: {
           区块数: blocks.length,
@@ -111,6 +128,7 @@ export function useCanvasContext(): void {
         detail: {
           canvasBlocks: buildCanvasSummary(blocks),
           units: { 区块数: '个', 备注总数: '条' },
+          ...(docExcerpts ? { 文档正文摘录: docExcerpts } : {}),
         },
         units: {},
       };

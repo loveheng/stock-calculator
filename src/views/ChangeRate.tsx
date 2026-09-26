@@ -1,18 +1,39 @@
 /**
  * @file ChangeRate.tsx
- * @description 涨跌幅计算器：支持「涨跌幅 → 目标价」（模式A）与「目标价 → 涨跌幅」（模式B）
- *              两种换算，并内置主板 ±10% / 科创创业 ±20% 涨跌停阶梯推算（连续 N 日）。
+ * @description 涨跌幅计算器：页级平级子菜单（按涨跌幅算目标价 / 按目标价算涨跌幅 /
+ *              连续涨跌停阶梯，与设置页同构——ModeTabs + 移动端左右滑动切换）；阶梯 Tab 内置
+ *              主板 ±10% / 科创创业 ±20% 涨跌停阶梯推算（连续 N 日）。
  * @layer UI
  * @storage_impact 纯计算页面，不读写 IndexedDB；仅调用 mathUtils 纯函数。
  * @author 开发团队
  */
 
 import React, { useMemo, useState } from 'react';
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import type { ElementType } from 'react';
+import { TrendingUp, TrendingDown, Layers } from 'lucide-react';
+import ModeTabs from '../components/ui/ModeTabs';
+import SwipeTabPanel from '../components/ui/SwipeTabPanel';
 import { calcChangeRate, calcTargetPrice, calcLadder } from '../utils/mathUtils';
 import type { LadderItem } from '../utils/mathUtils';
 
-type CalcMode = 'A' | 'B';
+/**
+ * 页级子菜单（三个平级 Tab）：
+ *  - A：按涨跌幅算目标价（输入涨跌幅 → 目标价格）
+ *  - B：按目标价算涨跌幅（输入目标价格 → 涨跌幅）
+ *  - ladder：连续涨跌停阶梯
+ */
+type ChangeRateTab = 'A' | 'B' | 'ladder';
+
+/** 子菜单定义（模块级常量，避免每次渲染重建数组） */
+const CHANGE_RATE_TABS: ReadonlyArray<{ id: ChangeRateTab; label: string; icon: ElementType }> = [
+  { id: 'A', label: '按涨跌幅算目标价', icon: TrendingUp },
+  { id: 'B', label: '按目标价算涨跌幅', icon: TrendingDown },
+  { id: 'ladder', label: '连续涨跌停阶梯', icon: Layers },
+];
+
+/** 滑动切换顺序（与 Tab 条视觉顺序一致） */
+const CHANGE_RATE_TAB_ORDER: readonly ChangeRateTab[] = CHANGE_RATE_TABS.map((t) => t.id);
+
 type BoardPreset = '+10' | '-10' | '+20' | '-20' | 'custom';
 
 interface BoardOption {
@@ -66,14 +87,18 @@ const sanitizeInteger = (value: string): string => value.replace(/[^\d]/g, '');
 /**
  * 涨跌幅计算器页面组件。
  *
- * @description 提供两种换算模式：
- *  - 模式 A：输入涨跌幅百分比 → 输出目标价格
- *  - 模式 B：输入目标价格 → 输出涨跌幅百分比
- *  支持切换主板/科创/创业板的涨跌停预设，并可推算连续 N 日涨跌停阶梯价。
+ * @description 提供三种平级子菜单：
+ *  - A：输入涨跌幅百分比 → 输出目标价格
+ *  - B：输入目标价格 → 输出涨跌幅百分比
+ *  - 连续涨跌停阶梯：切换主板/科创/创业板的涨跌停预设，推算连续 N 日阶梯价
+ *  页级子菜单（三个 Tab 平级）与设置页同构，移动端可左右滑动切换。
  * @returns {JSX.Element} 涨跌幅计算器视图
  * @note 纯计算 UI，无任何存储读写
  */
 export default function ChangeRate() {
+  // 页级子菜单（内存态；三个 Tab 共用下方输入态，切走再切回不丢）
+  const [tab, setTab] = useState<ChangeRateTab>('A');
+
   // 公共输入：基准价格
   const [basePrice, setBasePrice] = useState('');
 
@@ -82,9 +107,6 @@ export default function ChangeRate() {
 
   // 模式 B：输入目标价格 → 输出涨跌幅
   const [targetPrice, setTargetPrice] = useState('');
-
-  // 计算模式切换
-  const [mode, setMode] = useState<CalcMode>('A');
 
   // 即时阶梯：方向拆分的快捷预设
   const [board, setBoard] = useState<BoardPreset>('+10');
@@ -98,21 +120,21 @@ export default function ChangeRate() {
 
   // 模式 A：按涨跌幅计算目标价格
   const targetResult = useMemo(() => {
-    if (mode !== 'A' || !basePrice || !percentInput) return null;
+    if (tab !== 'A' || !basePrice || !percentInput) return null;
     const base = Number(basePrice);
     const pct = Number(percentInput);
     if (!isFinite(base) || base <= 0 || !isFinite(pct)) return null;
     return calcTargetPrice(base, pct);
-  }, [mode, basePrice, percentInput]);
+  }, [tab, basePrice, percentInput]);
 
   // 模式 B：按目标价格计算涨跌幅
   const changeResult = useMemo(() => {
-    if (mode !== 'B' || !basePrice || !targetPrice) return null;
+    if (tab !== 'B' || !basePrice || !targetPrice) return null;
     const base = Number(basePrice);
     const target = Number(targetPrice);
     if (!isFinite(base) || base <= 0 || !isFinite(target)) return null;
     return calcChangeRate(base, target);
-  }, [mode, basePrice, targetPrice]);
+  }, [tab, basePrice, targetPrice]);
 
   // 连续阶梯计算：实时响应，即时更新
   const { ladder, rate } = useMemo<{ ladder: LadderItem[]; rate: number | null }>(() => {
@@ -142,234 +164,227 @@ export default function ChangeRate() {
 
   return (
     <div className="page-container space-y-5 pb-[env(safe-area-inset-bottom)]">
-      {/* ========== 涨跌幅计算 ========== */}
-      <div className="card">
-        <h3>涨跌幅计算</h3>
+      {/* 页级子菜单：按涨跌幅算目标价 / 按目标价算涨跌幅 / 连续涨跌停阶梯（移动端可左右滑动切换） */}
+      <ModeTabs tabs={CHANGE_RATE_TABS} value={tab} onChange={setTab} ariaLabel="涨跌幅计算器子菜单" />
 
-        {/* 模式切换 */}
-        <div className="grid grid-cols-2 gap-2 mb-4">
-          <button
-            onClick={() => setMode('A')}
-            className={`tap-target flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-              mode === 'A'
-                ? 'bg-blue-600 text-white shadow-lg'
-                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-            }`}
-          >
-            <TrendingUp className="w-4 h-4" />
-            按涨跌幅计算目标价
-          </button>
-          <button
-            onClick={() => setMode('B')}
-            className={`tap-target flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-              mode === 'B'
-                ? 'bg-blue-600 text-white shadow-lg'
-                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-            }`}
-          >
-            <TrendingDown className="w-4 h-4" />
-            按目标价计算涨跌幅
-          </button>
-        </div>
+      <SwipeTabPanel order={CHANGE_RATE_TAB_ORDER} value={tab} onChange={setTab} className="space-y-5">
+        {tab !== 'ladder' ? (
+          /* ========== 涨跌幅计算（A 按涨跌幅算目标价 / B 按目标价算涨跌幅） ========== */
+          <div className="card">
+            <h3>涨跌幅计算</h3>
 
-        {/* 基准价格 */}
-        <div className="form-group">
-          <label>基准价格（元）</label>
-          <input
-            type="text"
-            inputMode="decimal"
-            placeholder="输入基准价格"
-            value={basePrice}
-            onChange={(e) => setBasePrice(sanitizeDecimal(e.target.value))}
-          />
-        </div>
-
-        {/* 模式 A：涨跌幅输入 */}
-        {mode === 'A' ? (
-          <div className="form-group">
-            <label>涨跌幅（%）</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder="如 10 表示 +10%，-5 表示 -5%"
-              value={percentInput}
-              onChange={(e) => setPercentInput(sanitizeSignedDecimal(e.target.value))}
-            />
-          </div>
-        ) : (
-          /* 模式 B：目标价格输入 */
-          <div className="form-group">
-            <label>目标价格（元）</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder="输入目标价格"
-              value={targetPrice}
-              onChange={(e) => setTargetPrice(sanitizeDecimal(e.target.value))}
-            />
-          </div>
-        )}
-
-        {/* 模式 A 结果 */}
-        {targetResult && (
-          <div className="mt-4 p-3 md:p-4 bg-slate-900 rounded-lg">
-            <div className="grid grid-cols-2 gap-3 md:gap-4">
-              <div>
-                <span className="text-xs text-slate-500">目标价格</span>
-                <p className="text-lg font-bold text-blue-400">
-                  ¥{targetResult.target.toFixed(3)}
-                </p>
-              </div>
-              <div>
-                <span className="text-xs text-slate-500">涨跌绝对金额</span>
-                <p className={`text-lg font-bold ${targetResult.diff >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-                  {targetResult.diff >= 0 ? '+' : ''}{targetResult.diff.toFixed(3)}
-                </p>
-              </div>
+            {/* 基准价格 */}
+            <div className="form-group">
+              <label>基准价格（元）</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="输入基准价格"
+                value={basePrice}
+                onChange={(e) => setBasePrice(sanitizeDecimal(e.target.value))}
+              />
             </div>
-          </div>
-        )}
 
-        {/* 模式 B 结果 */}
-        {changeResult && (
-          <div className="mt-4 p-3 md:p-4 bg-slate-900 rounded-lg">
-            <div className="grid grid-cols-2 gap-3 md:gap-4">
-              <div>
-                <span className="text-xs text-slate-500">涨跌幅</span>
-                <p className={`text-lg font-bold ${changeResult.percent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-                  {changeResult.percent >= 0 ? '+' : ''}{changeResult.percent.toFixed(2)}%
-                </p>
-              </div>
-              <div>
-                <span className="text-xs text-slate-500">涨跌绝对金额</span>
-                <p className={`text-lg font-bold ${changeResult.diff >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-                  {changeResult.diff >= 0 ? '+' : ''}{changeResult.diff.toFixed(3)}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ========== 连续涨跌停阶梯 ========== */}
-      <div className="card">
-        <h3>连续涨跌停阶梯</h3>
-
-        {/* 方向拆分的快捷预设（桌面一行5个 / 移动端2列） */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
-          {BOARD_OPTIONS.map((opt) => (
-            <button
-              key={opt.key}
-              type="button"
-              onClick={() => setBoard(opt.key)}
-              className={`min-h-11 px-2 py-2.5 rounded-xl text-xs font-medium transition-all whitespace-nowrap tap-target ${
-                board === opt.key
-                  ? 'bg-blue-600 text-white shadow-lg'
-                  : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-
-        {/* 自定义输入区（动画展开，单行 Inline：± 按钮 + 数字输入框 + %） */}
-        <div
-          className={`grid transition-all duration-300 ease-in-out ${
-            board === 'custom' ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
-          }`}
-        >
-          <div className="overflow-hidden">
-            <div className="pb-4">
-              <div className="flex items-center gap-2.5">
-                {/* 正负号切换按钮（触控热区 ≥44px） */}
-                <button
-                  type="button"
-                  onClick={toggleCustomSign}
-                  aria-label="切换正负号"
-                  className={`w-12 h-12 shrink-0 rounded-xl text-xl font-bold border transition-all ${
-                    customSign === '+'
-                      ? 'border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20'
-                      : 'border-green-500/40 bg-green-500/10 text-green-400 hover:bg-green-500/20'
-                  }`}
-                >
-                  {customSign}
-                </button>
-                {/* 数字输入框（移除原生微调箭头，Focus 蓝色描边） */}
+            {/* 模式 A：涨跌幅输入 */}
+            {tab === 'A' ? (
+              <div className="form-group">
+                <label>涨跌幅（%）</label>
                 <input
                   type="text"
                   inputMode="decimal"
-                  className="flex-1 appearance-none px-3 py-3 md:py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-sm md:text-base text-slate-200 outline-none transition-colors duration-200 placeholder:text-slate-600 focus:border-blue-500 focus:shadow-[0_0_0_2px_rgba(59,130,246,0.2)]"
-                  placeholder="输入涨跌幅数值，如 7.5"
-                  value={customValue}
-                  onChange={(e) => setCustomValue(sanitizeDecimal(e.target.value))}
+                  placeholder="如 10 表示 +10%，-5 表示 -5%"
+                  value={percentInput}
+                  onChange={(e) => setPercentInput(sanitizeSignedDecimal(e.target.value))}
                 />
-                <span className="shrink-0 text-sm font-medium text-slate-400 select-none">%</span>
+              </div>
+            ) : (
+              /* 模式 B：目标价格输入 */
+              <div className="form-group">
+                <label>目标价格（元）</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="输入目标价格"
+                  value={targetPrice}
+                  onChange={(e) => setTargetPrice(sanitizeDecimal(e.target.value))}
+                />
+              </div>
+            )}
+
+            {/* 模式 A 结果 */}
+            {targetResult && (
+              <div className="mt-4 p-3 md:p-4 bg-slate-900 rounded-lg">
+                <div className="grid grid-cols-2 gap-3 md:gap-4">
+                  <div>
+                    <span className="text-xs text-slate-500">目标价格</span>
+                    <p className="text-lg font-bold text-blue-400">
+                      ¥{targetResult.target.toFixed(3)}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-xs text-slate-500">涨跌绝对金额</span>
+                    <p className={`text-lg font-bold ${targetResult.diff >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      {targetResult.diff >= 0 ? '+' : ''}{targetResult.diff.toFixed(3)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 模式 B 结果 */}
+            {changeResult && (
+              <div className="mt-4 p-3 md:p-4 bg-slate-900 rounded-lg">
+                <div className="grid grid-cols-2 gap-3 md:gap-4">
+                  <div>
+                    <span className="text-xs text-slate-500">涨跌幅</span>
+                    <p className={`text-lg font-bold ${changeResult.percent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      {changeResult.percent >= 0 ? '+' : ''}{changeResult.percent.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-xs text-slate-500">涨跌绝对金额</span>
+                    <p className={`text-lg font-bold ${changeResult.diff >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      {changeResult.diff >= 0 ? '+' : ''}{changeResult.diff.toFixed(3)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* ========== 连续涨跌停阶梯 ========== */
+          <div className="card">
+            <h3>连续涨跌停阶梯</h3>
+
+            {/* 基准价格（与换算 Tab 共用同一 state）：阶梯 Tab 可独立使用，无需来回切 Tab 填价 */}
+            <div className="form-group">
+              <label>基准价格（元）</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="输入基准价格"
+                value={basePrice}
+                onChange={(e) => setBasePrice(sanitizeDecimal(e.target.value))}
+              />
+            </div>
+
+            {/* 方向拆分的快捷预设（桌面一行5个 / 移动端2列） */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
+              {BOARD_OPTIONS.map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setBoard(opt.key)}
+                  className={`min-h-11 px-2 py-2.5 rounded-xl text-xs font-medium transition-all whitespace-nowrap tap-target ${
+                    board === opt.key
+                      ? 'bg-blue-600 text-white shadow-lg'
+                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* 自定义输入区（动画展开，单行 Inline：± 按钮 + 数字输入框 + %） */}
+            <div
+              className={`grid transition-all duration-300 ease-in-out ${
+                board === 'custom' ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+              }`}
+            >
+              <div className="overflow-hidden">
+                <div className="pb-4">
+                  <div className="flex items-center gap-2.5">
+                    {/* 正负号切换按钮（触控热区 ≥44px） */}
+                    <button
+                      type="button"
+                      onClick={toggleCustomSign}
+                      aria-label="切换正负号"
+                      className={`w-12 h-12 shrink-0 rounded-xl text-xl font-bold border transition-all ${
+                        customSign === '+'
+                          ? 'border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                          : 'border-green-500/40 bg-green-500/10 text-green-400 hover:bg-green-500/20'
+                      }`}
+                    >
+                      {customSign}
+                    </button>
+                    {/* 数字输入框（移除原生微调箭头，Focus 蓝色描边） */}
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="flex-1 appearance-none px-3 py-3 md:py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-sm md:text-base text-slate-200 outline-none transition-colors duration-200 placeholder:text-slate-600 focus:border-blue-500 focus:shadow-[0_0_0_2px_rgba(59,130,246,0.2)]"
+                      placeholder="输入涨跌幅数值，如 7.5"
+                      value={customValue}
+                      onChange={(e) => setCustomValue(sanitizeDecimal(e.target.value))}
+                    />
+                    <span className="shrink-0 text-sm font-medium text-slate-400 select-none">%</span>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* 连续天数 N */}
-        <div className="form-group">
-          <label>连续天数 N（最大30天）</label>
-          <input
-            type="text"
-            inputMode="numeric"
-            placeholder="输入连续天数，如 5"
-            value={days}
-            maxLength={2}
-            onChange={(e) => setDays(sanitizeInteger(e.target.value))}
-          />
-        </div>
-
-        {/* 阶梯摘要（移动端紧凑，超长截断不折行） */}
-        {rate !== null && lastItem && (
-          <div className="mt-4 p-3 bg-slate-900 rounded-lg">
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="min-w-0">
-                <span className="text-xs text-slate-500">单日涨跌幅</span>
-                <p className={`text-sm font-bold truncate tabular-nums ${isUp ? 'text-red-400' : 'text-green-400'}`}>
-                  {isUp ? '+' : ''}{rate.toFixed(2)}%
-                </p>
-              </div>
-              <div className="min-w-0">
-                <span className="text-xs text-slate-500">第{days || 0}天价格</span>
-                <p className="text-sm font-bold text-blue-400 truncate tabular-nums">¥{lastItem.price.toFixed(3)}</p>
-              </div>
-              <div className="min-w-0">
-                <span className="text-xs text-slate-500">累计涨跌幅</span>
-                <p className={`text-sm font-bold truncate tabular-nums ${isUp ? 'text-red-400' : 'text-green-400'}`}>
-                  {lastItem.cumulativePercent >= 0 ? '+' : ''}
-                  {lastItem.cumulativePercent.toFixed(2)}%
-                </p>
-              </div>
+            {/* 连续天数 N */}
+            <div className="form-group">
+              <label>连续天数 N（最大30天）</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="输入连续天数，如 5"
+                value={days}
+                maxLength={2}
+                onChange={(e) => setDays(sanitizeInteger(e.target.value))}
+              />
             </div>
-          </div>
-        )}
 
-        {/* 每日阶梯明细（移动端紧凑卡片，数字等宽不折行） */}
-        {ladder.length > 0 && (
-          <div className="mt-3 space-y-1.5">
-            {ladder.map((item) => (
-              <div
-                key={item.day}
-                className="flex items-center justify-between gap-2 p-2.5 bg-slate-900/60 rounded-lg text-sm"
-              >
-                <span className="text-slate-400 w-16 shrink-0">第{item.day}天</span>
-                <span className={`font-medium whitespace-nowrap tabular-nums ${isUp ? 'text-red-400' : 'text-green-400'}`}>
-                  {item.cumulativePercent >= 0 ? '+' : ''}
-                  {item.cumulativePercent.toFixed(2)}%
-                </span>
-                <span className="font-mono text-slate-200 whitespace-nowrap tabular-nums">¥{item.price.toFixed(3)}</span>
-                <span className={`text-xs w-24 text-right shrink-0 whitespace-nowrap tabular-nums ${isUp ? 'text-red-400' : 'text-green-400'}`}>
-                  {item.diff >= 0 ? '+' : ''}¥{item.diff.toFixed(3)}
-                </span>
+            {/* 阶梯摘要（移动端紧凑，超长截断不折行） */}
+            {rate !== null && lastItem && (
+              <div className="mt-4 p-3 bg-slate-900 rounded-lg">
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="min-w-0">
+                    <span className="text-xs text-slate-500">单日涨跌幅</span>
+                    <p className={`text-sm font-bold truncate tabular-nums ${isUp ? 'text-red-400' : 'text-green-400'}`}>
+                      {isUp ? '+' : ''}{rate.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-xs text-slate-500">第{days || 0}天价格</span>
+                    <p className="text-sm font-bold text-blue-400 truncate tabular-nums">¥{lastItem.price.toFixed(3)}</p>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-xs text-slate-500">累计涨跌幅</span>
+                    <p className={`text-sm font-bold truncate tabular-nums ${isUp ? 'text-red-400' : 'text-green-400'}`}>
+                      {lastItem.cumulativePercent >= 0 ? '+' : ''}
+                      {lastItem.cumulativePercent.toFixed(2)}%
+                    </p>
+                  </div>
+                </div>
               </div>
-            ))}
+            )}
+
+            {/* 每日阶梯明细（移动端紧凑卡片，数字等宽不折行） */}
+            {ladder.length > 0 && (
+              <div className="mt-3 space-y-1.5">
+                {ladder.map((item) => (
+                  <div
+                    key={item.day}
+                    className="flex items-center justify-between gap-2 p-2.5 bg-slate-900/60 rounded-lg text-sm"
+                  >
+                    <span className="text-slate-400 w-16 shrink-0">第{item.day}天</span>
+                    <span className={`font-medium whitespace-nowrap tabular-nums ${isUp ? 'text-red-400' : 'text-green-400'}`}>
+                      {item.cumulativePercent >= 0 ? '+' : ''}
+                      {item.cumulativePercent.toFixed(2)}%
+                    </span>
+                    <span className="font-mono text-slate-200 whitespace-nowrap tabular-nums">¥{item.price.toFixed(3)}</span>
+                    <span className={`text-xs w-24 text-right shrink-0 whitespace-nowrap tabular-nums ${isUp ? 'text-red-400' : 'text-green-400'}`}>
+                      {item.diff >= 0 ? '+' : ''}¥{item.diff.toFixed(3)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
-      </div>
+      </SwipeTabPanel>
     </div>
   );
 }

@@ -16,15 +16,13 @@ import { Bell, BellRing } from 'lucide-react';
 import { useAppStore } from '../../store';
 import { useAuthStore } from '../../store/useAuthStore';
 import { toStockId } from '../../utils/dedup';
+import { showToast } from '../../utils/toast';
 
 interface AnnouncementSubscribeButtonProps {
   /** 标的 fullCode（如 sh600745 / 600745 / SZ000001），组件内归一化为 6 位码 */
   fullCode: string | undefined | null;
 }
 
-function emitToast(message: string): void {
-  window.dispatchEvent(new CustomEvent('app-toast', { detail: message }));
-}
 
 export default function AnnouncementSubscribeButton({ fullCode }: AnnouncementSubscribeButtonProps) {
   const subscribedStockIds = useAppStore((s) => s.subscribedStockIds);
@@ -55,13 +53,13 @@ export default function AnnouncementSubscribeButton({ fullCode }: AnnouncementSu
         ? await unsubscribeAction(sid)
         : await subscribeAction(sid);
       if (result.ok) {
-        emitToast(
+        showToast(
           subscribed
             ? '已取消订阅 ' + sid + ' 的公告摘要'
             : '订阅成功，' + sid + ' 的公告数据将在几分钟内陆续同步',
         );
       } else {
-        emitToast(result.message ?? '操作失败，请稍后重试');
+        showToast(result.message ?? '操作失败，请稍后重试');
       }
     } finally {
       setPending(false);

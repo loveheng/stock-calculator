@@ -188,7 +188,7 @@ op.exec(payload.blockId, payload);         // runBlockTask 串行 + 存活校验
 | table | 全表 | update_table |
 | chart | 数据点 | update_block(绑定/录入) |
 | text | —（不支持取数） | update_text / add_block(带内容) |
-| image / file | — | —（仅 add_block） |
+| image / file（对外文案「文档」，见 free-canvas-spec §4.3） | — | —（仅 add_block） |
 | 通用 | — | remove_block / refresh_klines（挂于 allCanvasOperations，不属单模板） |
 
 ## 六、DSL 动态模板（widget：第八区块类型，AI 自定义增量面板）

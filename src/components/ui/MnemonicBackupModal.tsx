@@ -13,12 +13,10 @@
 import { useMemo, useState } from 'react';
 import { Copy, Download, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
+import { showToast } from '../../utils/toast';
 
 type Phase = 'display' | 'quiz';
 
-function showToast(msg: string): void {
-  window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
-}
 
 /** 抽 2 个不重复的挖空序号（0-11） */
 function pickQuizIndices(): number[] {

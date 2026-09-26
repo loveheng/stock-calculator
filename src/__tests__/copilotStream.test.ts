@@ -131,6 +131,20 @@ describe('streamQuestion（SSE 内容协商）', () => {
     await expect(streamQuestion('statistics', REQ, () => {})).rejects.toBeInstanceOf(CopilotApiError);
   });
 
+  it('信封 409 无 subCode：经 CODE_FALLBACK 映射 REQUEST_IN_FLIGHT，后端 message 透出为 hint', async () => {
+    const fetchMock = fetch as unknown as Mock;
+    fetchMock.mockResolvedValue(
+      jsonResponse({ code: 409, message: '上一次提问仍在处理中，请稍后再试', data: null }),
+    );
+    await expect(streamQuestion('statistics', REQ, () => {})).rejects.toMatchObject({
+      code: 409,
+      subCode: 'REQUEST_IN_FLIGHT',
+      message: '上一次提问仍在处理中，请稍后再试',
+      hint: '上一次提问仍在处理中，请稍后再试',
+      retryable: true,
+    });
+  });
+
   it('流中 error 事件：映射 subCode 抛规范化异常', async () => {
     const fetchMock = fetch as unknown as Mock;
     fetchMock.mockResolvedValue(
@@ -145,6 +159,19 @@ describe('streamQuestion（SSE 内容协商）', () => {
       hint: 'AI 服务暂不可用，请稍后重试',
     });
     expect(deltas).toEqual(['半']);
+  });
+
+  it('流中 error 事件无 subCode：按 code 经 CODE_FALLBACK 兜底（409 → REQUEST_IN_FLIGHT）', async () => {
+    const fetchMock = fetch as unknown as Mock;
+    fetchMock.mockResolvedValue(
+      sseResponse([
+        'event: error\ndata: {"code":409,"message":"上一次提问仍在处理中，请稍后再试"}\n\n',
+      ]),
+    );
+    await expect(streamQuestion('s', REQ, () => {})).rejects.toMatchObject({
+      subCode: 'REQUEST_IN_FLIGHT',
+      hint: '上一次提问仍在处理中，请稍后再试',
+    });
   });
 
   it('流异常中断（无 done 事件）：报错而非静默返回空', async () => {

@@ -47,6 +47,7 @@ import type {
   CanvasBlock,
   CanvasBlockType,
   CanvasBlockData,
+  CanvasBoardMeta,
   TrendLine,
   HLine,
 } from '../types/domain';
@@ -350,6 +351,18 @@ export interface AppStoreActions {
   refreshCanvasKlines: () => Promise<{ ok: string[]; failed: string[] }>;
   /** 动作消费队列：同 blockId 串行 + 执行最后一刻存活校验（不存在静默丢弃） */
   runBlockTask: (blockId: string, task: () => Promise<void> | void) => Promise<void>;
+
+  // -- 多画布管理（画布列表 Tab） --
+  /** 刷新画布列表元数据（进页面/增删后重拉） */
+  loadCanvasBoards: () => Promise<void>;
+  /** 切换当前画布（切换前立即落盘旧画布，防防抖窗口写错目标） */
+  switchCanvasBoard: (boardId: string) => Promise<void>;
+  /** 新建空白画布并切换过去；返回新画布 id */
+  createCanvasBoard: (title?: string) => Promise<string>;
+  /** 重命名画布 */
+  renameCanvasBoard: (boardId: string, title: string) => Promise<void>;
+  /** 删除画布（删掉当前画布时自动切到列表首块） */
+  deleteCanvasBoard: (boardId: string) => Promise<void>;
 }
 
 /** 完整的 Store 状态 + Action */
@@ -368,6 +381,10 @@ export interface AppStore extends AppStoreActions {
   persistError: string | null;
 
   // -- 自由画布（Free Canvas） --
+  /** 当前画布 id（多画布：所有写路径只落这一块） */
+  canvasBoardId: string;
+  /** 画布列表元数据（轻量；blocks 不进列表态，避免大对象常驻） */
+  canvasBoards: CanvasBoardMeta[];
   /** 画布区块数组（唯一权威态；变更后 800ms 防抖整块写回 canvasBoards） */
   canvasBlocks: CanvasBlock[];
   /** 标号分配单调计数器（列优先协议，只增不减——删除不复用的保证） */

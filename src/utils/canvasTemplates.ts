@@ -19,7 +19,7 @@ import {
   ChartLine,
   Gauge,
   Image as ImageIcon,
-  Paperclip,
+  FileText,
   Type as TypeIcon,
   LayoutTemplate,
   UserSearch,
@@ -398,11 +398,14 @@ export const CANVAS_TEMPLATES: Readonly<Record<CanvasBlockType, CanvasTemplate>>
     operationsMeta: [],
     dataVocab: [],
   },
+  // 文档区块：对外文案「文档」（工具条添加下拉 / 空态模板网格 / 区块徽标同源）。
+  // type key 保持 'file' 不动——存量画布已落库该 type，且 canvas_add_block 守卫白名单与
+  // AI 标号摘要（blockSummaryLine 输出 [file]）同此字符串，改名 = 存量块失效 + LLM 载荷被静默丢弃。
   file: {
     type: 'file',
-    label: '文件区域',
-    icon: Paperclip,
-    defaultSize: { w: 3, h: 4 },
+    label: '文档',
+    icon: FileText,
+    defaultSize: { w: 4, h: 6 },
     initData: () => ({ fileName: '', fileType: '' }),
     operationsMeta: [],
     dataVocab: [],

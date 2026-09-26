@@ -408,7 +408,8 @@ export default function FeeConfigPage() {
           </div>
         </div>
 
-        <div className="mt-4 overflow-x-auto">
+        {/* data-swipe-ignore：宽表格横向滚动优先，横滑此处不触发页级 Tab 切换 */}
+        <div data-swipe-ignore className="mt-4 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-slate-500 text-xs border-b border-slate-700">

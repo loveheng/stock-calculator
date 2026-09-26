@@ -20,6 +20,7 @@ import { useAppStore } from '../../store';
 import { getBrokerKlines, getCachedBrokerKlines, computeIndicators, indicatorsForBlockType, BrokerUnavailableError, type BrokerKline, type BrokerIndicatorCap } from '../../services/brokerService';
 import { getCanvasTemplate } from '../../utils/canvasTemplates';
 import CanvasBriefCard from './CanvasBriefCard';
+import CanvasDocBlock from './CanvasDocBlock';
 import { SessionExpiredError } from '../../services/apiClient';
 import { loadStoredAuthSession } from '../../services/authSession';
 import { searchStocks } from '../../services/stockService';
@@ -325,20 +326,20 @@ function TableContent({ block }: { block: CanvasBlock }) {
 }
 
 // ============================================================
-// 文件 / 图片区块（Portal 上传，Blob 存 canvasBlobs）
+// 图片区块（Portal 上传，Blob 存 canvasBlobs；文档区块见 CanvasDocBlock）
 // ============================================================
 
-function FileImageContent({ block, isImage }: { block: CanvasBlock; isImage: boolean }) {
-  const data = block.data as CanvasBlockData['image'] | CanvasBlockData['file'];
+function ImageContent({ block }: { block: CanvasBlock }) {
+  const data = block.data as CanvasBlockData['image'];
   const updateCanvasBlockData = useAppStore((s) => s.updateCanvasBlockData);
   const setCopilotNotice = useAppStore((s) => s.setCopilotNotice);
   const inputRef = useRef<HTMLInputElement>(null);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
 
   // 引用 id 变化 → 读 Blob 预览（图片）
-  const ref = isImage ? (data as CanvasBlockData['image']).imageRef : (data as CanvasBlockData['file']).dataRef;
+  const ref = data.imageRef;
   useEffect(() => {
-    if (!ref || !isImage) return;
+    if (!ref) return;
     let revoked = false;
     import('../../services/canvasService').then(({ getBlob }) =>
       getBlob(ref).then((entity) => {
@@ -354,7 +355,7 @@ function FileImageContent({ block, isImage }: { block: CanvasBlock; isImage: boo
         return null;
       });
     };
-  }, [ref, isImage]);
+  }, [ref]);
 
   const onFile = async (file: File) => {
     if (file.size > 2 * 1024 * 1024) {
@@ -363,45 +364,23 @@ function FileImageContent({ block, isImage }: { block: CanvasBlock; isImage: boo
     }
     try {
       const id = await putBlob(file, file.type);
-      if (isImage) {
-        updateCanvasBlockData(block.blockId, { imageRef: id } as CanvasBlockData['image']);
-      } else {
-        updateCanvasBlockData(block.blockId, { fileName: file.name, fileType: file.type, dataRef: id } as CanvasBlockData['file']);
-      }
+      updateCanvasBlockData(block.blockId, { imageRef: id } as CanvasBlockData['image']);
     } catch {
       setCopilotNotice({ title: '上传失败', message: 'Blob 写入失败，请重试', severity: 'danger' });
     }
   };
 
-  if (isImage) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        {dataUrl ? (
-          <img src={dataUrl} alt="画布图片" className="max-h-full max-w-full object-contain" />
-        ) : (
-          <button className="flex flex-col items-center gap-1 text-slate-500 hover:text-blue-400" onClick={() => inputRef.current?.click()}>
-            <Upload className="h-5 w-5" />
-            <span className="text-xs">上传图片（≤2MB）</span>
-          </button>
-        )}
-        <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
-      </div>
-    );
-  }
   return (
     <div className="flex h-full items-center justify-center">
-      {(data as CanvasBlockData['file']).fileName ? (
-        <div className="text-center text-xs text-slate-400">
-          <p className="font-medium text-slate-300">{(data as CanvasBlockData['file']).fileName}</p>
-          <button className="mt-1 text-slate-500 hover:text-blue-400" onClick={() => inputRef.current?.click()}>重新上传</button>
-        </div>
+      {dataUrl ? (
+        <img src={dataUrl} alt="画布图片" className="max-h-full max-w-full object-contain" />
       ) : (
         <button className="flex flex-col items-center gap-1 text-slate-500 hover:text-blue-400" onClick={() => inputRef.current?.click()}>
           <Upload className="h-5 w-5" />
-          <span className="text-xs">上传文件（≤2MB）</span>
+          <span className="text-xs">上传图片（≤2MB）</span>
         </button>
       )}
-      <input ref={inputRef} type="file" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
+      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
     </div>
   );
 }
@@ -943,13 +922,13 @@ export default function CanvasBlockContent({ block }: { block: CanvasBlock }) {
     case 'table':
       return <TableContent block={block} />;
     case 'file':
-      return <FileImageContent block={block} isImage={false} />;
+      return <CanvasDocBlock block={block} />;
     case 'chart':
       return <ChartContent block={block} />;
     case 'metric':
       return <MetricContent block={block} />;
     case 'image':
-      return <FileImageContent block={block} isImage={true} />;
+      return <ImageContent block={block} />;
     case 'text':
       return <TextContent block={block} />;
     case 'brief':

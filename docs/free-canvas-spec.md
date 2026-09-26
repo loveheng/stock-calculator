@@ -107,9 +107,15 @@ interface CanvasBlock {
 - 添加时默认 3 列 × 4 行空表；列标题/单元格点击即编辑；行列可增删
 - 表格数据纯手动维护，一期不与行情联动
 
-### 4.3 文件区域
-- 一期收窄为「图片附件」：点击上传图片（≤2MB，存 canvasBlobs）
-- 非图片文件的引用能力预留 dataRef 设计，二期放开
+### 4.3 文档区块（对外文案「文档」，type key 仍为 file）
+- 上传文档（≤10MB，二进制存 canvasBlobs，区块 data 仅存 dataRef），上传后在区块内直接预览
+- 预览形态：PDF → 浏览器原生 iframe 渲染；文本类（txt/md/csv/json 等）→ 读文本内联展示（超 2 万字符截断提示）；图片 → 按图预览；其余格式（Office 等前端不可解析）→ 降级为「可下载」占位
+- 区块内提供元信息条（文件名 + 大小）、全屏放大预览（Portal + Esc 关闭）、下载与重新上传
+- 图片区块（type=image）仍独立保留：≤2MB，仅图片；type key 不改（存量画布已落库 + AI 守卫白名单同此字符串）
+- **正文进 AI 上下文**：文本类文档预取正文前 2000 字（`canvasDocText.prefetchDocExcerpts`，模块级缓存按 dataRef 失效），
+  区块级快照（Click-to-Focus）给该块全文 2000 字，整页快照按 `DOC_CONTEXT_TOTAL_CHARS=4000` 总预算汇总后放入
+  detail（`文档正文摘录` 键）；无文档块时该键省略（零 token）。PDF/图片/Office 前端不可提取正文 → 回一句占位说明
+  （不静默省略，防 AI 误判文档为空）。
 
 ### 4.4 简单图表
 - recharts 折线/柱状二选一；数据两种来源：手动录入 points，或绑定某 K 线区块（sourceBlockId）自动取收盘价序列

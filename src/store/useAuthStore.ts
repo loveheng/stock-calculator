@@ -26,6 +26,7 @@ import type {
   ProfilePayloads,
   ProfileResponse,
 } from '../types/auth';
+import { showToast } from '../utils/toast';
 import { AuthApiError, SessionExpiredError } from '../services/apiClient';
 import {
   getProfile,
@@ -70,7 +71,7 @@ import {
 
 /** 复用项目 app-toast CustomEvent 模式（前缀 ✅/❌/⚠️/📧） */
 function toast(msg: string): void {
-  window.dispatchEvent(new CustomEvent('app-toast', { detail: msg }));
+  showToast(msg);
 }
 
 function isValidEmail(email: string): boolean {

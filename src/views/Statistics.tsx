@@ -10,8 +10,12 @@
  */
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import type { ElementType } from 'react';
 import { Search, X, ChevronDown, ChevronUp, BarChart3, Wallet, Loader2, Sparkles } from 'lucide-react';
 import { useAppStore } from '../store';
+import EmptyState from '../components/ui/EmptyState';
+import ModeTabs from '../components/ui/ModeTabs';
+import SwipeTabPanel from '../components/ui/SwipeTabPanel';
 import { useStreamResults } from '../hooks/useStreamResults';
 import type { Position, PositionBatch, RoundTxn } from '../store';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
@@ -26,6 +30,7 @@ import CustomStatsPanel from '../components/customStats/CustomStatsPanel';
 type TimeFilter = 'all' | '7d' | '30d' | 'month';
 type DirectionTab = 'all' | 'long_open' | 'long_closed' | 'short_open' | 'short_closed';
 type PositionFilter = 'all' | 'open' | 'closed';
+type StatTab = 'trades' | 'positions' | 'custom';
 
 const directionTabs: Array<{ value: DirectionTab; label: string }> = [
   { value: 'all', label: '全部' },
@@ -47,6 +52,16 @@ const positionTabs: Array<{ value: PositionFilter; label: string }> = [
   { value: 'open', label: '进行中仓位' },
   { value: 'closed', label: '已结仓仓位' },
 ];
+
+/** 页级子菜单：trades = 做T账本统计，positions = 仓位数据统计，custom = 自定义统计 */
+const STAT_TABS: ReadonlyArray<{ id: StatTab; label: string; icon: ElementType }> = [
+  { id: 'trades', label: '做T账本统计', icon: BarChart3 },
+  { id: 'positions', label: '仓位数据统计', icon: Wallet },
+  { id: 'custom', label: '自定义统计', icon: Sparkles },
+];
+
+/** 滑动切换顺序（与 Tab 条视觉顺序一致） */
+const STAT_TAB_ORDER: readonly StatTab[] = STAT_TABS.map((t) => t.id);
 
 // ---- 统一卡片数据类型（合并进行中 + 已归档） ----
 interface TCardData {
@@ -490,50 +505,11 @@ export default function Statistics() {
 
   return (
     <div className="page-container space-y-5 pb-[calc(env(safe-area-inset-bottom)+16px)]">
-      {/* 顶部 Tab 切换导航 */}
-      <div className="flex rounded-2xl bg-slate-800/80 p-1">
-        <button
-          type="button"
-          onClick={() => setTab('trades')}
-          className={`tap-target flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition ${
-            tab === 'trades'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <BarChart3 className="h-4 w-4" />
-          <span>做T账本统计</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('positions')}
-          className={`tap-target flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition ${
-            tab === 'positions'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <Wallet className="h-4 w-4" />
-          <span>仓位数据统计</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('custom')}
-          className={`tap-target flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition ${
-            tab === 'custom'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <Sparkles className="h-4 w-4" />
-          <span>自定义统计</span>
-        </button>
-      </div>
+      {/* 页级子菜单：做T账本统计 / 仓位数据统计 / 自定义统计（移动端可左右滑动切换） */}
+      <ModeTabs tabs={STAT_TABS} value={tab} onChange={setTab} ariaLabel="数据统计子菜单" />
 
-      {/* =============================== */}
-      {/* 做T账本统计 */}
-      {/* =============================== */}
-      {tab === 'custom' ? (
+      <SwipeTabPanel order={STAT_TAB_ORDER} value={tab} onChange={setTab}>
+        {tab === 'custom' ? (
         <CustomStatsPanel />
       ) : tab === 'trades' ? (
         <div className="space-y-4">
@@ -670,9 +646,7 @@ export default function Statistics() {
           {/* 卡片列表 */}
           <div className="space-y-4">
             {visibleCards.length === 0 ? (
-              <div className="rounded-3xl border border-dashed border-slate-700 bg-slate-950/80 p-8 text-center text-sm text-slate-500">
-                当前筛选条件下暂无做T记录，您可以调整搜索或筛选条件查看历史卡片。
-              </div>
+              <EmptyState variant="panel" title="当前筛选条件下暂无做T记录，您可以调整搜索或筛选条件查看历史卡片。" />
             ) : (
               <>
                 {visibleCards.map((card) => {
@@ -918,9 +892,7 @@ export default function Statistics() {
           {/* 仓位卡片列表 */}
           <div className="space-y-4">
             {filteredPositions.length === 0 ? (
-              <div className="rounded-3xl border border-dashed border-slate-700 bg-slate-950/80 p-8 text-center text-sm text-slate-500">
-                暂无仓位数据
-              </div>
+              <EmptyState variant="panel" title="暂无仓位数据" />
             ) : (
               <>
                 {filteredPositions.slice(0, visibleCount).map((position) => {
@@ -1120,6 +1092,7 @@ export default function Statistics() {
           </div>
         </div>
       )}
+      </SwipeTabPanel>
     </div>
   );
 }

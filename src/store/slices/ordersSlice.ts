@@ -11,10 +11,11 @@ import type { StateCreator } from 'zustand';
 import { loadPlannedOrdersFromDB, putPlannedOrder, deletePlannedOrder } from '../../db/index';
 import { safePersist } from '../../utils/persistence';
 import type { AppStore } from '../types';
+import type { PlannedOrder } from '../../types/domain';
 
 export type OrdersSlice = Pick<
   AppStore,
-  'loadPlannedOrders' | 'setPlannedOrder' | 'removePlannedOrder' | 'markPlanExecuted' | 'cancelPlan'
+  'loadPlannedOrders' | 'setPlannedOrder' | 'addPlannedOrder' | 'removePlannedOrder' | 'markPlanExecuted' | 'cancelPlan' | 'setPlanMonitor'
 >;
 
 export const createOrdersSlice: StateCreator<AppStore, [], [], OrdersSlice> = (set, get) => ({
@@ -29,6 +30,11 @@ export const createOrdersSlice: StateCreator<AppStore, [], [], OrdersSlice> = (s
       const filtered = s.plannedOrders.filter((p) => !(p.fullCode === order.fullCode && p.status === 'active'));
       return { plannedOrders: [...filtered, order] };
     });
+    safePersist(() => putPlannedOrder(order));
+  },
+  /** 纯追加：不按标的覆盖（允许同标的买/卖并存，去重由调用方负责：个股+方向唯一） */
+  addPlannedOrder: (order) => {
+    set((s) => ({ plannedOrders: [...s.plannedOrders, order] }));
     safePersist(() => putPlannedOrder(order));
   },
   removePlannedOrder: (id) => {
@@ -52,5 +58,19 @@ export const createOrdersSlice: StateCreator<AppStore, [], [], OrdersSlice> = (s
     }));
     const order = get().plannedOrders.find((p) => p.id === id);
     if (order) safePersist(() => putPlannedOrder(order));
+  },
+  setPlanMonitor: (orderId, monitorTaskId) => {
+    let updated: PlannedOrder | undefined;
+    set((s) => {
+      const plannedOrders = s.plannedOrders.map((p) =>
+        p.id === orderId ? { ...p, monitorTaskId } : p,
+      );
+      updated = plannedOrders.find((p) => p.id === orderId);
+      return { plannedOrders };
+    });
+    if (updated) {
+      const order = updated;
+      safePersist(() => putPlannedOrder(order));
+    }
   },
 });

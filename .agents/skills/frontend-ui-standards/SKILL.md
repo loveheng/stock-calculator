@@ -1,6 +1,6 @@
 ---
 name: frontend-ui-standards
-description: stock-calculator 前端 UI 视觉与交互规范：按钮形状统一 rounded-lg（胶囊 rounded-full 仅限 Tab/分段切换条）、移动端 44px 触摸热区（tap-target）、可折叠卡片展开面板响应式高度（移动端 60vh 上限滚动、宽屏固定 60vh 撑满）、头部操作组合容器与 stopPropagation、公共组件复用优先与重复抽取阈值（Rule of Three 分级）、页级子菜单 + 滑动切换（ModeTabs + SwipeTabPanel）。新增或修改页面/组件、写操作按钮、做折叠面板、新增第二种同构 UI 或第二次复制同一段逻辑、把多段平级页面区块拆成可切换子菜单时使用。
+description: stock-calculator 前端 UI 视觉与交互规范：按钮形状统一 rounded-lg（胶囊 rounded-full 仅限 Tab/分段切换条）、移动端 44px 触摸热区（tap-target）、可折叠卡片展开面板响应式高度（移动端 60vh 上限滚动、宽屏固定 60vh 撑满）、头部操作组合容器与 stopPropagation、公共组件复用优先与重复抽取阈值（Rule of Three 分级）、页级子菜单 + 滑动切换（ModeTabs + SwipeTabPanel）、自由网格/画布响应式（窄屏单列堆叠、宽屏多列、展示态不回写布局）。新增或修改页面/组件、写操作按钮、做折叠面板、新增第二种同构 UI 或第二次复制同一段逻辑、把多段平级页面区块拆成可切换子菜单、做响应式自由网格/画布布局时使用。
 ---
 
 # Frontend UI Standards
@@ -126,3 +126,28 @@ export default function CostAveraging() {
   unmount-and-lose the underlying data (that lives in its own slice).
 - Exact paths resolve via the `stock-calculator-index` skill: `ModeTabs` → `components/ui/ModeTabs`,
   `SwipeTabPanel` → `components/ui/SwipeTabPanel`; do not hardcode volatile paths.
+
+### 7. Responsive free-grid / canvas layout (compact single column ↔ free multi-column)
+Free-form grids built on `react-grid-layout` (RGL) — e.g. the AI 选股台 画布 — store block
+coordinates in a fixed N-column space (12 by default). On small screens the grid must NOT simply
+shrink each column to a sliver; it must **collapse to a single stacked column** and switch back to
+the free multi-column layout once the viewport is wide enough (phone → foldable closed = compact;
+foldable open / tablet / desktop = free).
+
+- **Decide mode by viewport width, not container width.** Base the breakpoint on `window.innerWidth`
+  (CSS px, device-pixel-ratio independent) so a foldable differentiates closed (~narrow) vs open
+  (~wide). Pick a breakpoint constant (e.g. `COMPACT_MAX_WIDTH = 640`) and a `useViewportWidth`
+  hook listening to `resize`.
+- **Compact (narrow) = single column:** feed RGL `cols={1}` and transform the layout so **every
+  block spans the full row and stacks vertically** — `x: 0, w: 1`, `y` accumulated by each block's
+  original `h`, keeping its height. Disable drag & resize in this mode.
+- **Free (wide) = original grid:** pass the stored N-column layout and `cols` unchanged; keep
+  drag/resize + layout persistence enabled.
+- **CRITICAL guard — never write the transformed layout back.** In compact mode the displayed
+  coordinates (`x:0, w:1`) are synthetic and would corrupt the persisted free-grid coordinates. Gate
+  the save / `onLayoutChange` → store write behind `if (isCompact) return;` so compact mode is
+  **display-only**. Switching back to wide re-renders the untouched original layout.
+- Keep block heights in compact mode equal to their free-layout `h` (in row units) so content area
+  is preserved; do not flatten to a fixed height.
+- Reference implementation: the AI 选股台 画布 (`CanvasBoardView`) — resolve its current path via the
+  `stock-calculator-index` skill; do not hardcode it.

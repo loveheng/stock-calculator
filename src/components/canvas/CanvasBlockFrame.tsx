@@ -50,8 +50,9 @@ export default function CanvasBlockFrame({ block, onSettings, onRemove, children
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900/70 shadow-sm">
-      {/* 标题栏 = RGL 拖拽手柄（dragConfig.handle 选择器）；按钮加 .no-drag 防止点按误触拖拽 */}
-      <div className="canvas-drag-handle flex shrink-0 cursor-move items-center gap-2 border-b border-slate-800 bg-slate-900 px-3 py-2">
+      {/* 标题栏 = RGL 拖拽手柄（dragConfig.handle 选择器）；按钮加 .no-drag 防止点按误触拖拽。
+          data-swipe-ignore：从手柄起手的横滑交给 RGL 拖拽，不误判为切子菜单（其余区块区域可横滑切 Tab） */}
+      <div data-swipe-ignore className="canvas-drag-handle flex shrink-0 cursor-move items-center gap-2 border-b border-slate-800 bg-slate-900 px-3 py-2">
         <span className="rounded bg-blue-500/15 px-1.5 py-0.5 text-xs font-semibold text-blue-400">
           {block.blockId}
         </span>

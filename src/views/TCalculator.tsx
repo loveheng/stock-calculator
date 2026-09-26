@@ -21,7 +21,11 @@ import {
 } from '../store';
 import { showToast } from '../utils/toast';
 import { filterDisplayablePlans } from '../utils/planFilter';
+import { buildPlannedOrder } from '../utils/planOrder';
 import { usePlanExecutor } from '../hooks/usePlanExecutor';
+import { usePlanReminder } from '../hooks/usePlanReminder';
+import { deriveMonitorInput } from '../utils/planReminder';
+import PlanReminderField from '../components/monitor/PlanReminderField';
 import { useStreamResults } from '../hooks/useStreamResults';
 import { ledgerService } from '../services/ledgerService';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
@@ -1255,6 +1259,8 @@ export default function TCalculator() {
   const [planPrice, setPlanPrice] = useState('');
   const [planAmount, setPlanAmount] = useState('');
   const [planValidity, setPlanValidity] = useState(3);
+  const [planReminderEnabled, setPlanReminderEnabled] = useState(false);
+  const [planReminderBand, setPlanReminderBand] = useState('');
   const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
@@ -1393,6 +1399,7 @@ export default function TCalculator() {
 
   // 执行链路统一走 usePlanExecutor（短线页自带本地 Toast，故 silent）
   const executePlan = usePlanExecutor({ silent: true });
+  const reminder = usePlanReminder();
   const handlePlanExecute = useCallback((order: PlannedOrder, actualPrice: number, actualAmount: number, note: string) => {
     const res = executePlan(order, actualPrice, actualAmount, note);
     if (!res.ok) {
@@ -1402,34 +1409,34 @@ export default function TCalculator() {
     showLocalToast(`✅ 计划单已执行 · ${order.stockName}`, 3000);
   }, [executePlan, showLocalToast]);
 
-  const handleCreatePlan = () => {
+  const handleCreatePlan = async () => {
     if (!planStock?.fullCode) { showLocalToast('请选择股票', 3000); return; }
     const p = parseFloat(planPrice);
     const a = parseFloat(planAmount);
     if (!p || p <= 0) { showLocalToast('请输入有效价格', 3000); return; }
     if (!a || a <= 0) { showLocalToast('请输入有效数量', 3000); return; }
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + planValidity * 24 * 60 * 60 * 1000);
-    const order: PlannedOrder = {
-      id: generateId(),
+    const order = buildPlannedOrder({
       fullCode: planStock.fullCode,
       stockName: planStock.Name || planStock.ShortName || planStock.fullCode,
       context: 'short-term',
       direction: planDirection,
       plannedPrice: p,
       plannedAmount: a,
-      createdAt: now.toISOString(),
-      expiresAt: expiresAt.toISOString(),
       validityDays: planValidity,
-      status: 'active',
-    };
+    });
     setPlannedOrder(order);
+    if (planReminderEnabled) {
+      const bandNum = planReminderBand === '' ? 0 : parseFloat(planReminderBand);
+      await reminder.start(order, deriveMonitorInput(order, bandNum));
+    }
     setPlanFormOpen(false);
     setPlanStock(null);
     setPlanPrice('');
     setPlanAmount('');
     setPlanDirection('buy');
     setPlanValidity(3);
+    setPlanReminderEnabled(false);
+    setPlanReminderBand('');
     showLocalToast(`📋 计划单已创建 · ${order.stockName}`, 3000);
   };
 
@@ -2004,6 +2011,15 @@ export default function TCalculator() {
                 ))}
               </div>
             </div>
+            <PlanReminderField
+              direction={planDirection}
+              threshold={parseFloat(planPrice)}
+              stock={planStock}
+              enabled={planReminderEnabled}
+              onEnabledChange={setPlanReminderEnabled}
+              band={planReminderBand}
+              onBandChange={setPlanReminderBand}
+            />
             <button
               onClick={handleCreatePlan}
               className="tap-target w-full text-xs py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
@@ -2029,6 +2045,7 @@ export default function TCalculator() {
           }}
           onExecute={handlePlanExecute}
           onCancel={(id) => cancelPlan(id)}
+          onStopReminder={(order) => void reminder.stop(order)}
         />
       </div>
 

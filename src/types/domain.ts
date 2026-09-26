@@ -140,6 +140,10 @@ export interface PlannedOrder {
   expiresAt: string;
   validityDays: number;
   status: 'active' | 'expired' | 'cancelled' | 'executed';
+  /** 价格阈值带：围绕计划价的两端（单位：元），可选；展示用，标识可接受成交的价格区间 */
+  thresholdRange?: { low: number; high: number };
+  /** 关联的后端价格提醒（预告单）任务 id：创建计划单时若开启价格提醒则回写；null/缺省表示未开启 */
+  monitorTaskId?: number | null;
   /** 计划创建时评估的动态金字塔健康度（仅中长期买入计划单） */
   planPyramidHealth?: { score: number; level: 'HEALTHY' | 'NEUTRAL' | 'RISKY'; centerDeviation: number };
   actual?: {

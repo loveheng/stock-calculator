@@ -47,6 +47,20 @@ function useContainerWidth(ref: React.RefObject<HTMLDivElement | null>): number 
   return width;
 }
 
+/** 折叠为单列的最大视口宽度（CSS px）：手机 / 折叠屏合上走单列，更宽走 12 列自由布局 */
+const COMPACT_MAX_WIDTH = 640;
+
+/** 视口宽度测量（用于区分手机/折叠屏合上与折叠屏展开/平板/桌面） */
+function useViewportWidth(): number {
+  const [w, setW] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 0));
+  React.useEffect(() => {
+    const onResize = () => setW(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return w;
+}
+
 /**
  * AI 选股台 · 画布 Tab 内容组件。
  *
@@ -70,24 +84,37 @@ export default function CanvasBoardView() {
   const [pendingRemove, setPendingRemove] = useState<CanvasBlock | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const width = useContainerWidth(canvasRef);
+  const vw = useViewportWidth();
+  // 窄屏（手机 / 折叠屏合上）折叠为单列堆叠；折叠屏展开 / 平板 / 桌面沿用 12 列自由布局
+  const isCompact = vw > 0 && vw < COMPACT_MAX_WIDTH;
 
   // RGL 布局（i=blockId；minW/minH 按 §七 网格参数）
-  const rglLayout: Layout = useMemo(
-    () =>
-      canvasBlocks.map((b) => ({
-        i: b.blockId,
-        x: b.layout.x,
-        y: b.layout.y,
-        w: b.layout.w,
-        h: b.layout.h,
-        minW: CANVAS_GRID.minW,
-        minH: CANVAS_GRID.minH,
-      })),
-    [canvasBlocks],
-  );
+  // 单列模式：每个区块占满整行、按原始高度纵向堆叠（x=0,w=1），仅展示不编辑。
+  const rglLayout: Layout = useMemo(() => {
+    if (isCompact) {
+      let y = 0;
+      return canvasBlocks.map((b) => {
+        const h = Math.max(b.layout.h, CANVAS_GRID.minH);
+        const item = { i: b.blockId, x: 0, y, w: 1, h, minW: 1, minH: CANVAS_GRID.minH };
+        y += h;
+        return item;
+      });
+    }
+    return canvasBlocks.map((b) => ({
+      i: b.blockId,
+      x: b.layout.x,
+      y: b.layout.y,
+      w: b.layout.w,
+      h: b.layout.h,
+      minW: CANVAS_GRID.minW,
+      minH: CANVAS_GRID.minH,
+    }));
+  }, [canvasBlocks, isCompact]);
 
   // onLayoutChange → 与现态 diff 后回写（RGL 压缩会调整 y；无变化不写，防回环）
+  // 单列模式仅展示，不回写，避免污染 12 列自由布局坐标。
   const handleLayoutChange = (layout: Layout) => {
+    if (isCompact) return;
     const changed = canvasBlocks.some((b) => {
       const item = layout.find((l) => l.i === b.blockId);
       return item && (item.x !== b.layout.x || item.y !== b.layout.y || item.w !== b.layout.w || item.h !== b.layout.h);
@@ -239,9 +266,9 @@ export default function CanvasBoardView() {
               <GridLayout
                 layout={rglLayout}
                 width={width}
-                gridConfig={{ cols: CANVAS_GRID.cols, rowHeight: CANVAS_GRID.rowHeight, margin: [8, 8] }}
-                dragConfig={{ enabled: true, handle: '.canvas-drag-handle', cancel: '.no-drag' }}
-                resizeConfig={{ enabled: true }}
+                gridConfig={{ cols: isCompact ? 1 : CANVAS_GRID.cols, rowHeight: CANVAS_GRID.rowHeight, margin: [8, 8] }}
+                dragConfig={{ enabled: !isCompact, handle: '.canvas-drag-handle', cancel: '.no-drag' }}
+                resizeConfig={{ enabled: !isCompact }}
                 onLayoutChange={handleLayoutChange}
               >
                 {canvasBlocks.map((b) => (

@@ -55,8 +55,8 @@ export default function StockCanvas() {
       {/* 页级模式切换：计划单 / 画布列表 / 画布 */}
       <ModeTabs tabs={MODE_TABS} value={mode} onChange={setMode} ariaLabel="AI 选股台模式" />
 
-      {/* 内容区左右滑动切换 Tab（移动端 Pivot 手势）；画布 Tab 内部标 data-swipe-ignore：
-          RGL 拖块与画布横滚优先，避免横滑被误判为切 Tab */}
+      {/* 内容区左右滑动切换 Tab（移动端 Pivot 手势）；仅画布区块的拖拽手柄标 data-swipe-ignore，
+          其余画布区域可横滑切 Tab，从手柄起手才走 RGL 拖拽（见 CanvasBlockFrame） */}
       <SwipeTabPanel order={MODE_TAB_ORDER} value={mode} onChange={setMode}>
         {mode === 'plans' ? (
           <PlanOrderPanel />
@@ -64,7 +64,7 @@ export default function StockCanvas() {
           <CanvasBoardList onOpenBoard={() => setMode('canvas')} />
         ) : (
           /* 画布 Tab：RGL 需显式高度容器（页头 + Tab 条已占约 9.5rem） */
-          <div data-swipe-ignore className="h-[calc(100vh-9.5rem)] min-h-[420px]">
+          <div className="h-[calc(100vh-9.5rem)] min-h-[420px]">
             <CanvasBoardView />
           </div>
         )}

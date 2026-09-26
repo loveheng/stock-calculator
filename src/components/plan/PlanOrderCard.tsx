@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Edit3, CheckCircle, XCircle, Clock, TrendingUp, TrendingDown, AlertTriangle, ArrowRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { Edit3, CheckCircle, XCircle, Clock, TrendingUp, TrendingDown, AlertTriangle, ArrowRight, ChevronDown, ChevronUp, Bell } from 'lucide-react';
 import type { PlannedOrder, Position } from '../../store/types';
 import { evaluateDynamicPyramid, type DynamicPyramidResult, type FeeConfig } from '../../utils/mathUtils';
 import type { StockQuoteSummary } from '../../types/stock';
@@ -66,6 +66,8 @@ interface PlanOrderCardProps {
   onCancel?: (id: string) => void;
   /** 跳转到对应页面回调（首页快速执行时使用） */
   onNavigate?: (order: PlannedOrder) => void;
+  /** 停止关联的后端价格提醒（预告单）回调 */
+  onStopReminder?: (order: PlannedOrder) => void;
 }
 
 /**
@@ -92,6 +94,7 @@ export default function PlanOrderCard({
   onExecute,
   onCancel,
   onNavigate,
+  onStopReminder,
 }: PlanOrderCardProps) {
   // 折叠状态：移动端默认折叠，桌面端默认展开
   const [collapsed, setCollapsed] = useState(true);
@@ -265,6 +268,9 @@ export default function PlanOrderCard({
             {order.context === 'both' && (
               <span className="text-[10px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">通用</span>
             )}
+            {order.monitorTaskId != null && (
+              <Bell className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            )}
             {collapsed ? (
               <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
             ) : (
@@ -319,6 +325,14 @@ export default function PlanOrderCard({
                 </span>
               )}
 
+              {/* 阈值范围（紧凑，存在时展示） */}
+              {order.thresholdRange && (
+                <span className="text-[10px] text-slate-400 flex items-center gap-0.5">
+                  <span className="text-slate-500">阈值</span>
+                  ¥{order.thresholdRange.low.toFixed(2)}~{order.thresholdRange.high.toFixed(2)}
+                </span>
+              )}
+
               {/* 达成状态（已执行） */}
               {order.status === 'executed' && order.actual && (
                 <span className="text-[10px] flex items-center gap-0.5">
@@ -341,6 +355,24 @@ export default function PlanOrderCard({
       {/* ========== 展开内容（折叠时隐藏） ========== */}
       {!collapsed && (
         <>
+          {/* 价格提醒（预告单）状态 + 停止：仅当计划单关联了后端提醒任务 */}
+          {order.monitorTaskId != null && (
+            <div className="mx-3 mb-2 p-2 rounded-lg bg-amber-900/15 border border-amber-700/30 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-[11px] text-amber-300">
+                <Bell className="w-3 h-3 shrink-0" />
+                <span>价格提醒已开启（后端到价推送，最多 3 次）</span>
+              </div>
+              {onStopReminder && (
+                <button
+                  onClick={() => onStopReminder(order)}
+                  className="tap-target flex-shrink-0 text-[10px] px-2 py-1 rounded bg-slate-700/60 text-slate-300 hover:bg-slate-600 hover:text-white transition-colors"
+                >
+                  停止
+                </button>
+              )}
+            </div>
+          )}
+
           {/* 实时对比（仅在有行情时显示） */}
           {hasQuote && (
             <div className="mx-3 mb-2 p-2 rounded-lg bg-slate-800/60">
@@ -361,6 +393,14 @@ export default function PlanOrderCard({
                 <span className="text-slate-500">计划价</span>
                 <span className="font-mono tabular-nums text-slate-300">¥{order.plannedPrice.toFixed(2)}</span>
               </div>
+              {order.thresholdRange && (
+                <div className="flex items-center justify-between text-xs mt-1">
+                  <span className="text-slate-500">阈值范围</span>
+                  <span className="font-mono tabular-nums text-slate-300">
+                    ¥{order.thresholdRange.low.toFixed(2)} ~ ¥{order.thresholdRange.high.toFixed(2)}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between text-xs mt-1 pt-1 border-t border-slate-700/50">
                 <span className="text-slate-500">差额</span>
                 <span className={`font-mono tabular-nums font-medium ${isFavorable ? 'text-green-400' : 'text-red-400'}`}>

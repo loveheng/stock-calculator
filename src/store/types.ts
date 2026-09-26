@@ -188,9 +188,12 @@ export interface AppStoreActions {
   // -- 计划单 --
   loadPlannedOrders: () => Promise<void>;
   setPlannedOrder: (order: PlannedOrder) => void;
+  addPlannedOrder: (order: PlannedOrder) => void;
   removePlannedOrder: (id: string) => void;
   markPlanExecuted: (id: string, actual: PlannedOrder['actual']) => void;
   cancelPlan: (id: string) => void;
+  /** 回写/清除计划单关联的后端价格提醒任务 id（创建时绑定、停止/失效时清 null） */
+  setPlanMonitor: (orderId: string, monitorTaskId: number | null) => void;
 
   // -- 导入导出 --
   exportData: () => AppStoreExport;

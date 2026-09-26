@@ -33,6 +33,8 @@ export interface PlanOrderListProps {
   onExecute?: (order: PlannedOrder, actualPrice: number, actualAmount: number, note: string) => void;
   onCancel?: (id: string) => void;
   onNavigate?: (order: PlannedOrder) => void;
+  /** 停止关联的后端价格提醒（预告单）回调 */
+  onStopReminder?: (order: PlannedOrder) => void;
   /** 空态文案（缺省「暂无计划单」） */
   emptyTitle?: string;
   emptyDescription?: string;
@@ -56,6 +58,7 @@ export default function PlanOrderList({
   onExecute,
   onCancel,
   onNavigate,
+  onStopReminder,
   emptyTitle = '暂无计划单',
   emptyDescription,
   emptyVariant = 'card',
@@ -94,6 +97,7 @@ export default function PlanOrderList({
           onExecute={onExecute}
           onCancel={onCancel}
           onNavigate={onNavigate}
+          onStopReminder={onStopReminder}
         />
       ))}
     </div>

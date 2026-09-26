@@ -18,6 +18,10 @@ import { showToast } from '../utils/toast';
 import { filterDisplayablePlans } from '../utils/planFilter';
 import { usePlanExecutor } from '../hooks/usePlanExecutor';
 import { calcTargetCostAveraging, isValidLotSize, calcTradeFees, matchSecurityKind, evaluateDynamicPyramid, computePositionLifecycleSummary } from '../utils/mathUtils';
+import { buildPlannedOrder } from '../utils/planOrder';
+import { usePlanReminder } from '../hooks/usePlanReminder';
+import { deriveMonitorInput } from '../utils/planReminder';
+import PlanReminderField from '../components/monitor/PlanReminderField';
 import { recomputePositionSnapshot, getCloseBlockReason, generateId, calcBatchExecution } from '../store';
 import { useStreamResults } from '../hooks/useStreamResults';
 import { normalizeCode, normalizeStockName } from '../utils/dedup';
@@ -280,6 +284,7 @@ function PositionLedger() {
   const plannedOrders = useAppStore((s) => s.plannedOrders);
   const setPlannedOrder = useAppStore((s) => s.setPlannedOrder);
   const cancelPlan = useAppStore((s) => s.cancelPlan);
+  const reminder = usePlanReminder();
 
   // ---- 计划单状态 ----
   const [planFormOpen, setPlanFormOpen] = useState(false);
@@ -288,6 +293,8 @@ function PositionLedger() {
   const [planPrice, setPlanPrice] = useState('');
   const [planAmount, setPlanAmount] = useState('');
   const [planValidity, setPlanValidity] = useState(3);
+  const [planReminderEnabled, setPlanReminderEnabled] = useState(false);
+  const [planReminderBand, setPlanReminderBand] = useState('');
 
   // 过滤出中长期上下文的计划单（context 白名单：long-term / both）
   const longTermPlans = useMemo(
@@ -299,14 +306,12 @@ function PositionLedger() {
   const { quotes: planQuotes } = useLiveQuotes(planQuoteCodes);
 
   // 创建计划单
-  const handleCreatePlan = () => {
+  const handleCreatePlan = async () => {
     if (!planStock?.fullCode) { return; }
     const p = parseFloat(planPrice);
     const a = parseFloat(planAmount);
     if (!p || p <= 0) return;
     if (!a || a <= 0) return;
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + planValidity * 24 * 60 * 60 * 1000);
     // 建单时对中长期买入计划单做动态金字塔健康度试算（供执行履约审计对比）
     let planPyramidHealth: PlannedOrder['planPyramidHealth'];
     if (planDirection === 'buy') {
@@ -317,26 +322,30 @@ function PositionLedger() {
       }
     }
     const order: PlannedOrder = {
-      id: generateId(),
-      fullCode: planStock.fullCode,
-      stockName: planStock.Name || planStock.ShortName || planStock.fullCode,
-      context: 'long-term',
-      direction: planDirection,
-      plannedPrice: p,
-      plannedAmount: a,
-      createdAt: now.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      validityDays: planValidity,
-      status: 'active',
+      ...buildPlannedOrder({
+        fullCode: planStock.fullCode,
+        stockName: planStock.Name || planStock.ShortName || planStock.fullCode,
+        context: 'long-term',
+        direction: planDirection,
+        plannedPrice: p,
+        plannedAmount: a,
+        validityDays: planValidity,
+      }),
       ...(planPyramidHealth ? { planPyramidHealth } : {}),
     };
     setPlannedOrder(order);
+    if (planReminderEnabled) {
+      const bandNum = planReminderBand === '' ? 0 : parseFloat(planReminderBand);
+      await reminder.start(order, deriveMonitorInput(order, bandNum));
+    }
     setPlanFormOpen(false);
     setPlanStock(null);
     setPlanPrice('');
     setPlanAmount('');
     setPlanDirection('buy');
     setPlanValidity(3);
+    setPlanReminderEnabled(false);
+    setPlanReminderBand('');
   };
 
   // 计划单执行：批次记账 + 标记已执行统一走 usePlanExecutor（中长期语义：无底仓即失败）
@@ -1241,6 +1250,15 @@ function PositionLedger() {
               ))}
             </div>
           </div>
+          <PlanReminderField
+            direction={planDirection}
+            threshold={parseFloat(planPrice)}
+            stock={planStock}
+            enabled={planReminderEnabled}
+            onEnabledChange={setPlanReminderEnabled}
+            band={planReminderBand}
+            onBandChange={setPlanReminderBand}
+          />
           <button
             onClick={handleCreatePlan}
             className="w-full text-xs py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
@@ -1265,6 +1283,7 @@ function PositionLedger() {
         }}
         onExecute={handlePlanExecute}
         onCancel={(id) => cancelPlan(id)}
+        onStopReminder={(order) => void reminder.stop(order)}
       />
     </div>
 

@@ -268,6 +268,8 @@ export interface PlannedOrderEntity extends BaseEntity {
   validityDays: number;
   /** 状态 */
   status: 'active' | 'expired' | 'cancelled' | 'executed';
+  /** 价格阈值带（围绕计划价的两端，单位：元），可选 */
+  thresholdRange?: { low: number; high: number };
   /** 实际执行记录（用户确认执行时填写） */
   actualPrice?: number;
   actualAmount?: number;

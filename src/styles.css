@@ -136,6 +136,14 @@ body {
   @apply mb-0;
 }
 
+/* 宽屏下建仓/补仓表单：单行四列紧凑排布，既消除整行被拉成宽条，又充分利用横向空间。
+   仅作用于带 .ledger-form 的容器，不影响其它页面表单。 */
+@media (min-width: 1280px) {
+  .ledger-form .form-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 /* Tab 切换 */
 .tab-bar {
   @apply flex gap-0 mb-5 bg-slate-800 rounded-xl p-1 overflow-hidden;
@@ -266,13 +274,8 @@ body {
     display: none !important;
   }
 
-  .main-area {
-    margin-left: 260px;
-  }
-
-  .menu-btn {
-    display: none;
-  }
+  /* 主内容区不再额外 margin-left：桌面端侧边栏为 sticky（仍在 flex 流内占位），
+     main 通过 flex-1 自动占据剩余宽度，折叠侧边栏后正文即时补位。 */
 
   /* 平板及以上保持多列 */
   .form-row {
@@ -309,4 +312,19 @@ body {
 
 .animate-shake {
   animation: app-shake 0.5s ease-in-out;
+}
+
+/* 触屏适配：放大 react-grid-layout 缩放手柄的热区（28px），视觉三角保持原位 */
+.react-grid-item .react-resizable-handle {
+  width: 28px;
+  height: 28px;
+  background-image: none;
+}
+.react-grid-item .react-resizable-handle::after {
+  right: 6px;
+  bottom: 6px;
+  width: 9px;
+  height: 9px;
+  border-right-width: 3px;
+  border-bottom-width: 3px;
 }

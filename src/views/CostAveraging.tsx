@@ -774,7 +774,7 @@ function PositionLedger() {
           )}
         </div>
         {!isFormCollapsed && (
-          <div className="px-4 pb-4 space-y-3">
+          <div className="px-4 pb-4 space-y-3 ledger-form">
             <div className="form-row">
               <div className="form-group">
                 <label>股票名称</label>
@@ -797,8 +797,6 @@ function PositionLedger() {
                   onChange={(e) => setOpenPrice(e.target.value)}
                 />
               </div>
-            </div>
-            <div className="form-row">
               <div className="form-group">
                 <label>建仓数量（100整数倍）</label>
                 <input
@@ -819,7 +817,7 @@ function PositionLedger() {
               </div>
             </div>
             <div className="form-row">
-              <div className="form-group col-span-2">
+              <div className="form-group col-span-2 xl:col-span-4">
                 <label>交易备注（选填）</label>
                 <input
                   type="text"
@@ -888,6 +886,7 @@ function PositionLedger() {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 items-start">
           {activePositions.map((pos) => {
         // 用 recalculatePosition 从批次履历重建权威快照：
         // 动态保本价 / 做T落袋利润 / 实际净投入现金 / 初始建仓均价
@@ -916,13 +915,14 @@ function PositionLedger() {
         return (
           <div key={pos.id} className="bg-slate-900 rounded-lg border border-slate-700 overflow-hidden">
             {/* === 紧凑看板（折叠态/展开态均显示头部摘要） === */}
+            {/* 宽度不足时整体换行「借高度」：指标区与操作区各自成行，不再压缩字号/挤压内容 */}
             <div
-              className="tap-target flex items-center justify-between p-3 cursor-pointer select-none"
+              className="tap-target flex flex-wrap items-center gap-x-2 gap-y-1 p-3 cursor-pointer select-none"
               onClick={() => toggleExpand(pos.id)}
             >
-              <div className="flex-1 min-w-0 grid grid-cols-2 md:grid-cols-5 gap-x-3 gap-y-0.5 text-xs">
-                {/* 左1：股票名称/代码 + 状态徽章 */}
-                <div className="col-span-2 md:col-span-1 flex items-center gap-1.5 min-w-0">
+              <div className="flex-1 min-w-[10rem] flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                {/* 1：股票名称/代码 + 出借徽章（空间不足时名称省略，整体换行） */}
+                <div className="flex items-center gap-1.5 min-w-[7rem] max-w-[min(13rem,100%)]">
                   <span className="font-semibold text-slate-200 truncate">{pos.stockName}</span>
                   <span className="text-[10px] text-slate-500 font-mono shrink-0">
                     {pos.fullCode}
@@ -933,8 +933,8 @@ function PositionLedger() {
                     </span>
                   )}
                 </div>
-                {/* 左2：现价 + 涨跌幅 */}
-                <div className="flex items-center gap-1">
+                {/* 2：现价 + 涨跌幅 */}
+                <div className="flex items-center gap-1 shrink-0">
                   {live ? (
                     <>
                       <span className={`font-medium tabular-nums ${live.changePercent >= 0 ? 'text-red-400' : 'text-green-400'}`}>
@@ -948,18 +948,21 @@ function PositionLedger() {
                     <span className="text-slate-600">—</span>
                   )}
                 </div>
-                {/* 左3：持仓股数（桌面端显示） */}
-                <div className="hidden md:flex items-center">
-                  <span className="text-slate-400">{netAmount.toLocaleString()}股</span>
+                {/* 3：持仓股数 */}
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="text-slate-500">持仓</span>
+                  <span className="text-slate-300 tabular-nums">{netAmount.toLocaleString()}股</span>
                 </div>
-                {/* 左4：保本价（桌面端显示） */}
-                <div className="hidden md:flex items-center">
-                  <span className="text-slate-400">¥{snap.currentCost.toFixed(3)}</span>
+                {/* 4：保本价（超窄屏隐藏，由展开面板兜底） */}
+                <div className="hidden sm:flex items-center gap-1 shrink-0">
+                  <span className="text-slate-500">保本</span>
+                  <span className="text-slate-300 tabular-nums">¥{snap.currentCost.toFixed(3)}</span>
                 </div>
-                {/* 左5：浮动盈亏 */}
-                <div className="flex items-center justify-end md:justify-start gap-1">
+                {/* 5：浮动盈亏 */}
+                <div className="flex items-center gap-1 shrink-0">
                   {hasPrice ? (
                     <>
+                      <span className="text-slate-500">盈亏</span>
                       <span className={`tabular-nums font-medium ${floatPnL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
                         {floatPnL >= 0 ? '+' : ''}¥{floatPnL.toFixed(0)}
                       </span>
@@ -972,7 +975,7 @@ function PositionLedger() {
                   )}
                 </div>
               </div>
-              <div className="flex items-center shrink-0 ml-2">
+              <div className="flex items-center shrink-0 ml-auto">
                 {/* 公告订阅切换（仅订阅/取消订阅；内部 stopPropagation，fullCode 为空的旧持仓不渲染） */}
                 <AnnouncementSubscribeButton fullCode={pos.fullCode} />
                 {pos.fullCode && (
@@ -1169,6 +1172,7 @@ function PositionLedger() {
           </div>
         );
       })}
+      </div>
       </>
     )}
 
@@ -1432,7 +1436,7 @@ function TargetCostCalculator() {
 
   return (
     <div className="space-y-4">
-      <div className="p-4 bg-slate-900 rounded-lg">
+      <div className="p-4 bg-slate-900 rounded-lg ledger-form">
         <h4 className="text-xs font-medium text-slate-400 mb-3">补仓参数</h4>
         <div className="form-row">
           <div className="form-group">
@@ -1455,8 +1459,6 @@ function TargetCostCalculator() {
               onChange={(e) => setCurrentAmount(e.target.value)}
             />
           </div>
-        </div>
-        <div className="form-row">
           <div className="form-group">
             <label>计划补仓单价（元）</label>
             <input

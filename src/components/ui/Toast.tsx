@@ -68,7 +68,7 @@ export default function Toast() {
         return (
           <div
             key={t.id}
-            className={`pointer-events-auto flex max-w-md items-center gap-2 rounded-lg border bg-slate-900/95 px-4 py-2.5 shadow-lg backdrop-blur ${cls}`}
+            className={`pointer-events-auto flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border bg-slate-900/95 px-4 py-2.5 shadow-lg backdrop-blur ${cls}`}
           >
             <Icon className="h-4 w-4 shrink-0" />
             <span className="text-sm text-slate-200">{t.message}</span>

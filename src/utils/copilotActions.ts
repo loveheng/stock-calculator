@@ -201,8 +201,8 @@ export function asAnnotateBlockPayload(p: unknown): CopilotAnnotateBlockPayload 
   return { blockId: clamp(blockId, 8), content: clamp(content, ANNOTATE_CONTENT_MAX) };
 }
 
-/** 画布七类合法类型（守卫白名单） */
-const CANVAS_BLOCK_TYPES: readonly CanvasBlockType[] = ['kline', 'table', 'file', 'chart', 'metric', 'image', 'text'];
+/** 画布八类合法类型（守卫白名单；widget 走 canvas_add_widget 不在此列） */
+const CANVAS_BLOCK_TYPES: readonly CanvasBlockType[] = ['kline', 'table', 'file', 'chart', 'metric', 'image', 'text', 'brief'];
 
 /**
  * canvas_add_widget 载荷守卫（auto 级）：dsl 经 utils/widgetDsl 形状校验（单一入口，

@@ -975,22 +975,28 @@ function PositionLedger() {
                   )}
                 </div>
               </div>
-              <div className="flex items-center shrink-0 ml-auto">
-                {/* 公告订阅切换（仅订阅/取消订阅；内部 stopPropagation，fullCode 为空的旧持仓不渲染） */}
-                <AnnouncementSubscribeButton fullCode={pos.fullCode} />
-                {pos.fullCode && (
-                  <BlockFocusButton
-                    scopeId={`cost_averaging:${pos.fullCode}`}
-                    blockId={`cost_averaging:${pos.fullCode}:position`}
-                  />
-                )}
-                <button
-                  onClick={(e) => { e.stopPropagation(); setDeleteTickerConfirm(pos.id); }}
-                  className="tap-target flex items-center justify-center w-10 h-10 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10"
-                  title="删除整个标的"
+              <div className="flex items-center shrink-0 ml-auto gap-1">
+                {/* 操作组合：订阅公告 / 问 AI / 删除 收进同一组；移动端由 tap-target 保证 44px 热区 */}
+                <div
+                  className="flex items-center gap-1 rounded-lg bg-slate-800/60 p-1"
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                  <AnnouncementSubscribeButton fullCode={pos.fullCode} />
+                  {pos.fullCode && (
+                    <BlockFocusButton
+                      scopeId={`cost_averaging:${pos.fullCode}`}
+                      blockId={`cost_averaging:${pos.fullCode}:position`}
+                      className="tap-target"
+                    />
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setDeleteTickerConfirm(pos.id); }}
+                    className="tap-target flex items-center justify-center w-10 h-10 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10"
+                    title="删除整个标的"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
                 <div className="tap-target flex items-center justify-center w-11 h-11">
                   <ChevronRight
                     className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
@@ -1001,9 +1007,9 @@ function PositionLedger() {
               </div>
             </div>
 
-            {/* === 展开态：详细面板 === */}
+            {/* === 展开态：详细面板（移动端 60vh 上限+内部滚动、短内容收缩；宽屏固定 60vh 撑满最大高度、超出滚动） === */}
             {isExpanded && (
-              <div className="p-3 pt-0 space-y-3">
+              <div className="p-3 pt-0 space-y-3 max-h-[60vh] overflow-y-auto md:h-[60vh]">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span className="text-xs text-slate-500">当前现价</span>
                 {live ? (
@@ -1068,13 +1074,13 @@ function PositionLedger() {
                 </div>
               </div>
 
-              {/* 操作按钮 */}
-              <div className="flex gap-2">
-                <button onClick={() => handleBatch(pos.id, 'add')} className="btn btn-primary btn-sm flex-1">
-                  <Plus className="w-3 h-3" />加仓
+              {/* 操作按钮：合并为一组，沿用 .btn 统一样式；移动端由全局规则放大为 44px 触摸热区 */}
+              <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
+                <button onClick={() => handleBatch(pos.id, 'add')} className="btn btn-primary flex-1 tap-target">
+                  <Plus className="w-4 h-4" />加仓
                 </button>
-                <button onClick={() => handleBatch(pos.id, 'reduce')} className="btn btn-outline btn-sm flex-1">
-                  <X className="w-3 h-3" />减仓
+                <button onClick={() => handleBatch(pos.id, 'reduce')} className="btn btn-outline flex-1 tap-target">
+                  <X className="w-4 h-4" />减仓
                 </button>
                 <button
                   onClick={() => {
@@ -1085,9 +1091,9 @@ function PositionLedger() {
                     }
                     setCloseConfirmId(pos.id);
                   }}
-                  className="btn btn-outline btn-sm flex-1"
+                  className="btn btn-outline flex-1 tap-target"
                 >
-                  <Archive className="w-3 h-3" />结仓
+                  <Archive className="w-4 h-4" />结仓
                 </button>
               </div>
 

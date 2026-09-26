@@ -106,6 +106,13 @@ const DATA_GUARDS: Record<CanvasBlockType, (data: unknown) => boolean> = {
     const o = d as CanvasBlockData['text'];
     return typeof o?.content === 'string';
   },
+  brief: (d) => {
+    const o = d as CanvasBlockData['brief'];
+    return typeof o?.stockId === 'string' && o.stockId.length > 0
+      && typeof o?.stockName === 'string' && typeof o?.days === 'number'
+      && typeof o?.mention?.count === 'number' && Array.isArray(o?.mention?.articles)
+      && Array.isArray(o?.subjects) && Array.isArray(o?.announcements);
+  },
   widget: (d) => {
     // 唯一校验入口复用（utils/widgetDsl）：落库 DSL 均经校验器规范化，此处兜底防手改/脏数据
     const o = d as CanvasBlockData['widget'];

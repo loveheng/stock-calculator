@@ -4,11 +4,29 @@
  *              将图片上传后获取解析结果并归一化为 RawTxRecord[]。
  *              支持图片拖拽 / 剪贴板粘贴 / 文件选择三种入口。
  *              包含前端图片预检（格式、大小、尺寸、高宽比）。
+ *
+ * 【2026-09-26 · /api/import 纳入登录保护】
+ *   上游（Spring Boot，与 /api/auth 同源）已要求 /api/import/* 携带会话令牌，
+ *   未认证请求返回 401（信封 code 401 或拦截器直写 HTTP 401）。
+ *   管道纯净约定不变：token 一律由调用方传参注入（禁 import store）；
+ *   文本/CSV/TSV 走本地解析，无需登录、不发请求。
+ *   鉴权头透传由三层代理保证（vite server.proxy / middleware.js /
+ *   server/upstream-proxy.mjs 均只剔除 host 与 x-vercel-* / x-forwarded-*）。
  * @layer Service
  * @author 开发团队
  */
 
 import { parseOcrPayload, type RawTxRecord } from './importAdapter';
+import { SessionExpiredError } from './apiClient';
+
+/** 识别接口基地址（与 /api/auth 同源，经同源代理转发） */
+const IMPORT_API_BASE_URL = '/api/import';
+
+/**
+ * 请求超时（毫秒）：图片上传 + OCR 比对显著慢于普通 JSON 接口，
+ * 故放宽至 60s（apiClient / serverSync 的 15s 不适用本通道）。
+ */
+const OCR_REQUEST_TIMEOUT_MS = 60_000;
 
 /** OCR 解析产物 */
 export interface OcrParseResult {
@@ -243,16 +261,62 @@ function closeImage(img: ImageBitmap | HTMLImageElement): void {
   }
 }
 
+/** 带 401 语义的 OCR 上传：会话失效抛 SessionExpiredError，供调用方转登录引导 */
+async function postImage(file: File, token: string): Promise<unknown> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OCR_REQUEST_TIMEOUT_MS);
+  let resp: Response;
+  try {
+    resp = await fetch(`${IMPORT_API_BASE_URL}/process-image`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error('识别超时，请稍后重试或改用文本粘贴导入');
+    }
+    throw new Error('网络异常：无法连接识别服务，请检查网络后重试');
+  }
+  clearTimeout(timer);
+
+  // HTTP 401：上游拦截器直写（契约：信封 code 同为 401）
+  if (resp.status === 401) throw new SessionExpiredError();
+
+  let json: unknown;
+  try {
+    json = await resp.json();
+  } catch {
+    throw new Error(`识别服务响应异常（HTTP ${resp.status}），请稍后重试`);
+  }
+  if (!resp.ok) throw new Error(`识别服务返回 ${resp.status}`);
+
+  // 信封 code 分支（恒 200 契约）：非 200 一律按业务错误，401 转会话失效
+  const envelope = json as { code?: number; message?: string } | null;
+  if (envelope && typeof envelope.code === 'number' && envelope.code !== 200) {
+    if (envelope.code === 401) throw new SessionExpiredError(envelope.message);
+    throw new Error(envelope.message || `识别失败（code ${envelope.code}）`);
+  }
+  return json;
+}
+
 /**
  * 将已选定的图片/文本文件解析为交易记录。
- * - 图片文件 → POST /api/import/process-image（FormData multipart）
- * - 文本/CSV/TSV 文件 → 本地读取文本
+ * - 图片文件 → POST /api/import/process-image（FormData multipart，需会话令牌）
+ * - 文本/CSV/TSV 文件 → 本地读取文本（无需登录、不发请求）
  * @param file 图片或文本文件
  * @param readText 文本读取回调（由调用方注入 parseClipboardText），图片时可不传
+ * @param token 会话令牌；图片路径必填（接口已纳入登录保护），缺失即抛登录引导错误
  */
 export async function parseOcrFile(
   file: File,
   readText: (text: string) => RawTxRecord[],
+  token?: string | null,
 ): Promise<OcrParseResult> {
   // 文本/CSV/TSV → 本地降级解析
   if (file.type.startsWith('text/') || /\.(txt|csv|tsv)$/i.test(file.name)) {
@@ -261,17 +325,16 @@ export async function parseOcrFile(
     return { records, previewUrl: undefined };
   }
 
+  // 图片路径走后端接口：/api/import 已要求登录
+  if (!token) throw new Error('交割单截图识别需登录后使用（文本/CSV 粘贴导入无需登录）');
+
   // 图片 → 压缩 → OCR 接口
   const previewUrl = URL.createObjectURL(file);
 
   // 上传前压缩（只缩小不放大，转 JPEG 质量 0.8）
   const compressed = await compressImage(file);
 
-  const formData = new FormData();
-  formData.append('file', compressed);
-  const resp = await fetch('/api/import/process-image', { method: 'POST', body: formData });
-  if (!resp.ok) throw new Error(`OCR 服务返回 ${resp.status}`);
-  const json = await resp.json();
+  const json = await postImage(compressed, token);
   const records = parseOcrPayload(json);
   if (records.length === 0) throw new Error('OCR 解析结果为空');
   return { records, previewUrl };

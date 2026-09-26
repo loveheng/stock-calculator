@@ -34,6 +34,7 @@ const GROUPS = [
   ['risk（风控规则）', ['risk', 'getcloseblockreason']],
   ['calc（涨跌幅计算器）', ['changerate']],
   ['copilot（AI 助手）', ['copilot', 'pagecontext']],
+  ['guide（选股引导）', ['guide', 'briefcard']],
   ['canvas（自由画布/AI 选股台）', ['canvas', 'stockcanvas', 'widgetdsl']],
   ['announcement（公告订阅）', ['announcement']],
   ['customstat（自定义统计）', ['customstat']],

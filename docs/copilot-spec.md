@@ -5,7 +5,7 @@ status: active
 updated: 2026-09-25
 ---
 
-> 版本：定稿 v1.5（2026-09-25，v1.4 基础上新增 D33：画布能力提示 promptHints 条件携带——公共段+模板专属段分层组装、触发词命中才上行，ephemeral + 后端 8KB 截断原样拼接；v1.4 曾纠正传输/存储混淆并新增 D28-D32）
+> 版本：定稿 v1.6（2026-09-26，D33 修订：公共段改 canvas scope 内必带——v1.5 触发词条件携带下「把XX放上画布」类放置说法漏触发词，LLM 误用 fetch_kline 并幻觉成功；v1.5 = 2026-09-25 v1.4 基础上新增 D33：画布能力提示 promptHints 条件携带——公共段+模板专属段分层组装、触发词命中才上行，ephemeral + 后端 8KB 截断原样拼接；v1.4 曾纠正传输/存储混淆并新增 D28-D32）
 > 范围：全局悬浮对话窗 + 页面级上下文自动感知 + 两级作用域会话隔离 + 传输/存储分离（ephemeral contextSummary + 落库 contextOverview/timeAnchor）+ 级联生命周期（实体删除→同步清理 Copilot 会话）+ 多渠道 LLM 容灾路由
 > 关联：`docs/copilot-implementation.md`（开发实施文档）、`docs/e2ee-auth-spec.md`（鉴权与用户体系）
 > 状态：设计定稿，待 P0 开发启动
@@ -38,7 +38,7 @@ updated: 2026-09-25
 | D30 | 实体键命名空间 | scopeId = 页面标识[:可切换的顶级业务实体Key]；cost_averaging 与 t_calculator 的实体键统一且仅为股票代码（如 t_calculator:600519）；round/持仓批次/订单不得作顶层实体键；页面级 home/statistics 保持纯字符串；home:planned_orders 类区块级为 V2 专属格式（区块 Key，非实体键） |
 | D31 | 级联触发白名单 | 仅 3 类事件触发级联清理：持仓删除标的→cost_averaging:{symbol}；做T删除标的/清空流水→t_calculator:{symbol}；全局重置/一键清库→批量清理；卖出/清仓/归档等正常生命周期一律不触发 |
 | D32 | 明细重放分期 | V1 历史卡片仅渲染 contextOverview 概览 + timeAnchor 标签；基于 Dexie 历史切片的明细重放纯函数移入 P2/V2 分期 |
-| D33 | 画布能力提示条件携带 | v1.5：AskRequest 新增可选 `promptHints`（分层组装：公共段 = 通用动作/标号约定/数据纪律；模板专属段 = 各模板 `aiPrompt` 深规格，内容与守卫同仓同 PR 演进）。携带条件 = canvas scope 且用户消息命中注册表 `aiTriggers` 触发词（includes 宽匹配，宁多带勿静默失败；词表按守卫拒绝日志养护）；常规画布对话零额外 token；重发按原消息内容重判（内容自描述，零状态）。ephemeral 不落库不打日志，后端按不可信输入处理（≤8KB 截断）原样拼接进系统提示固定区段。**权责边界（2026-09-25 联调定案）：动作外壳协议（`<copilot-actions>` 提取格式）由后端编排系统提示宣讲（谁解析谁宣讲，全局兜底）；promptHints 仅教载荷 schema、永不包含外壳标签（前端测试钉死），前端渲染层另有外壳剥离双保险** |
+| D33 | 画布能力提示条件携带 | v1.5：AskRequest 新增可选 `promptHints`（分层组装：公共段 = 通用动作/标号约定/数据纪律；模板专属段 = 各模板 `aiPrompt` 深规格，内容与守卫同仓同 PR 演进）。携带条件 = canvas scope 且用户消息命中注册表 `aiTriggers` 触发词（includes 宽匹配，宁多带勿静默失败；词表按守卫拒绝日志养护）；常规画布对话零额外 token；重发按原消息内容重判（内容自描述，零状态）。ephemeral 不落库不打日志，后端按不可信输入处理（≤8KB 截断）原样拼接进系统提示固定区段。**权责边界（2026-09-25 联调定案）：动作外壳协议（`<copilot-actions>` 提取格式）由后端编排系统提示宣讲（谁解析谁宣讲，全局兜底）；promptHints 仅教载荷 schema、永不包含外壳标签（前端测试钉死），前端渲染层另有外壳剥离双保险**。**v1.6 修订（2026-09-26 联调事故）：公共段升级为 canvas scope 内必带**——触发词条件携带下「把茅台放上画布」命中不了任何已登记触发词，LLM 看不到 canvas_add_block，误用语义相近的 MCP 读工具 fetch_kline（只回数据不落画布）并幻觉成功；公共段 ~0.3KB/消息远低于误用一次工具的代价，模板专属段仍按触发词条件携带 |
 | D15 | 数据清理 | 写入时懒清理，每 session 保留最近 200 条 |
 | D16 | Prompt 窗口 | 滑动窗口 3 轮（6 条），配置常量 |
 | D17 | 包与协议 | 后端新领域包 `copilot/`（Modulith）；scopeId 协议表（含 `页面[:实体主键]` 格式约定）放 `types/domain.ts` 与路由字符串解耦，各页面动态拼接实体主键 |

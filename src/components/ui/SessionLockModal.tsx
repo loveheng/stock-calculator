@@ -65,9 +65,10 @@ export default function SessionLockModal() {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur p-4">
       <div
-        className={`bg-slate-800 border border-slate-600 rounded-2xl p-6 max-w-sm w-full shadow-2xl ${
+        className={`bg-slate-800 border border-slate-600 rounded-2xl p-6 max-w-sm w-full max-h-[90dvh] overflow-y-auto shadow-2xl ${
           shaking ? 'animate-shake' : ''
         }`}
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1.5rem)' }}
       >
         <div className="flex flex-col items-center mb-5">
           <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-600 flex items-center justify-center mb-3">
@@ -99,7 +100,7 @@ export default function SessionLockModal() {
               <button
                 type="button"
                 onClick={() => setShowPassword((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                className="tap-target absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
                 aria-label={showPassword ? '隐藏密码' : '显示密码'}
               >
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}

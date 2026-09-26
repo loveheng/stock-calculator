@@ -36,7 +36,7 @@ import {
   asRunStatPayload,
   type SanitizedCopilotPayload,
 } from '../../utils/copilotActions';
-import { allCanvasOperationMeta } from '../../utils/canvasTemplates';
+import { allCanvasOperationMeta, getCanvasTemplate } from '../../utils/canvasTemplates';
 import { prewarmSandbox } from '../../utils/customStats/client';
 
 /** 待确认动作 id 序列（内存态，无需 ulid 级别防撞） */
@@ -107,6 +107,13 @@ const CANVAS_EXECUTORS: Record<string, (ctx: CanvasExecCtx, payload: SanitizedCo
       const blocks = get().canvasBlocks;
       const last = blocks[blocks.length - 1];
       if (last) get().updateCanvasBlockData(last.blockId, { content: p.content });
+    }
+    if (p.type === 'brief' && p.stockCode) {
+      // 带码直接绑定：data 形状复用模板 initData 单一事实源（与 kline 同款「建块后写标的」形态）
+      const blocks = get().canvasBlocks;
+      const last = blocks[blocks.length - 1];
+      const briefData = getCanvasTemplate('brief')?.initData?.({ stockCode: p.stockCode });
+      if (last && briefData) get().updateCanvasBlockData(last.blockId, briefData as CanvasBlockData['brief']);
     }
     toast(`✅ ${summary} 完成`);
     return true;

@@ -106,6 +106,13 @@ const UPSTREAMS = {
     headers: {},
     stripPrefix: false,
   },
+  // 选股引导（画布 brief 个股档案块取数通道；保留原始路径前缀，不剥离 /api/guide；
+  // 与 /api/broker 同源部署——缺此条目时线上 brief 块取数会落到 SPA 回落，同 vite 代理 2026-09-26 之坑）
+  '/api/guide': {
+    base: PROXY_UPSTREAMS.online.auth,
+    headers: {},
+    stripPrefix: false,
+  },
 };
 
 /** 匹配路径前缀（按长度降序，避免 `/api/eastmoney` 被 `/api` 误匹配）。 */

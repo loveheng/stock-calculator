@@ -191,6 +191,13 @@ export default defineConfig({
         target: devUpstreams.auth,
         changeOrigin: true,
       },
+      // 选股引导（画布 brief 个股档案块取数通道）：与 /api/broker 同源同口径；
+      // 缺此条目时 /api/guide/* 落 SPA 回落返回 index.html（HTTP 200 + HTML），
+      // 前端 JSON 解析失败报「服务响应异常（HTTP 200）」——2026-09-26 画布 brief 块实证
+      '/api/guide': {
+        target: devUpstreams.auth,
+        changeOrigin: true,
+      },
       // WebDAV 代理：使用全局 fetch() 转发，避免动态 require
       '/api/webdav': {
         target: 'http://localhost:5173',

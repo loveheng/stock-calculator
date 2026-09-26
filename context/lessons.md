@@ -1,0 +1,1 @@
+- [canvas] 「把茅台放到画布上」AI 却调 fetch_kline 且声称成功（区块数 0、actions:null）➔ D33 v1.5 触发词条件携带下放置类说法命中不了任何 aiTriggers，canvas_add_block 不进 prompt，LLM 只见语义相近的 MCP 读工具（描述以「画布」开头加重误导），拿到真数据后把「取数成功」幻觉成「落块成功」➔ 动作类能力的提示词必须无条件在场（D33 v1.6 公共段 scope 内必带），触发词只养模板专属段；MCP 工具描述避免与前端动作语义撞车 (Ref: misc)

@@ -20,9 +20,11 @@ interface BlockFocusButtonProps {
   blockId: string;
   /** 悬浮提示（缺省「聚焦此区块向 AI 提问」） */
   title?: string;
+  /** 透传额外类名（如组合容器内的 tap-target 移动端热区） */
+  className?: string;
 }
 
-export default function BlockFocusButton({ scopeId, blockId, title }: BlockFocusButtonProps) {
+export default function BlockFocusButton({ scopeId, blockId, title, className }: BlockFocusButtonProps) {
   const focusBlock = useAppStore((s) => s.focusBlock);
   return (
     <button
@@ -33,7 +35,7 @@ export default function BlockFocusButton({ scopeId, blockId, title }: BlockFocus
         focusBlock(scopeId, blockId);
       }}
       title={title ?? '聚焦此区块向 AI 提问'}
-      className="flex flex-shrink-0 items-center gap-1 rounded-full border border-slate-600/70 bg-slate-800/60 px-2 py-1 text-[11px] font-medium text-slate-300 transition-colors hover:border-blue-500/60 hover:text-blue-300"
+      className={`flex flex-shrink-0 items-center gap-1 rounded-lg border border-slate-600/70 bg-slate-800/60 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 transition-colors hover:border-blue-500/60 hover:text-blue-300 ${className ?? ''}`}
     >
       <Sparkles className="h-3 w-3" />
       问 AI

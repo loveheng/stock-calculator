@@ -25,9 +25,18 @@ describe('CANVAS_PROMPT 注册表承载（模板专属段）', () => {
   });
 });
 
-describe('buildCanvasPromptHints（公共段 + 命中触发词的专属段）', () => {
-  it('未命中任何触发词 → undefined（常规画布对话零 token 开销）', () => {
-    expect(buildCanvasPromptHints('总结画布上所有区块的分析结论')).toBeUndefined();
+describe('buildCanvasPromptHints（公共段必带 + 命中触发词的专属段）', () => {
+  it('未命中任何触发词 → 仅公共段（D33 v1.6：canvas_add_block 常在，宁多带勿静默失败）', () => {
+    const hints = buildCanvasPromptHints('总结画布上所有区块的分析结论');
+    expect(hints).toContain('## 画布操作能力');
+    expect(hints).toContain('canvas_add_block');
+    expect(hints).not.toContain('canvas_add_hline');
+  });
+
+  it('「把茅台放到画布上」→ 公共段必在（2026-09-26 联调事故回归：放置类说法曾漏触发词致误用 fetch_kline）', () => {
+    const hints = buildCanvasPromptHints('把贵州茅台放到画布上');
+    expect(hints).toContain('canvas_add_block');
+    expect(hints).toContain('brief');
   });
 
   it('命中 widget 触发词 → 公共段 + widget 专属段', () => {

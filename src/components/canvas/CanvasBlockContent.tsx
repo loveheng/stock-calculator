@@ -1,7 +1,7 @@
 /**
  * @file CanvasBlockContent.tsx
  * @description 画布区块内容渲染器（spec §4）：按 block.type 分派到对应编辑/展示形态
- *              （七类手动模板 + widget DSL 动态面板只读渲染）。
+ *              （八类手动模板 + widget DSL 动态面板只读渲染）。
  *              K 线区块：未选股票 → 占位态（Portal 弹 Smartbox 选股，spec §4.5）；
  *              已选 → CanvasKlineChart + 划线模式工具条。
  *              所有浮层经 React Portal 挂 document.body（spec §七：RGL GridItem 的
@@ -19,6 +19,7 @@ import { LineChart, BarChart, XAxis, YAxis, Tooltip, ResponsiveContainer, Cartes
 import { useAppStore } from '../../store';
 import { getBrokerKlines, getCachedBrokerKlines, computeIndicators, indicatorsForBlockType, BrokerUnavailableError, type BrokerKline, type BrokerIndicatorCap } from '../../services/brokerService';
 import { getCanvasTemplate } from '../../utils/canvasTemplates';
+import CanvasBriefCard from './CanvasBriefCard';
 import { SessionExpiredError } from '../../services/apiClient';
 import { loadStoredAuthSession } from '../../services/authSession';
 import { searchStocks } from '../../services/stockService';
@@ -951,6 +952,8 @@ export default function CanvasBlockContent({ block }: { block: CanvasBlock }) {
       return <FileImageContent block={block} isImage={true} />;
     case 'text':
       return <TextContent block={block} />;
+    case 'brief':
+      return <CanvasBriefCard block={block} />;
     case 'widget':
       return <WidgetContent block={block} />;
   }

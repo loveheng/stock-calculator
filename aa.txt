@@ -1,7 +1,0 @@
-Unknown command: "vitest"
-
-
-Did you mean this?
-  npm test # Test a package
-To see a list of supported npm commands, run:
-  npm help

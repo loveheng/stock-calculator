@@ -96,7 +96,7 @@ export default function AuthModal() {
           {canClose && (
             <button
               onClick={() => setAuthModalOpen(false)}
-              className="text-slate-400 hover:text-white transition-colors"
+              className="tap-target text-slate-400 hover:text-white transition-colors"
               aria-label="关闭"
             >
               ✕
@@ -156,7 +156,7 @@ export default function AuthModal() {
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                  className="tap-target absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
                   aria-label={showPassword ? '隐藏密码' : '显示密码'}
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}

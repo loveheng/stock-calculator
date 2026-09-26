@@ -1,7 +1,7 @@
 /**
  * @file StockCanvas.tsx
  * @description AI 选股台 · 自由画布页（spec §二）：顶部工具条（保存态/刷新行情/AI 助手）+
- *              左侧模板面板（七类模板，点击添加）+ RGL 网格画布区（拖拽/缩放/自由排列）+
+ *              左侧模板面板（八类模板，点击添加）+ RGL 网格画布区（拖拽/缩放/自由排列）+
  *              空画布引导（spec §十）。AI 上下文经 useCanvasContext 注册（scopeId=canvas），
  *              聊天复用全局 GlobalCopilot 浮窗。
  * @layer UI
@@ -249,7 +249,7 @@ export default function StockCanvas() {
                 layout={rglLayout}
                 width={width}
                 gridConfig={{ cols: CANVAS_GRID.cols, rowHeight: CANVAS_GRID.rowHeight, margin: [8, 8] }}
-                dragConfig={{ enabled: true, handle: '.canvas-drag-handle' }}
+                dragConfig={{ enabled: true, handle: '.canvas-drag-handle', cancel: '.no-drag' }}
                 resizeConfig={{ enabled: true }}
                 onLayoutChange={handleLayoutChange}
               >

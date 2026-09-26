@@ -55,6 +55,11 @@ export function blockDataSummary(b: CanvasBlock): string {
       const d = b.data as CanvasBlockData['file'];
       return d.fileName || '空占位';
     }
+    case 'brief': {
+      const d = b.data as CanvasBlockData['brief'];
+      if (!d.stockId) return '未选股票（对话下发 canvas_add_block 带 stockCode 建档）';
+      return `${d.stockName || d.stockId}（${d.stockId}）档案，近${d.days}天提及${d.mention.count} 题材${d.subjects.length} 公告${d.announcements.length}`;
+    }
     case 'widget': {
       const d = b.data as CanvasBlockData['widget'];
       const kinds = d.dsl?.nodes?.map((n) => n.c) ?? [];

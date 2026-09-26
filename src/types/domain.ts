@@ -200,6 +200,29 @@ export interface CanvasChartPoint {
   value: number;
 }
 
+// ---- 选股引导档案块（guide；docs/guide-spec.md v1.1；后端契约=后端仓 docs/guide/api.md）----
+
+/** 电报提及文章头；ctime 为 epoch 秒（cls_article.ctime 口径）——转毫秒/Date 须 ×1000，勿按毫秒直读 */
+export interface GuideArticleBrief {
+  articleId: number;
+  title: string;
+  ctime: number;
+}
+
+/** 近窗口题材归属标签 */
+export interface GuideSubjectItem {
+  subjectId: number;
+  subjectName: string;
+  articleCount: number;
+}
+
+/** 近期公告蒸馏摘要 */
+export interface GuideAnnouncementItem {
+  annDate: string;
+  title: string;
+  summary: string;
+}
+
 /** 区块数据多态（按 type 收窄） */
 export interface CanvasBlockData {
   kline: {
@@ -259,6 +282,21 @@ export interface CanvasBlockData {
   widget: {
     /** DSL 声明式图纸（utils/widgetDsl.validateWidgetDsl 校验后的合法形态） */
     dsl: WidgetDsl;
+  };
+  /** 选股引导档案块（guide-spec v1.1 G2；后端 GET /api/guide/stock-brief 的持久快照） */
+  brief: {
+    /** 系统股票 ID（字典键形态 sh600519；服务端归一化，裸码/大小写均可入参） */
+    stockId: string;
+    /** 名称兜底链=公告 secName→字典→空串；空串时 UI 回落展示 stockId */
+    stockName: string;
+    /** 时间窗（天，1-30，越界服务端静默钳制；改窗即重取） */
+    days: number;
+    /** 近窗口电报提及聚合；count=0 属正常业务态非错误 */
+    mention: { count: number; articles: GuideArticleBrief[] };
+    /** 近窗口题材归属标签（articleCount 降序，≤5） */
+    subjects: GuideSubjectItem[];
+    /** 近期公告蒸馏摘要（annDate 倒序，≤3） */
+    announcements: GuideAnnouncementItem[];
   };
 }
 
@@ -705,11 +743,11 @@ export interface CopilotAnnotateBlockPayload {
   content: string;
 }
 
-/** canvas_add_block：AI 新建画布区块（auto 级：只新增不覆盖；K线带 stockCode 时直接绑定标的） */
+/** canvas_add_block：AI 新建画布区块（auto 级：只新增不覆盖；K线/brief 带 stockCode 时直接绑定标的） */
 export interface CopilotCanvasAddBlockPayload {
-  /** 区块类型（七类之一） */
+  /** 区块类型（八类手动模板之一；widget 走 canvas_add_widget 不在此列） */
   type: CanvasBlockType;
-  /** K线区块可直接绑定标的（腾讯形态 sh600519）；其他类型忽略 */
+  /** K线/brief 区块可直接绑定标的（腾讯形态 sh600519）；其他类型忽略 */
   stockCode?: string;
   /** text 区块的初始内容（≤500 字）；其他类型忽略 */
   content?: string;

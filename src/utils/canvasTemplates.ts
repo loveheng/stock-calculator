@@ -2,7 +2,7 @@
  * @file canvasTemplates.ts
  * @description 画布模板注册表（docs/free-canvas-template-registry.md §二）：模板的单一事实源——
  *              label/icon/默认尺寸/初始 data/受限取数词表/后处理操作元数据/AI 能力提示全部收编于此，
- *              新增模板 = 注册一个对象（七类手动模板 + aiOnly 的 widget DSL 动态模板）。
+ *              新增模板 = 注册一个对象（八类手动模板 + aiOnly 的 widget DSL 动态模板）。
  *              分层纪律（check-layers R2）：本文件为 utils 纯函数层，**禁 import store**——
  *              操作元数据（op/tier/guard/summarize）在此登记，exec 闭包由 copilotActionSlice
  *              （slice 层）在分发时绑定（get/set 由 zustand 注入，store 访问不出 slice）；
@@ -22,6 +22,7 @@ import {
   Paperclip,
   Type as TypeIcon,
   LayoutTemplate,
+  UserSearch,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { CanvasBlock, CanvasBlockData, CanvasBlockType } from '../types/domain';
@@ -39,6 +40,7 @@ import {
   type SanitizedCopilotPayload,
 } from './copilotActions';
 import { getBrokerKlines, getCachedBrokerKlines, BrokerUnavailableError, type BrokerKline } from '../services/brokerService';
+import { fetchStockBrief } from '../services/guideService';
 import { loadStoredAuthSession } from '../services/authSession';
 
 // ============================================================
@@ -145,7 +147,7 @@ export interface CanvasTemplate {
   renderCustom?: (block: CanvasBlock) => ReactNode;
   /**
    * AI 专属模板（一期：widget）——只允许经 canvas_add_widget 动作创建，
-   * 手动入口（工具条「+ 添加」下拉 / 空态模板网格 / canvas_add_block 七类守卫）不暴露。
+   * 手动入口（工具条「+ 添加」下拉 / 空态模板网格 / canvas_add_block 八类守卫）不暴露。
    */
   aiOnly?: boolean;
   /**
@@ -247,7 +249,7 @@ const WIDGET_AI_PROMPT = `## canvas_add_widget 动态面板（AI 选股台画布
 `;
 
 // ============================================================
-// 注册表（七类手动模板 + widget 动态模板）
+// 注册表（八类手动模板 + widget 动态模板）
 // ============================================================
 
 export const CANVAS_TEMPLATES: Readonly<Record<CanvasBlockType, CanvasTemplate>> = {
@@ -405,7 +407,48 @@ export const CANVAS_TEMPLATES: Readonly<Record<CanvasBlockType, CanvasTemplate>>
     operationsMeta: [],
     dataVocab: [],
   },
-  // DSL 动态模板（第八区块类型，aiOnly）：LLM 经 canvas_add_widget 输出 JSON 图纸落块，
+  // 选股引导档案块（guide-spec v1.1 G2/G3）：确认后的关注对象持久快照；只读无 canvas_* 写操作，
+  // 取数词一期仅数字词「提及数」精确直出（防幻觉），列表词待 CanvasDataCard 形状评估后二期登记。
+  brief: {
+    type: 'brief',
+    label: '个股档案',
+    icon: UserSearch,
+    defaultSize: { w: 4, h: 5 },
+    initData: (params) => ({
+      stockId: params?.stockCode ?? '',
+      stockName: params?.stockCode ?? '',
+      days: 7,
+      mention: { count: 0, articles: [] },
+      subjects: [],
+      announcements: [],
+    }),
+    fetchData: (block) => {
+      const d = block.data as CanvasBlockData['brief'];
+      if (!d.stockId) return null;
+      return fetchStockBrief(d.stockId, d.days).then((resp) => ({
+        data: {
+          stockName: resp.stockName || d.stockName,
+          mention: resp.clsMention,
+          subjects: resp.subjects,
+          announcements: resp.announcements,
+        },
+      }));
+    },
+    operationsMeta: [],
+    dataVocab: ['提及数'],
+    dataFetcher: (block) => {
+      const d = block.data as CanvasBlockData['brief'];
+      if (!d.stockId) return Promise.reject(new Error(`${block.blockId} 尚未选择股票`));
+      // 直取不缓存：响应为轻量聚合（≤5 文章头/≤5 题材/≤3 公告），每次取词保新鲜
+      return fetchStockBrief(d.stockId, d.days).then((resp) =>
+        buildDataCard(`${block.blockId} ${resp.stockName || d.stockName} · 提及数`, [
+          { label: '提及数', text: String(resp.clsMention.count), raw: resp.clsMention.count },
+          { label: '时间窗', text: `近 ${d.days} 天`, raw: d.days },
+        ]),
+      );
+    },
+  },
+  // DSL 动态模板（aiOnly）：LLM 经 canvas_add_widget 输出 JSON 图纸落块，
   // 无 initData（data 由校验通过的 DSL 注入）/无取数/无后处理操作（拍板：改 = 删旧 + 加新）。
   widget: {
     type: 'widget',
@@ -456,21 +499,23 @@ export function allCanvasOperationMeta(): ReadonlyMap<string, CanvasOperationMet
 const CANVAS_PROMPT_COMMON = `## 画布操作能力（AI 选股台）
 
 画布由区块组成，每区块有标号（A1、B2…，删除不复用；现有区块见标号摘要）。通用动作：
-- canvas_add_block（自动执行）新建区块 {"type":"kline|table|chart|metric|text|image|file","stockCode"?:"sh600519","content"?:"text 初始内容≤500字"}
+- canvas_add_block（自动执行）新建区块 {"type":"kline|table|chart|metric|text|image|file|brief","stockCode"?:"sh600519","content"?:"text 初始内容≤500字"}——brief 为个股档案块：把标的放上画布建档用它，自动聚合近窗口电报提及/题材归属/公告
 - canvas_remove_block 删除区块 {"blockId":"A1"}
 - canvas_refresh_klines 刷新全部 K 线行情（无参数）
 - annotate_block 给区块写备注 {"blockId":"A1","content":"≤200字"}
 各模板专属动作（换股/划线/指标/表格/动态面板等）见对应段落；载荷不合法整条静默丢弃（用户无感知），输出前逐项自检。价格等数字只用取数数据或用户给的数字，严禁编造。`;
 
 /**
- * 组装画布能力提示（D33 条件携带）：公共段 + 命中触发词的模板专属段；未命中任何触发词返回
- * undefined（常规画布对话零 token 开销）。触发词用 includes 宽匹配（宁多带 ~1KB 勿静默失败，
- * 词表按守卫拒绝日志养护）；跨模板多命中时逐段拼接。scope（canvas）门控由调用方负责。
+ * 组装画布能力提示（D33 v1.6 修订）：公共段**必带**，模板专属段按触发词条件携带。
+ * 修订动因（2026-09-26 联调事故）：v1.5 未命中触发词返回 undefined——用户「把茅台放上画布」
+ * 不含任何已登记触发词，LLM 看不到 canvas_add_block，误用语义相近的 MCP 读工具
+ * fetch_kline（只回数据不落画布）并幻觉成功。公共段 ~0.3KB/消息远低于一次误用工具的
+ * 代价，「宁多带勿静默失败」升级为公共段无条件在场；scope（canvas）门控仍由调用方负责。
+ * 触发词用 includes 宽匹配；跨模板多命中时逐段拼接。
  */
-export function buildCanvasPromptHints(question: string): string | undefined {
+export function buildCanvasPromptHints(question: string): string {
   const sections = Object.values(CANVAS_TEMPLATES)
     .filter((t) => t.aiPrompt && t.aiTriggers?.some((w) => question.includes(w)))
     .map((t) => t.aiPrompt!);
-  if (!sections.length) return undefined;
   return [CANVAS_PROMPT_COMMON, ...sections].join('\n\n');
 }

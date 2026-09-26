@@ -28,6 +28,8 @@ import {
   LogOut,
   Search,
   LayoutDashboard,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import InstallPrompt from './components/ui/InstallPrompt';
 import AuthGate from './components/ui/AuthGate';
@@ -82,9 +84,23 @@ const NAV_ITEMS = [
  * @returns {JSX.Element} 侧边栏视图
  */
 // ---- 侧边栏导航 ----
-function Sidebar({ onNavigate }: { onNavigate: () => void }) {
+/**
+ * 侧边栏导航组件。
+ *
+ * @description 支持两种形态：展开态（260px，图标 + 文案）与折叠态（72px，仅图标 + 悬浮提示）。
+ *              折叠态仅在桌面端生效，移动端抽屉始终为展开态。
+ * @param {{ onNavigate: () => void; collapsed: boolean }} props
+ * @returns {JSX.Element} 侧边栏视图
+ */
+function Sidebar({ onNavigate, collapsed }: { onNavigate: () => void; collapsed: boolean }) {
   const location = useLocation();
   const navigate = useNavigate();
+
+  // 首页菜单上的「待执行计划」角标：未过期且状态为 active 的计划单数量
+  const activePlannedCount = useAppStore((s) => {
+    const now = Date.now();
+    return s.plannedOrders.filter((p) => p.status === 'active' && new Date(p.expiresAt).getTime() > now).length;
+  });
 
   const handleClick = (path: string) => {
     navigate(path);
@@ -92,48 +108,57 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-5 py-6 border-b border-slate-700">
-        <h1 className="text-lg font-bold text-white flex items-center gap-2">
-          <BarChart3 className="w-5 h-5 text-blue-500" />
-          股票计算助手
-        </h1>
-        <p className="text-xs text-slate-500 mt-1">股票交易工具</p>
+    <div className="flex flex-col h-full overflow-hidden">
+      <div
+        className={`flex items-center border-b border-slate-700 ${
+          collapsed ? 'justify-center px-0 py-5' : 'gap-2 px-5 py-6'
+        }`}
+      >
+        <BarChart3 className="w-5 h-5 text-blue-500 flex-shrink-0" />
+        {!collapsed && (
+          <div className="min-w-0">
+            <h1 className="text-lg font-bold text-white truncate">股票计算助手</h1>
+            <p className="text-xs text-slate-500 mt-1">股票交易工具</p>
+          </div>
+        )}
       </div>
 
-      <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
+      <nav className={`flex-1 py-4 space-y-1 overflow-y-auto overflow-x-hidden ${collapsed ? 'px-2' : 'px-3'}`}>
         {NAV_ITEMS.map((item) => {
           const isActive = location.pathname === item.path;
           const Icon = item.icon;
-          const activeCount = useAppStore((s) => {
-            if (item.path !== '/') return 0;
-            const now = Date.now();
-            return s.plannedOrders.filter((p) => p.status === 'active' && new Date(p.expiresAt).getTime() > now).length;
-          });
+          const activeCount = item.path === '/' ? activePlannedCount : 0;
           return (
             <button
               key={item.path}
               onClick={() => handleClick(item.path)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+              title={collapsed ? item.label : undefined}
+              aria-label={item.label}
+              className={`relative w-full flex items-center rounded-lg text-sm font-medium transition-all duration-200 ${
+                collapsed ? 'justify-center px-0 py-3' : 'gap-3 px-4 py-3'
+              } ${
                 isActive
                   ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
               }`}
             >
               <Icon className="w-4 h-4 flex-shrink-0" />
-              <span>{item.label}</span>
-              {activeCount > 0 && (
+              {!collapsed && <span>{item.label}</span>}
+              {!collapsed && activeCount > 0 && (
                 <span className="ml-auto bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
                   {activeCount}
                 </span>
+              )}
+              {collapsed && activeCount > 0 && (
+                <span className="absolute top-1.5 right-2.5 bg-amber-500 w-1.5 h-1.5 rounded-full" />
               )}
             </button>
           );
         })}
       </nav>
 
-      <div className="px-5 py-4 border-t border-slate-700">
-        <p className="text-xs text-slate-600">v1.0.0</p>
+      <div className={`border-t border-slate-700 ${collapsed ? 'px-0 py-4 text-center' : 'px-5 py-4'}`}>
+        <p className="text-xs text-slate-600">{collapsed ? 'v1' : 'v1.0.0'}</p>
       </div>
     </div>
   );
@@ -188,11 +213,14 @@ function AccountArea() {
   );
 }
 
+/** 侧边栏折叠态的本地持久化键 */
+const SIDEBAR_COLLAPSED_KEY = 'ui.sidebarCollapsed';
+
 /**
  * 主布局组件。
  *
- * @description 桌面端展示固定侧边栏，移动端展示抽屉式侧边栏（含遮罩）；
- *              顶部为 sticky 标题栏，内容区通过 <Routes> 分发各页面组件；
+ * @description 桌面端展示常驻侧边栏（可折叠为图标栏），移动端展示抽屉式侧边栏（含遮罩）；
+ *              顶部为 sticky 标题栏，内容区铺满侧边栏之外的剩余宽度并通过 <Routes> 分发各页面组件；
  *              同时挂载 PWA 安装引导与 E2EE 认证门控（AuthGate）。
  * @returns {JSX.Element} 应用主布局视图
  * @note 本组件为静态壳层，不含业务数据读写
@@ -200,7 +228,27 @@ function AccountArea() {
 // ---- 主布局 ----
 function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // 桌面端侧边栏折叠态（持久化，刷新后保持）；移动端抽屉不使用该状态
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const location = useLocation();
+
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? '1' : '0');
+      } catch {
+        /* 隐私模式 / 存储不可用时忽略 */
+      }
+      return next;
+    });
+  };
 
   // 按需加载核心数据（tRounds（OPENED 含流水池）/ positions）
   // 冷启动时仅加载 feeConfig，核心数据在首次渲染后异步加载，降低首屏等待时间
@@ -220,13 +268,13 @@ function AppLayout() {
         />
       )}
 
-      {/* 侧边栏 */}
+      {/* 侧边栏：移动端为抽屉（固定 260px），桌面端常驻并支持折叠为图标栏 */}
       <aside
-        className={`sidebar fixed md:sticky top-0 left-0 z-50 w-[260px] h-screen bg-slate-800/95 backdrop-blur-xl border-r border-slate-700 transform transition-transform duration-300 ease-in-out ${
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-        } md:translate-x-0`}
+        className={`sidebar fixed md:sticky top-0 left-0 z-50 h-screen bg-slate-800/95 backdrop-blur-xl border-r border-slate-700 transition-all duration-300 ease-in-out w-[260px] ${
+          sidebarCollapsed ? 'md:w-[72px]' : 'md:w-[260px]'
+        } ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}
       >
-        <Sidebar onNavigate={() => setSidebarOpen(false)} />
+        <Sidebar onNavigate={() => setSidebarOpen(false)} collapsed={sidebarCollapsed} />
       </aside>
 
       {/* 安装引导 */}
@@ -245,21 +293,37 @@ function AppLayout() {
       <Toast />
 
       {/* 主内容区 */}
-      <main className="main-area flex-1 min-h-screen w-full">
+      <main className="main-area flex-1 min-w-0 min-h-screen w-full">
         {/* 顶部栏 */}
         <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-xl border-b border-slate-800 px-4 py-3 flex items-center gap-3 md:px-6">
+          {/* 移动端：打开抽屉 */}
           <button
-            className="menu-btn p-2 rounded-lg hover:bg-slate-800 text-slate-400 transition-colors"
+            className="menu-btn md:hidden p-2 rounded-lg hover:bg-slate-800 text-slate-400 transition-colors"
             onClick={() => setSidebarOpen(true)}
+            aria-label="打开菜单"
           >
             <Menu className="w-5 h-5" />
+          </button>
+          {/* 桌面端：折叠 / 展开侧边栏 */}
+          <button
+            className="hidden md:inline-flex p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+            onClick={toggleSidebarCollapsed}
+            title={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+            aria-label={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+            aria-expanded={!sidebarCollapsed}
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="w-5 h-5" />
+            ) : (
+              <PanelLeftClose className="w-5 h-5" />
+            )}
           </button>
           <h2 className="text-base font-semibold text-slate-200">{pageTitle}</h2>
           <AccountArea />
         </header>
 
-        {/* 页面内容 */}
-        <div className="p-4 md:p-6 max-w-5xl mx-auto">
+        {/* 页面内容：桌面端铺满侧边栏之外的剩余区域 */}
+        <div className="p-4 md:p-6 w-full max-w-5xl mx-auto lg:max-w-none">
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/change-rate" element={<ChangeRate />} />

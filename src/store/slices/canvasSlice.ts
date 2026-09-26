@@ -117,7 +117,7 @@ export const createCanvasSlice: StateCreator<AppStore, [], [], CanvasSlice> = (s
       const blockId = nextBlockId(seq);
       const layout = nextLayout(get().canvasBlocks, type);
       // 各类型初始 data 由模板注册表提供（spec §4.5 初始态；kline 留空 fullCode 走占位态选股；
-      // 注册表缺 initData 的静态模板兜底空对象——一期七类均有 initData，兜底为防御）
+      // 注册表缺 initData 的静态模板兜底空对象——一期八类均有 initData，兜底为防御）
       const defaults = getCanvasTemplate(type)?.initData?.() ?? ({} as CanvasBlockData[CanvasBlockType]);
       const block: CanvasBlock = {
         blockId,

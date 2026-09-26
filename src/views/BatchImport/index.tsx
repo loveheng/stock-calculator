@@ -16,6 +16,8 @@ import { RiskController } from '../../risk/riskController';
 import { parseClipboardText, enrichDraftRow, completeDedupCheck, buildHistoryFromStore, groupRowsByStock, inferPlanBind } from '../../services/importAdapter';
 import { normalizeCode } from '../../utils/dedup';
 import { parseOcrFile, extractImageFromClipboard, revokeObjectUrl, validateImage } from '../../services/ocrService';
+import { loadStoredAuthSession } from '../../services/authSession';
+import { useAuthStore } from '../../store/useAuthStore';
 import { generateTxFingerprint } from '../../utils/dedup';
 import { mergeImportedTradesToPositions } from '../../utils/importMerger';
 import type { ImportDraftRow, GroupRiskLevel } from '../../types/import';
@@ -190,6 +192,12 @@ export default function BatchImportPage() {
         window.dispatchEvent(new CustomEvent('app-toast', { detail: `❌ ${validation.message}` }));
         return;
       }
+      // 登录守门：/api/import 已纳入会话保护，未登录直接引导登录（避免拿到 401 再解释）
+      if (!loadStoredAuthSession()?.token) {
+        window.dispatchEvent(new CustomEvent('app-toast', { detail: '⚠️ 交割单截图识别需登录，文本/CSV 粘贴导入无需登录' }));
+        useAuthStore.getState().setAuthModalOpen(true);
+        return;
+      }
     }
 
     // 设置 loading 状态
@@ -199,7 +207,7 @@ export default function BatchImportPage() {
       if (isImage) {
         setOcrStatus({ loading: true, message: '正在智能提取交割单明细，请稍候...' });
       }
-      const result = await parseOcrFile(file, parseClipboardText);
+      const result = await parseOcrFile(file, parseClipboardText, loadStoredAuthSession()?.token ?? null);
       if (result.previewUrl) setOcrImageUrl(result.previewUrl);
       const newRows = result.records.map((r) => {
         const ts = r.timestamp ? new Date(r.timestamp).getTime() : undefined;

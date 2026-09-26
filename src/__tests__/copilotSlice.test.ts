@@ -548,8 +548,8 @@ describe('事实数据变动检测（P0 时间隔离配套 UX）', () => {
   });
 });
 
-describe('promptHints 画布能力提示（copilot-spec D33 条件携带）', () => {
-  it('canvas scope 且消息以触发词「自定义面板」开头才携带；常规消息/其他 scope 不带', async () => {
+describe('promptHints 画布能力提示（copilot-spec D33 v1.6：公共段 scope 内必带）', () => {
+  it('canvas scope 公共段必带；模板专属段按触发词携带；其他 scope 不带', async () => {
     useAppStore.setState({
       registry: {
         canvas: makeBlockSnapshot('canvas', 'AI 选股台 · 自由画布', 'canvas:panel'),
@@ -557,12 +557,15 @@ describe('promptHints 画布能力提示（copilot-spec D33 条件携带）', ()
       },
       activeScopeId: 'canvas',
     });
-    // 常规画布提问（无触发词）：零开销不带
+    // 常规画布提问（无触发词）：公共段必带（v1.6 事故修订：放置类说法漏触发词曾致误用 fetch_kline）
     await useAppStore.getState().sendMessage('总结画布');
     let calls = (buildAskRequest as Mock).mock.calls;
-    expect((calls[calls.length - 1][5] as { promptHints?: string } | undefined)?.promptHints).toBeUndefined();
+    const plainHints = (calls[calls.length - 1][5] as { promptHints?: string } | undefined)?.promptHints;
+    expect(plainHints).toContain('## 画布操作能力');
+    expect(plainHints).toContain('canvas_add_block');
+    expect(plainHints).not.toContain('canvas_add_widget');
 
-    // 触发词开头（快捷按钮预填形态）：携带
+    // 触发词开头（快捷按钮预填形态）：公共段 + 专属段
     await useAppStore.getState().sendMessage('自定义面板：帮我做腾讯速览卡');
     calls = (buildAskRequest as Mock).mock.calls;
     expect((calls[calls.length - 1][5] as { promptHints?: string }).promptHints).toContain('canvas_add_widget');
@@ -574,7 +577,7 @@ describe('promptHints 画布能力提示（copilot-spec D33 条件携带）', ()
     expect((calls[calls.length - 1][5] as { promptHints?: string } | undefined)?.promptHints).toBeUndefined();
   });
 
-  it('重发路径按原消息内容重判：触发词消息携带，普通消息不带', async () => {
+  it('重发路径按原消息内容重判：专属段按触发词，公共段 scope 内恒带', async () => {
     setActiveScope('canvas');
     const failed: CopilotMessage = {
       id: 'cmid-9', role: 'user', content: '自定义面板：持仓检查清单', status: 'failed',
@@ -594,6 +597,8 @@ describe('promptHints 画布能力提示（copilot-spec D33 条件携带）', ()
     useAppStore.setState({ threads: { canvas: [plain] } });
     await useAppStore.getState().retryMessage('cmid-10');
     calls = (buildAskRequest as Mock).mock.calls;
-    expect((calls[calls.length - 1][5] as { promptHints?: string } | undefined)?.promptHints).toBeUndefined();
+    const plainHints = (calls[calls.length - 1][5] as { promptHints?: string } | undefined)?.promptHints;
+    expect(plainHints).toContain('canvas_add_block');
+    expect(plainHints).not.toContain('canvas_add_widget');
   });
 });

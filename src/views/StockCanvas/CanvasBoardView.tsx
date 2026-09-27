@@ -241,11 +241,12 @@ export default function CanvasBoardView() {
             /* 空画布引导（spec §十）：模板直选 + 对话创建并列，手动/对话双入口对等 */
             <div className="flex h-full min-h-[280px] w-full flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed border-slate-700 text-slate-500">
               <p className="text-sm">您的画布空空如也 —— 选一个模板开始，或让 AI 帮你搭</p>
-              <div className="grid grid-cols-4 gap-2">
+              {/* 模板网格：移动端一行 3 个（窄屏 4 列会因固定卡片宽被挤爆），宽屏恢复 4 列 */}
+              <div className="grid w-full grid-cols-3 gap-2 px-2 md:grid-cols-4 md:px-0">
                 {TEMPLATES.map(({ type, label, icon: Icon }) => (
                   <button
                     key={type}
-                    className="flex w-24 flex-col items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-3 text-slate-300 hover:border-blue-500/60 hover:bg-slate-800"
+                    className="flex w-full flex-col items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/60 px-2 py-3 text-slate-300 hover:border-blue-500/60 hover:bg-slate-800"
                     onClick={() => addCanvasBlock(type)}
                   >
                     <Icon className="h-5 w-5 text-blue-400" />

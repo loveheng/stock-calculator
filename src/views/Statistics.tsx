@@ -607,7 +607,8 @@ export default function Statistics() {
             )}
 
             {/* 方向/状态切换胶囊 Tab */}
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+            {/* data-swipe-ignore：本组胶囊自带横向滚动，横滑此处归自己区域，不冒泡给页级 SwipeTabPanel 误切二级菜单 */}
+            <div data-swipe-ignore className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
               {directionTabs.map((item) => (
                 <button
                   key={item.value}
@@ -625,7 +626,8 @@ export default function Statistics() {
             </div>
 
             {/* 时间快捷筛选 */}
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+            {/* data-swipe-ignore：本组胶囊自带横向滚动，横滑此处归自己区域，不冒泡给页级 SwipeTabPanel 误切二级菜单 */}
+            <div data-swipe-ignore className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
               {timeTabs.map((item) => (
                 <button
                   key={item.value}
@@ -872,7 +874,8 @@ export default function Statistics() {
           </div>
 
           {/* 顶部切换 Tab */}
-          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+          {/* data-swipe-ignore：本组胶囊自带横向滚动，横滑此处归自己区域，不冒泡给页级 SwipeTabPanel 误切二级菜单 */}
+          <div data-swipe-ignore className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
             {positionTabs.map((item) => (
               <button
                 key={item.value}

@@ -16,6 +16,8 @@ Encodes the UI conventions established for the stock-calculator frontend (React 
 - Writing the **2nd** copy of the same JSX/logic block, or a **3rd** structurally similar UI
   (empty state, tab bar, filter) — i.e. deciding reuse vs. extraction (see §5).
 - Splitting a page's peer sections into switchable submenus (see §6).
+- Building or changing a 新增计划单 form (有效期 / 价格阈值范围 / 价格提醒区块) — it must bind the shared
+  `PlanOrderForm` template instead of a page-local form; see §8.
 
 ## Mandatory Conventions
 

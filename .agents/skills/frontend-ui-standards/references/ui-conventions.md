@@ -252,3 +252,39 @@ Rules for page authors:
 - 2nd occurrence of a **structural** twin → leave `// TODO-REUSE: <candidate name>`.
 - A **verbatim copy** is extracted immediately at the 2nd occurrence — no marker needed.
 - After extracting: `npx tsc --noEmit` + `npx vitest run` + `node scripts/check-layers.mjs`.
+
+---
+
+## 7. Plan order form binding (SKILL §8)
+
+三处调用方绑定同一模板，**都不持有表单状态**（无 `planPrice` / `planAmount` / `planThresholdPct` 之类页内 state）。
+
+```tsx
+// AI 选股台「计划单」Tab —— 唯一允许选择类型的一处
+<PlanOrderForm selectableContext onSubmit={handleSubmit} onCancel={() => setOpen(false)} />
+
+// 短线 / 中长期页 —— context 固定，编辑经 initialValues 回填
+<PlanOrderForm
+  context="short-term"
+  initialValues={
+    editingOrder
+      ? {
+          stock: { fullCode: editingOrder.fullCode, Name: editingOrder.stockName /* 其余字段留空 */ },
+          direction: editingOrder.direction,
+          plannedPrice: editingOrder.plannedPrice,
+          plannedAmount: editingOrder.plannedAmount,
+          validityDays: editingOrder.validityDays,
+          thresholdRange: editingOrder.thresholdRange, // 绝对价；回填时按「比例」反推展示
+        }
+      : undefined
+  }
+  onSubmit={handleCreatePlan} // 返回 false → 表单保持打开（如去重未通过），其余视为成功并重置
+  submitLabel={editingOrder ? '保存' : '确认创建'}
+/>
+```
+
+- 页面侧只负责两件事：落库（`buildPlannedOrder`）+ `reminderEnabled` 为真时开提醒（`usePlanReminder.start`）。
+- 阈值换算在模板内完成，页面拿到的永远是绝对价 `{ low, high }`，不关心用户填的是比例还是值。
+- 有效期固定 `VALIDITY_PRESETS`（3 / 7 / 14 / 30），由模板渲染分段按钮，页面不得提供自由输入。
+- 新字段 → 改模板 + `PlanOrderFormValues` / `PlanOrderInitialValues`，三处同时生效；
+  单页私加输入框属违反 §5.1 与 §8。

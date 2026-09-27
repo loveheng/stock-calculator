@@ -1,6 +1,7 @@
 {
-  "name": "股票账本与成本计算器",
-  "short_name": "股记",
+  "name": "应用骨架",
+  "short_name": "骨架",
+  "description": "React 19 + TypeScript + Vite + Dexie + Zustand + Tailwind 的本地优先 PWA 骨架。",
   "start_url": "/",
   "display": "standalone",
   "theme_color": "#1677ff",

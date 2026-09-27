@@ -1,48 +1,15 @@
-# 股票计算器 PWA（stock-calculator）
+# 应用骨架（app-skeleton）
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB)](https://react.dev/)
-[![Vite](https://img.shields.io/badge/Vite-6+-purple)](https://vitejs.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8-purple)](https://vitejs.dev/)
 [![PWA](https://img.shields.io/badge/PWA-ready-green)](https://web.dev/progressive-web-apps/)
 
-面向个人投资者的**全功能股票做T账本与成本计算器 PWA**。全部数据保存在浏览器本地（IndexedDB），无需后端服务，离线可用；并支持 WebDAV 备份、服务端密文同步与多端部署。
+**本地优先（local-first）PWA 骨架**：数据存浏览器 IndexedDB，离线可用、无后端即可运行。
+从成熟项目中抽出的工程骨架，用来快速起新项目——架构、护栏、持久化范式、通用 UI 都已就位，
+只需要替换领域模型与业务页面。
 
----
-
-## 文档导航（先读这里）
-
-- **[docs/README.md](./docs/README.md)** — 文档总索引：按功能域（部署 / 架构 / 各业务模块 / 前端规范 / 监控）列出全部 28 篇文档，是检索文档的入口。
-- **[GUIDE.md](./GUIDE.md)** — 项目深度阅读指南：目录结构、分层架构、数据流、核心模块详解、设计决策与版本演进。改代码前必读。
-- 文档内互相引用均为相对路径，可直接跳转；状态以各文档 frontmatter（`status` / `updated`）为准。
-
----
-
-## 核心特点（这个项目有什么不同）
-
-- **为「做T」而生，而非普通记账**：围绕正T / 倒T 日内套利构建——FIFO 撮合引擎自动配对结算、5 种结算类型、超卖/超买超限防御弹窗，并自动归档为 Round 战报（净收益 / 胜率 / 持股天数）。
-- **本地优先 · 隐私可控**：全部数据存于浏览器 IndexedDB，无后端也能用、离线可用（PWA）；即使开启云端同步，也走 E2EE 密文（服务端只存密文，密钥在本地）。
-- **金融级精度**：全程 Decimal.js 定点运算，杜绝浮点误差；费率按品种（股票 / ETF / 债券）分层精确计费（ETF 免印花税、债券免税）。
-- **数据零丢失工程**：增量 `put` / `delete` 持久化、全代码库禁用 `table.clear()`；`safePersist` 三重防护（启动装载守卫 + 指数退避重试 + 失败队列重放）。
-- **沙盘复盘（What-if）**：以真实资金占用峰值为预算，重演不同买卖决策路径，9 套策略生成器 + 四维对比，决策前先推演。
-- **工程护栏即工具**：单向依赖分层 + 静态 `check:layers`（R1/R2/R3）+ 循环依赖检测挂进 `pretest` / CI；领域类型单一权威源 `types/domain.ts`，架构约定由工具强制而非口头。
-
----
-
-## 功能特性
-
-| 模块 | 说明 |
-|---|---|
-| 估值计算器 | 涨跌幅 / 目标价 / 补仓数量联动计算，手续费实时联动 |
-| 成本摊薄 | 持仓加权平均法：买入/卖出/分红批次管理，成本重算 |
-| 做T计算器 | 正T / 倒T 双向记录，FIFO 撮合引擎自动配对结算 + 超限防御 |
-| Round 战报 | 每轮做T自主归档（交易明细 + 净收益 + 胜率 + 持股天数） |
-| 沙盘复盘 | What-if：以真实资金占用峰值为预算，重演决策路径，多方案对比 |
-| 统计面板 | 盈亏汇总 / 胜率 / 日历热力图（月度/年度） |
-| 费率配置 | 佣金 / 印花税 / 过户费 / 其它费用，按交易所与品种精确配置 |
-| 云端同步 | WebDAV 备份恢复 + 服务端 E2EE 密文同步（登录即备份） |
-| 离线访问 | PWA 安装到桌面，service worker 离线缓存 |
-
-共 8 个功能页面：`/`（仪表盘）、`/change-rate`、`/t-calculator`、`/cost-averaging`、`/sandbox`、`/statistics`、`/fee-config`、`/webdav`。
+- 文档入口：[docs/README.md](./docs/README.md)（分层护栏 + 组件/抽象规范）
 
 ---
 
@@ -51,88 +18,72 @@
 | 层 | 选型 |
 |---|---|
 | UI 框架 | React 19 + TypeScript（strict）+ React Router 7 |
-| 状态管理 | Zustand 5（切片化：core / positions / orders / rounds / streams / io + 沙盘独立 Store） |
-| 持久化 | Dexie 4（IndexedDB），增量 `put`/`delete`，零 `table.clear()` |
-| 构建 | Vite + vite-plugin-pwa |
-| 样式 | Tailwind CSS + 自定义组件 |
-| 数值计算 | Decimal.js（金融精度，避免浮点误差） |
-| 图表 | lightweight-charts / recharts |
-| 加密同步 | scure/bip39 + QuickJS（E2EE 密文同步） |
+| 状态管理 | Zustand 5（切片化：core / notes / settings / io） |
+| 持久化 | Dexie 4（IndexedDB），增量 `put`/`update`/`delete`，零 `table.clear()` |
+| 构建 | Vite 8 + vite-plugin-pwa |
+| 样式 | Tailwind CSS 3 + 语义类（`.card` / `.btn` / `.form-group` / `.tab-bar`） |
+| 测试 | Vitest 4 + fake-indexeddb |
 
-**架构核心**：单向依赖分层（`types/domain.ts` 零依赖权威类型 → `utils`/`risk` 纯计算 → `db`/`services` → `store` → `hooks` → `views`/`components`），由静态护栏 `check:layers`（R1/R2/R3）+ madge 循环检测在 `npm test` 与 CI 中强制。详见 [GUIDE.md](./GUIDE.md)。
+**架构核心**：单向依赖分层
+`types/domain.ts`（零依赖权威类型）→ `utils`（纯函数 / 持久化军械）→ `db`（DAO）→ `services`（跨层编排）→ `store`（Zustand 切片）→ `hooks` → `views`/`components`，
+由静态护栏 `check:layers`（R1/R2/R3）+ madge 循环检测在 `npm test` 与 CI 中强制。
+
+---
+
+## 目录结构
+
+```
+src/
+├── types/domain.ts     领域类型权威源（零依赖叶子，护栏 R3）
+├── db/
+│   ├── schema.ts       Dexie 表结构与实体类型（epoch ms）
+│   ├── index.ts        DAO：实体↔领域转换、按需加载、增量写入
+│   └── cleanUndefined.ts  写库前剔除 undefined（结构化克隆防炸）
+├── services/           跨层编排（示例：backupService 快照导出/导入）
+├── store/
+│   ├── index.ts        Store 组装（初始状态 + 切片装配）
+│   ├── types.ts        AppStore 契约
+│   ├── bootstrap.ts    initStore：冷启动水合 + 打开持久化闸门
+│   └── slices/         core / notes / settings / io 切片
+├── hooks/              useLoadCoreData（按需加载）
+├── views/Home.tsx      示例页面（CRUD + 设置 + 快照导入导出）
+├── components/ui/      通用 UI：Toast / ConfirmModal / EmptyState / InstallPrompt / ModeTabs
+└── __tests__/          示例测试（链路冒烟 + 持久化军械）
+```
 
 ---
 
 ## 快速开始
 
 ```bash
-npm install          # 安装依赖
-
-npm run dev          # 开发服务器 → http://localhost:5173（HMR）
-npm run build        # 生产构建 → dist/（vite build + scripts/postbuild.js）
-npm run preview      # 预览生产构建
-
-npx tsc --noEmit     # TypeScript 类型检查
-npm test             # 单元测试（pretest 自动先跑 check:arch 架构护栏）
-npm run check:arch   # 手动单跑架构护栏：分层依赖 + 循环依赖
-npm run map:features # 功能 → 文件触点实时速查（脚本扫描生成，永不过期）
+npm install
+npm run dev            # http://localhost:5173
+npm run build          # 产物 dist/
+npm test               # pretest 自动先跑架构护栏
+npm run check:arch     # 分层依赖 + 循环依赖
+npm run map:features   # 功能 → 文件触点速查
 ```
 
 ---
 
-## 部署
+## 扩展指南（起新项目改这几处）
 
-三种部署形态并存、互不影响：
-
-| 形态 | 说明 |
-|---|---|
-| **Vercel** | `vercel.json` 路由 + `middleware.js` 代理 + `api/` Serverless Function，零额外配置 |
-| **Docker / GHCR** | 多阶段构建，运行时 `server/index.mjs` 零依赖；镜像自动发布至 `ghcr.io/loveheng/stock-calculator`（`docker pull` 即用） |
-| **Cloud Run** | 同一 Dockerfile 容器化跑在 GCP，构建逻辑与本地一致。详见 [docs/deploy/cloud-run-deploy.md](./docs/deploy/cloud-run-deploy.md) |
-
-环境变量（Docker / Cloud Run 通用）：`PORT`（默认 3000）、`HOST`、`AUTH_UPSTREAM`、`IMPORT_UPSTREAM`（覆盖认证/OCR 上游）。
-
-基础 Docker 用法：
-
-```bash
-docker build -t stock-calculator .
-docker run -d -p 3000:3000 --name stock-calculator stock-calculator
-# 访问 http://localhost:3000，健康检查探针 /healthz
-```
+1. **领域模型**：`src/types/domain.ts` —— 定义自己的领域类型与默认值（替换示例 `Note`）。
+2. **表结构**：`src/db/schema.ts` —— 新增实体与索引；升版本时追加 `STORES_Vx` 增量定义。
+3. **读写**：`src/db/index.ts` —— 补 `load*` / `put*` / `delete*`（软删，禁用 `table.clear()`）。
+4. **状态**：`src/store/slices/` 新增切片 → 在 `store/types.ts` 扩 Action 签名 → 在 `store/index.ts` 装配。
+   - 写入纪律：先 `set()` 更新内存态，再 `safePersist(() => dao())` 落库。
+5. **页面**：`src/views/` 新增页面 → 在 `src/App.tsx` 的 `NAV_ITEMS` 与 `<Routes>` 注册。
+6. **护栏**：保持 R1（views 不直连 db）/ R2（utils 不依赖 store）/ R3（domain 零依赖），CI 会自动拦截。
 
 ---
 
-## 数据库设计
+## 工程约定
 
-IndexedDB（库名 `TradingLedgerDB`），全部在线/离线可用；v5 起所有写入改为增量 `put`/`delete`，消除数据丢失隐患。
-
-| 表 | 说明 |
-|---|---|
-| `feeConfigs` | 费率配置（单行） |
-| `stocks` | 已操作股票元信息（含 `kind` 费率分类） |
-| `positions` / `positionBatches` | 持仓账本（底仓 + 加权成本）/ 持仓批次明细 |
-| `tRounds` | 做T轮次（OPENED 进行中 / COMPLETED 已归档） |
-| `tTransactions` | 做T流水唯一持久化表（Round 内流水池 + 成交明细；v8 取代 tStreams） |
-| `longTermRecords` | 中长期操作记录 |
-| `settings` / `accountCash` | 通用键值配置 / 现金账户（单行） |
-
----
-
-## 开发约定
-
-- **架构护栏**：分层依赖（`check:layers` R1/R2/R3）与循环依赖（madge）已挂 `pretest` 与 CI（`.github/workflows/arch-guard.yml`），合入前自动拦截违例。**禁止为通过检查而绕过护栏脚本。**
-- **类型单一权威源**：领域类型统一定义在 `src/types/domain.ts`，`db/schema` 仅 re-export。
-- **增量持久化**：写库统一经 `safePersist`（initialLoadDone 守卫 + 指数退避重试 + 失败队列重放），全代码库禁用 `table.clear()`。
-- **功能地图**：`npm run map:features` 实时扫描生成功能→文件触点；末尾「未归类」清单即漂移探测器。
-
----
-
-## 版本
-
-- **v9**（2026-08）— 分层解耦 + 架构护栏：领域类型下沉 `types/domain.ts`、Store 切片化、静态护栏进 CI、生成式功能地图
-- **v8** — 做T数据模型重构：流水唯一持久化为 `tTransactions`，结清复用同一 Round（消除重复归档）
-- **v7** — 按需加载重构：冷启动仅加载费率，增量持久化 + 证券分层费率
-- **v5** — 增量持久化重构：移除 `table.clear()`
-- **v1–v4** — 基础计算器 → 做T记录 → FIFO 撮合引擎 → 战报归档
-
-完整演进与决策见 [GUIDE.md](./GUIDE.md) 第六、八节。
+- **数据零丢失**：全库禁用 `table.clear()`；写库统一经 `safePersist`（首载闸门 + 指数退避重试 + 失败队列重放）。
+- **类型单一权威源**：领域类型只在 `types/domain.ts` 定义，`db/schema.ts` 仅 re-export。
+- **架构护栏**：`check:layers` + madge 已挂 `pretest` 与 CI；禁止为通过检查而绕过护栏脚本。
+- **功能地图**：`npm run map:features` 实时扫描生成；「未归类」清单即漂移探测器。
+- **开发规范**：写新功能前先读 [docs/development/component-standards.md](./docs/development/component-standards.md)
+  —— 抽象阈值（Rule of Three）、组件三级目录（`ui/` → `blocks/` → 页面私有）、配置式优先的四类场景。
+  骨架已内置两个配置式组件：`SchemaForm`（字段配置驱动表单）、`DataTable`（列配置驱动列表）。

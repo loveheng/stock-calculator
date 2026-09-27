@@ -1,4 +1,5 @@
 node_modules
 /dist
-context/CURRENT
 .env
+*.tsbuildinfo
+.DS_Store

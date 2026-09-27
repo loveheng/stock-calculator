@@ -6,8 +6,6 @@
  *              R1  views/components 不得直连 db   —— 持久化细节须收敛在 store / hooks / 服务层
  *              R2  utils 不得依赖 store           —— 计算层保持纯函数，领域类型取自 types/domain
  *              R3  types/domain.ts 零依赖叶子     —— 领域类型唯一权威定义，禁止反向依赖任何项目内模块
- *              说明：risk/ 与 utils 同级，属纯计算层（不碰 store 状态机），views 直调
- *              RiskController 等门面属项目有意设计，不在禁止之列。
  *              用法：node scripts/check-layers.mjs（零依赖，CI 与本地均可运行）
  */
 

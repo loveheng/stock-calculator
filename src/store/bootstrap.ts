@@ -1,38 +1,28 @@
 /**
  * @file bootstrap.ts
- * @description Store 启动引导：应用启动时仅从 IndexedDB 加载费率配置到 Zustand Store。
- *              从 db/storeInit.ts 迁入 —— 「水合 Store」是 Store 层职责，放在 DAO 层会形成
- *              DAO → Store 的反向运行期依赖（打断原循环依赖链 store/index → risk/auditLogger
- *              → persistence → db/storeInit → store/index 的一环；persistence 现居 utils/）。
- *              v7 语义保持：冷启动只加载 feeConfig，其余数据由各视图通过 useDataLoader 按需加载。
+ * @description Store 启动引导：冷启动只从 IndexedDB 读取「设置」单行水合 Store，
+ *              业务数据（notes）由视图挂载后经 useLoadCoreData 按需加载，降低首屏等待。
+ *              水合完成后调用 markInitialLoadDone()，此后 safePersist 才真实落库。
  * @layer Store (Bootstrap)
- * @storage_impact 启动时仅读取 feeConfigs 表（1 行），不加载 positions / tRounds / stocks 等数据。
- * @author 开发团队
+ * @storage_impact 启动时仅读 settings 表（1 行）。
+ * @author 骨架模板
  */
 
-import { ensureDefaultData, loadFeeConfigFromDB } from '../db';
+import { ensureDefaultData, loadSettingsFromDB } from '../db';
 import { useAppStore } from './index';
 import { markInitialLoadDone } from '../utils/persistence';
 
 /**
- * 初始化应用 Store：仅冷启动加载费率配置，其余数据由各视图按需加载。
+ * 初始化应用 Store。
  *
- * @description 执行顺序：① ensureDefaultData() 确保现金账户与费率配置单行存在；
- *              ② loadFeeConfigFromDB() 冷启动加载费率配置（仅 1 行），存在则写入 Store；
- *              ③ 标记 initialLoadDone（标志本体在 utils/persistence.ts），
- *              此后 safePersist 才开始真实落库。
- * @note 仅在启动时调用一次（main.tsx bootstrap / 集成测试 beforeEach）
+ * @description ① ensureDefaultData() 确保设置单行存在；② loadSettingsFromDB() 读取设置写入 Store；
+ *              ③ markInitialLoadDone() 打开持久化闸门。仅在启动时调用一次。
  */
 export async function initStore(): Promise<void> {
   await ensureDefaultData();
 
-  const feeConfig = await loadFeeConfigFromDB();
-  if (feeConfig) {
-    useAppStore.setState((current) => ({
-      ...current,
-      feeConfig,
-    }));
-  }
+  const settings = await loadSettingsFromDB();
+  useAppStore.setState((current) => ({ ...current, settings }));
 
   markInitialLoadDone();
 }

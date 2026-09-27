@@ -21,29 +21,11 @@ const FILTERS = process.argv.slice(2).map((s) => s.toLowerCase());
 
 // 分组按数组顺序匹配（先具体后一般），关键词为小写子串，匹配对象是 src/ 下相对路径
 const GROUPS = [
-  ['auth（E2EE 认证）', ['auth', 'crypto', 'mnemonic', 'apiclient', 'sessionpersistence', 'resetpassword', 'sessionlock']],
-  ['sandbox（沙盘推演）', ['sandbox', 'baselineextractor', 'presetaudit', 'metricsengine']],
-  ['tstrategy（做T策略）', ['tstream', 'streammerge', 'streams', 'usestreamresults', 'statistics', 'tstrategy', 'tcalculator', 'strategygenerators', 'shorttermtrial', 'tradingtime', 'positionadjustment']],
-  ['kline（K线/行情）', ['kline', 'livequotes', 'pricecache']],
-  ['stock（股票元数据/行情源）', ['stockservice', 'stockautocomplete', 'types/stock']],
-  ['import（批量导入）', ['import', 'ocr', 'dedup']],
-  ['sync（WebDAV 同步/备份）', ['webdav', 'ioslice']],
-  ['serversync（服务端密文同步）', ['serversync', 'snapshotservice']],
-  ['fee（费率）', ['feepresets', 'feeconfig', 'mathutils']],
-  ['ledger（持仓/账本）', ['ledger', 'calculator', 'costaveraging', 'home', 'coreslice', 'positions', 'orders', 'rounds', 'reconcile', 'usearchivedrounds', 'planorder', 'recalculat', 'recomputeposition', 'roundlifecycle']],
-  ['risk（风控规则）', ['risk', 'getcloseblockreason']],
-  ['calc（涨跌幅计算器）', ['changerate']],
-  ['copilot（AI 助手）', ['copilot', 'pagecontext']],
-  ['guide（选股引导）', ['guide', 'briefcard']],
-  ['canvas（自由画布/AI 选股台）', ['canvas', 'stockcanvas', 'widgetdsl', 'brokerservice']],
-  ['announcement（公告订阅）', ['announcement', 'pushnotice', 'pushservice']],
-  ['monitor（价格预告单监控/通知管理）', ['monitor', 'settings']],
-  ['customstat（自定义统计）', ['customstat']],
-  ['search（资讯搜索）', ['search', 'newssearch']],
-  ['kg（新闻联播图谱）', ['kgpanel', 'kgtimeline', 'kgentity', 'kgevent', 'kgshared', 'kgservice', 'kgslice', 'kgtext', 'types/kg']],
-  // shared 置于具体业务域之后、app 之前（先具体后一般）：跨页复用资产，避免被单业务域抢组
-  ['shared（公共 UI/共享资产）', ['modetabs', 'emptystate', 'useplanexecutor', 'planfilter', 'toast']],
-  ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'usedataloader', 'bootstrap', 'persistence', 'store/index', 'store/types', 'store/utils', 'db/index', 'db/schema', 'domain', 'installprompt', 'confirmmodal', 'migration', 'cleanundefined', 'idgenerator']],
+  // 分组按数组顺序匹配（先具体后一般）：新增业务域请插在 app（兜底组）之前
+  ['notes（示例业务：笔记 CRUD）', ['note', 'notes', 'home']],
+  ['io（备份/恢复）', ['backupservice', 'ioslice', 'snapshot']],
+  ['settings（设置持久化）', ['settingsslice', 'settings']],
+  ['app（应用骨架/通用）', ['app.tsx', 'main.tsx', 'setup.ts', 'usedataloader', 'bootstrap', 'persistence', 'coreslice', 'store/index', 'store/types', 'db/index', 'db/schema', 'domain', 'cleanundefined', 'idgenerator', 'toast', 'confirmmodal', 'emptystate', 'installprompt', 'modetabs', 'schemaform', 'datatable']],
 ];
 
 const ROLES = [
@@ -53,7 +35,7 @@ const ROLES = [
   ['store/', '状态'],
   ['services/', '服务'],
   ['utils/', '计算'],
-  ['risk/', 'risk'],
+  ['services/', '服务'],
   ['db/', '持久化'],
   ['types/', '类型'],
 ];

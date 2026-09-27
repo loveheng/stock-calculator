@@ -136,14 +136,6 @@ body {
   @apply mb-0;
 }
 
-/* 宽屏下建仓/补仓表单：单行四列紧凑排布，既消除整行被拉成宽条，又充分利用横向空间。
-   仅作用于带 .ledger-form 的容器，不影响其它页面表单。 */
-@media (min-width: 1280px) {
-  .ledger-form .form-row {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
 /* Tab 切换 */
 .tab-bar {
   @apply flex gap-0 mb-5 bg-slate-800 rounded-xl p-1 overflow-hidden;
@@ -213,29 +205,7 @@ body {
     @apply grid-cols-1 gap-2;
   }
 
-  /* 多列布局在移动端变单列（仅限未指定 responsive 前缀的容器） */
-  .grid-cols-2:not(.sm\\:grid-cols-4):not(.sm\\:grid-cols-3):not(.md\\:grid-cols-3):not(.mobile\\:grid-cols-2) {
-    @apply grid-cols-1;
-  }
-
-  .grid-cols-3:not(.mobile\\:grid-cols-2) {
-    @apply grid-cols-2;
-  }
-
-  .grid-cols-4:not(.sm\\:grid-cols-4) {
-    @apply grid-cols-2;
-  }
-
-  .grid-cols-5 {
-    @apply grid-cols-2;
-  }
-
-  /* 做T记录卡片手机端自适应 */
-  .flex-wrap-mobile {
-    @apply flex-wrap;
-  }
-
-  /* 手机端tab按钮文字大小 */
+  /* 手机端 tab 按钮文字大小 */
   .tab-btn {
     @apply text-xs py-2.5 px-2;
   }
@@ -243,23 +213,6 @@ body {
   /* 数值输入保留较大字体便于阅读 */
   input[type="number"] {
     @apply text-base;
-  }
-
-  /* 成本摊薄批次卡片化（移动端横向表格→轻量卡片流） */
-  .batch-card-mobile {
-    @apply flex flex-col gap-1.5 p-2.5 rounded-lg bg-slate-950/60 border border-slate-800;
-  }
-
-  .batch-card-mobile .batch-row {
-    @apply flex items-center justify-between text-xs;
-  }
-
-  /* 出借标签高亮 - 移动端紧凑徽章 */
-  .lending-badge {
-    @apply inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold leading-tight;
-    background: rgba(245, 158, 11, 0.25);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.35);
   }
 }
 
@@ -290,7 +243,7 @@ body {
   }
 }
 
-/* ===== E2EE 鉴权：锁屏密码错误摇晃动画（SessionLockModal） ===== */
+/* 表单校验失败等场景的错误提示摇晃动画 */
 @keyframes app-shake {
   0%,
   100% {
@@ -312,19 +265,4 @@ body {
 
 .animate-shake {
   animation: app-shake 0.5s ease-in-out;
-}
-
-/* 触屏适配：放大 react-grid-layout 缩放手柄的热区（28px），视觉三角保持原位 */
-.react-grid-item .react-resizable-handle {
-  width: 28px;
-  height: 28px;
-  background-image: none;
-}
-.react-grid-item .react-resizable-handle::after {
-  right: 6px;
-  bottom: 6px;
-  width: 9px;
-  height: 9px;
-  border-right-width: 3px;
-  border-bottom-width: 3px;
 }

@@ -1,311 +1,59 @@
 /**
  * @file vite.config.ts
- * @description Vite 构建配置：React 插件、PWA 支持（Workbox 运行时缓存）、
- *              开发服务器代理（腾讯 Smartbox 行情搜索 / 腾讯实时行情 / 东方财富搜索 API /
- *              WebDAV 代理 / OCR 交割单识别 / E2EE 认证服务 / 服务端密文同步 / 公告订阅 /
- *              资讯搜索），以及构建输出配置。
- *
- * 【WebDAV 代理说明】
- *   开发环境下，Vite 代理 /api/webdav 请求到动态目标 URL，使用 bypass 函数
- *   实现与线上 Vercel Serverless Function（api/webdav.js）/ 同源 Nginx 透明代理
- *   完全一致的寻址与请求头清洗逻辑：
- *   - 寻址：目标根地址优先取 X-Webdav-Target 请求头（上游 = 目标根 +
- *     去除 /api/webdav 前缀后的子路径），兼容旧版客户端的 ?url= 查询参数；
- *   - 清洗：剔除 host/referer/origin/cookie/x-vercel-* / x-forwarded-*，
- *     保留 authorization/content-type/depth/destination/overwrite/if-match
- *     （destination 为 MOVE/COPY 必需，前端已拼为第三方服务器绝对 URL）；
- *   确保本地开发与线上行为一致，不再出现本地 404 或 CORS 问题。
+ * @description Vite 构建配置：React 插件 + PWA（Workbox 运行时缓存）+ 构建输出。
+ *              需要后端接口时，在 server.proxy 增条目即可（勿把上游地址硬编码进业务代码）。
  * @layer Config
  * @storage_impact 无 IndexedDB 读写；仅影响构建产物与开发环境网络代理。
+ * @author 骨架模板
  */
 
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
-// 代理上游地址统一配置（防呆版：DEV_UPSTREAM_ENV 仅影响本地开发，线上中间件只读 online）
-import { UPSTREAMS, DEV_UPSTREAM_ENV } from './proxy.config.js';
 
-// fail-fast：开关写错（非 'online' | 'local'）时 dev server 启动立即报错，而非静默回退
-const devUpstreams = UPSTREAMS[DEV_UPSTREAM_ENV];
-if (!devUpstreams) {
-  throw new Error(
-    `proxy.config.js 配置错误：DEV_UPSTREAM_ENV 必须为 'online' 或 'local'，当前为「${String(DEV_UPSTREAM_ENV)}」`,
-  );
-}
-
-// Buffer is available globally in Node.js (used by the WebDAV proxy bypass)
-declare var Buffer: any;
+const APP_ICON =
+  "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231677ff'/><path d='M20 70 L40 40 L60 55 L80 25' stroke='white' stroke-width='8' fill='none' stroke-linecap='round'/></svg>";
 
 export default defineConfig({
   base: '/',
   plugins: [
     react(),
-    // 本地开发：/api/webdav 由下方 server.proxy 的 bypass 回调代理（行为与线上
-    // Vercel Serverless Function api/webdav.js 一致），无需独立中间件插件。
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: [],
       manifest: {
-        name: '股票做T账本与成本计算器',
-        short_name: '做T账本',
-        description: 'A股股票做T计算器与成本摊薄工具，支持正T倒T计算、多批次建仓账本管理、做T数据统计与费率配置。',
+        name: '应用骨架',
+        short_name: '骨架',
+        description: 'React 19 + TypeScript + Vite + Dexie + Zustand + Tailwind 的本地优先 PWA 骨架。',
         theme_color: '#1677ff',
         background_color: '#ffffff',
         display: 'standalone',
         start_url: '/',
         icons: [
-          {
-            src: 'data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><rect width=\'100\' height=\'100\' rx=\'20\' fill=\'%231677ff\'/><path d=\'M20 70 L40 40 L60 55 L80 25\' stroke=\'white\' stroke-width=\'8\' fill=\'none\' stroke-linecap=\'round\'/></svg>',
-            sizes: '192x192',
-            type: 'image/svg+xml',
-            purpose: 'any maskable',
-          },
-          {
-            src: 'data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><rect width=\'100\' height=\'100\' rx=\'20\' fill=\'%231677ff\'/><path d=\'M20 70 L40 40 L60 55 L80 25\' stroke=\'white\' stroke-width=\'8\' fill=\'none\' stroke-linecap=\'round\'/></svg>',
-            sizes: '512x512',
-            type: 'image/svg+xml',
-            purpose: 'any maskable',
-          },
+          { src: APP_ICON, sizes: '192x192', type: 'image/svg+xml', purpose: 'any maskable' },
+          { src: APP_ICON, sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' },
         ],
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
-        // 注入 Web Push 事件处理（public/push-sw.js：push / notificationclick）。
-        // 必须带版本参数：SW 更新检测靠 sw.js 字节变化，固定 URL 改 push-sw.js 内容
-        // 不会触发更新，用户端会一直跑旧推送逻辑——每次改 push-sw.js 递增 v
-        importScripts: ['push-sw.js?v=1'],
-        // 显式设置 SPA 导航回退到 index.html，确保 SW 正确处理路由导航
+        // SPA 导航回退到 index.html；/api 等后端路径绝不进导航缓存
         navigateFallback: 'index.html',
-        // 导航回退拒绝列表：绝对不拦截 /api、/webdav 等代理/路由，
-        // 确保 Service Worker 不把 WebDAV 流量当作 SPA 导航去回退缓存。
-        navigateFallbackDenylist: [
-          /^\/api($|\/)/, // 覆盖 /api/webdav
-          /^\/api-gtimg/,
-          /^\/api-qt/,
-          /^\/api-kline/,
-          /^\/api\/eastmoney/,
-          /^\/webdav/, // 客户端 /webdav 路由也不做导航缓存
-        ],
+        navigateFallbackDenylist: [/^\/api($|\/)/],
         runtimeCaching: [
           {
-            // 仅为"带扩展名的跨域静态资源"做 NetworkFirst 缓存。
-            // 通过负向前瞻显式排除 /api、/api/webdav、/webdav，
-            // 并限定 method: 'GET'，保证 WebDAV 的 PUT/GET/PROPFIND/MKCOL 等
-            // 请求绝不进入任何 NetworkFirst / StaleWhileRevalidate /
-            // BackgroundSync 缓存与后台重试策略。
-            urlPattern: /^(?!.*\/api\/webdav)(?!.*\/api\/)(?!.*\/webdav)https?:\/\/.*\.(?:js|css|html|svg|png|ico|json|jpg|woff2?)(?:\?.*)?$/i,
+            // 仅缓存「带扩展名的跨域静态资源」，GET 限定；API 流量不进任何缓存与后台重试
+            urlPattern: /^(?!.*\/api\/)https?:\/\/.*\.(?:js|css|html|svg|png|ico|json|jpg|woff2?)(?:\?.*)?$/i,
             handler: 'NetworkFirst',
             method: 'GET',
             options: {
-              cacheName: 'stock-calculator-static',
-              expiration: {
-                maxEntries: 200,
-                maxAgeSeconds: 30 * 24 * 60 * 60,
-              },
+              cacheName: 'app-skeleton-static',
+              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 },
             },
           },
         ],
       },
     }),
   ],
-  server: {
-    proxy: {
-      '/api-gtimg': {
-        target: 'https://smartbox.gtimg.cn',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api-gtimg/, ''),
-        headers: {
-          Referer: 'https://finance.qq.com/',
-        },
-      },
-      '/api-qt': {
-        target: 'https://qt.gtimg.cn',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api-qt/, ''),
-        headers: {
-          Referer: 'https://finance.qq.com/',
-        },
-      },
-      '/api-kline': {
-        target: 'https://ifzq.gtimg.cn',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api-kline/, ''),
-        headers: {
-          Referer: 'https://finance.qq.com/',
-        },
-      },
-      '/api/eastmoney': {
-        target: 'https://searchapi.eastmoney.com',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/eastmoney/, ''),
-        headers: {
-          Referer: 'https://quote.eastmoney.com',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-      },
-      // OCR 解析服务代理：证券交割单识别接口（上游由 DEV_UPSTREAM_ENV 决定）
-      '/api/import': {
-        target: devUpstreams.import,
-        changeOrigin: true,
-      },
-      // E2EE 认证服务代理：后端自身即服务在 /api/auth/* 路径，保留前缀转发，
-      // 与线上 Vercel Edge Middleware 的 /api/auth 条目（middleware.js）行为一致
-      '/api/auth': {
-        target: devUpstreams.auth,
-        changeOrigin: true,
-      },
-      // Copilot AI 助手代理：与 /api/auth 同源（跟随 DEV_UPSTREAM_ENV 开关，
-      // 避免登录与 Copilot 打到两个不同后端导致 token 互不相认）
-      '/api/copilot': {
-        target: devUpstreams.auth,
-        changeOrigin: true,
-      },
-      // 服务端密文同步代理：与 /api/auth 同源（同一 Spring Boot 应用，
-      // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认）
-      '/api/sync': {
-        target: devUpstreams.auth,
-        changeOrigin: true,
-      },
-      // 公告订阅代理：与 /api/auth 同源（同一 Spring Boot 应用，
-      // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认）
-      '/api/announcement': {
-        target: devUpstreams.auth,
-        changeOrigin: true,
-      },
-      // 资讯搜索代理：与 /api/auth 同源（同一 Spring Boot 应用，
-      // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认；
-      // composite SSE 流式响应需保留流式转发，Vite 代理默认支持）
-      '/api/search': {
-        target: devUpstreams.auth,
-        changeOrigin: true,
-      },
-      // 新闻联播图谱代理：与 /api/auth 同源（同一 Spring Boot 应用，
-      // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认）
-      '/api/kg': {
-        target: devUpstreams.auth,
-        changeOrigin: true,
-      },
-      // 股票经纪代理（画布 K 线/指标计算/AI 分析）：与 /api/auth 同源（同一 Spring Boot 应用，
-      // 跟随 DEV_UPSTREAM_ENV 开关，保证 Bearer token 互认）
-      '/api/broker': {
-        target: devUpstreams.auth,
-        changeOrigin: true,
-      },
-      // 选股引导（画布 brief 个股档案块取数通道）：与 /api/broker 同源同口径；
-      // 缺此条目时 /api/guide/* 落 SPA 回落返回 index.html（HTTP 200 + HTML），
-      // 前端 JSON 解析失败报「服务响应异常（HTTP 200）」——2026-09-26 画布 brief 块实证
-      '/api/guide': {
-        target: devUpstreams.auth,
-        changeOrigin: true,
-      },
-      // WebDAV 代理：使用全局 fetch() 转发，避免动态 require
-      '/api/webdav': {
-        target: 'http://localhost:5173',
-        bypass: async (req, res) => {
-          if (req.method === 'OPTIONS') {
-            res.writeHead(200, {
-              'Access-Control-Allow-Origin': '*',
-              'Access-Control-Allow-Methods':
-                'GET, HEAD, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS',
-              'Access-Control-Allow-Headers': '*',
-              'Access-Control-Max-Age': '86400',
-            });
-            res.end();
-            return '/__bypass__';
-          }
-          const u = new URL(req.url || '', 'http://localhost:5173');
-          // 目标根地址：优先 X-Webdav-Target 请求头（同源 Nginx 代理约定），
-          // 兼容旧版 PWA 客户端的 ?url= 查询参数
-          const headerTarget = String(req.headers['x-webdav-target'] || '').trim();
-          const targetUrlStr = headerTarget || (u.searchParams.get('url') || '').trim();
-          if (!targetUrlStr) { res.statusCode = 400; res.end('Missing X-Webdav-Target header'); return '/__bypass__'; }
-
-          // 上游地址：头模式 = 目标根 + 去除 /api/webdav 前缀后的子路径（编码原样透传）；
-          // 兼容模式（?url=）= 目标即完整上游 URL，不再拼接子路径
-          let upstreamUrl = targetUrlStr;
-          if (headerTarget) {
-            const target = new URL(targetUrlStr);
-            let subPath = u.pathname.startsWith('/api/webdav')
-              ? u.pathname.slice('/api/webdav'.length)
-              : u.pathname;
-            if (!subPath) subPath = '/';
-            target.pathname = (target.pathname.replace(/\/+$/, '') + subPath) || '/';
-            upstreamUrl = target.toString();
-          }
-
-          // 请求头清洗（与 middleware.js 一致）
-          const blocked = new Set(['host', 'referer', 'origin', 'cookie']);
-          const blockedPrefix = ['x-vercel-', 'x-forwarded-'];
-          const allowed = new Set(['authorization', 'content-type', 'depth', 'destination', 'overwrite', 'if-match']);
-          const isBlocked = (k: string) => {
-            if (allowed.has(k)) return false;
-            if (blockedPrefix.some((p) => k.startsWith(p))) return true;
-            return blocked.has(k);
-          };
-          const fwdHeaders: Record<string, string> = {};
-          for (let i = 0; i < req.rawHeaders.length; i += 2) {
-            const k = req.rawHeaders[i], v = req.rawHeaders[i + 1];
-            if (!isBlocked(k.toLowerCase())) fwdHeaders[k] = v;
-          }
-          fwdHeaders['User-Agent'] = 'Mozilla/5.0 (compatible; WebDAVClient/1.0)';
-
-          // 收集请求体
-          const chunks = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
-          }
-          const body = chunks.length > 0 ? Buffer.concat(chunks) : null;
-
-          try {
-            // 使用全局 fetch() 转发请求
-            const upstreamRes = await fetch(upstreamUrl, {
-              method: req.method,
-              headers: fwdHeaders,
-              body: body,
-              // 非 GET/HEAD 不自动跟随重定向，透传原始状态码
-              redirect: 'manual',
-            });
-
-            // 构建响应头（透传上游 + CORS 头）
-            const rh: Record<string, string> = {};
-            upstreamRes.headers.forEach((value, key) => {
-              const lower = key.toLowerCase();
-              // 跳过 Node.js 自动生成的 hop-by-hop 头
-              if (lower === 'transfer-encoding' || lower === 'connection') return;
-              rh[key] = value;
-            });
-            rh['Access-Control-Allow-Origin'] = '*';
-            rh['Access-Control-Allow-Methods'] =
-              'GET, POST, PUT, DELETE, PROPFIND, MKCOL, MOVE, COPY, OPTIONS';
-            rh['Access-Control-Allow-Headers'] =
-              'Content-Type, Authorization, Depth, Destination, Overwrite';
-            rh['Access-Control-Expose-Headers'] =
-              'Content-Type, Content-Length, ETag';
-
-            res.writeHead(upstreamRes.status, rh);
-            // 将上游响应体转为 Node.js Readable 并 pipe
-            const reader = upstreamRes.body?.getReader();
-            if (reader) {
-              const pump = async () => {
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) { res.end(); break; }
-                  res.write(Buffer.from(value));
-                }
-              };
-              pump().catch((e) => { res.statusCode = 502; res.end(`Proxy error: ${e.message}`); });
-            } else {
-              res.end();
-            }
-          } catch (e) {
-            res.statusCode = 502;
-            res.end(`Proxy error: ${e instanceof Error ? e.message : 'Unknown'}`);
-          }
-          return '/__bypass__';
-        },
-      },
-    },
-  },
   build: {
     outDir: 'dist',
     modulePreload: {

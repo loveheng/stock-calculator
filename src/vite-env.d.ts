@@ -7,12 +7,8 @@ declare module '*.css' {
 }
 
 interface ImportMetaEnv {
-  /** E2EE 认证服务基地址（Spring Boot :18080），如 http://localhost:18080/api/auth */
-  readonly VITE_AUTH_API_BASE_URL?: string;
-  /** Copilot 服务基地址（默认 /api/copilot，同源代理） */
-  readonly VITE_COPILOT_API_BASE_URL?: string;
-  /** 置 '1' 启用 Copilot 本地 Mock 桩（不发起真实网络请求） */
-  readonly VITE_COPILOT_MOCK?: string;
+  /** 后端接口基地址（需要接后端时新增，配合 vite.config.ts 的 server.proxy 使用） */
+  readonly VITE_API_BASE_URL?: string;
 }
 
 interface ImportMeta {

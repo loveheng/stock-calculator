@@ -1,8 +1,13 @@
+---
+status: active
+updated: 2026-09-19
+---
+
 # 资讯搜索（News Search）· 技术实现文档（前端）
 
 > 版本：v1.3（2026-09-19；v1.3 = 结果卡移除订阅按钮（档案卡保留）+ 追问 AI 会话按卡片隔离（copilotThreadKey 下沉线程键）；v1.2 = 列表分页续拉适配（CLS 已上线 pageSize/page/hasMore，公告端点同契约就绪前多发字段被忽略）+ F1 筛选即查交互同步；v1.1 = 采纳后端评审：fetchSubscriptions 三形状兼容与 recognized 语义、toStockId 提升至 utils/dedup、composite 流式通道镜像 copilotService、mock 错误分支与相对日期、持仓注入裁剪 ≤50）
 > 范围：`/news` 搜索页的前端落点、状态设计、类型契约、服务层封装、Copilot 上下文联动、mock 策略、代理接线与实施顺序。
-> 关联：`docs/news-search-spec.md`（需求，D1-D10 决策）、`后端仓 docs/news-search-api.md`（接口契约 v1.1）、`docs/copilot-implementation.md`（区块上下文机制参考）
+> 关联：`news-search-spec.md`（需求，D1-D10 决策）、`后端仓 docs/news-search-api.md`（接口契约 v1.1）、`../copilot/copilot-implementation.md`（区块上下文机制参考）
 > 状态：设计定稿，P0 可立即开工
 
 ---

@@ -7,7 +7,7 @@ updated: 2026-09-26
 
 > 版本：v1.1（2026-09-26；v1.1 = 档案卡归宿改画布 brief 块 + dataVocab 登记方案 + 一期重排（向导页降可选）；v1.0 = 初稿（独立向导页两步 + prefillDraft handoff））
 > 范围：选股引导的前端承接——对话流候选确认后，个股档案卡以**画布 brief 块**承载（持久/并排/AI 寻址）；聊天入口零改动。独立向导页降为可选二期。
-> 关联：后端仓 `docs/guide/api.md`（REST 契约唯一事实源，含 nextAction 分支语义）、后端仓 `docs/guide/design.md`（流程与 D10/D13 决策）、本仓 `docs/free-canvas-spec.md` 与 `docs/free-canvas-template-registry.md`（画布区块注册表）、`docs/copilot-spec.md`（Copilot 上下文机制）
+> 关联：后端仓 `docs/guide/api.md`（REST 契约唯一事实源，含 nextAction 分支语义）、后端仓 `docs/guide/design.md`（流程与 D10/D13 决策）、本仓 `../features/free-canvas/free-canvas-spec.md` 与 `../features/free-canvas/free-canvas-template-registry.md`（画布区块注册表）、`../features/copilot/copilot-spec.md`（Copilot 上下文机制）
 > 状态：一期已实现（tsc 零错误 + 866 用例全绿含架构护栏 + map:features 归组 ✓），待后端联调人工冒烟（§5）
 
 ## 0. 已确认决策记录

@@ -1,8 +1,13 @@
+---
+status: active
+updated: 2026-09-07
+---
+
 # 自定义统计（AI 生成代码 + 沙箱执行）· 需求文档
 
 > 版本：v1.1（2026-09-07，v1.0 评审修订：D12/FR6 批量刷新范围收窄至已加载条目并分批让出；FR3 新增草稿覆盖规则；D14 复核后维持 recharts 进 P0）
 > 范围：数据统计页「自定义统计」区域 + AI 聊天驱动的统计定义生成/执行/留存全流程
-> 关联：`docs/custom-stats-implementation.md`（前端技术文档）；后端仓 `docs/custom-stats-api.md`（接口文档）、`docs/custom-stats-backend-support.md`（后端信息支持文档）
+> 关联：`custom-stats-implementation.md`（前端技术文档）；后端仓 `docs/custom-stats-api.md`（接口文档）、`docs/custom-stats-backend-support.md`（后端信息支持文档）
 > 状态：设计定稿，待 P0 开发启动
 
 ---

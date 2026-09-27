@@ -1,8 +1,13 @@
+---
+status: active
+updated: 2026-09-07
+---
+
 # Context-Aware Copilot · 开发实施文档
 
 > 版本：定稿 v1.4（2026-09-02，与 `copilot-spec.md` v1.4 决策记录一一对应；纠正 v1.3 传输/存储混淆：恢复 ephemeral contextSummary + 新增墓碑对账/竞态防御/级联触发白名单/实体键命名空间规范）
 > 范围：前端契约/状态/服务/UI 落点与骨架、后端领域包/表结构/编排/容灾实现要点、API 契约、验证清单
-> 关联：`docs/copilot-spec.md`（设计决策 D1-D32）、`docs/e2ee-auth-spec.md`（鉴权）、skill `cls-article-patterns`（后端编码模板）
+> 关联：`copilot-spec.md`（设计决策 D1-D32）、`../../architecture/e2ee-auth-spec.md`（鉴权）、skill `cls-article-patterns`（后端编码模板）
 > 状态：待 P0 开发启动
 
 ---

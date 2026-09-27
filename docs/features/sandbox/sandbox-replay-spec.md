@@ -1,15 +1,20 @@
+---
+status: active
+updated: 2026-08-23
+---
+
 # 事后复盘（沙盘推演 / What-if）功能规格
 
 > **实现状态：本方案已实现**（核心功能全部落地，见附录 §16「实现现状与追加」）。
 > 各规格章节仍为**设计目标**；如需当前已落盘的文件/行数/测试/运行逻辑，阅读附录 §16 或
-> `docs/sandbox-replay-implementation.md`（实现与开发上手）。
+> `sandbox-replay-implementation.md`（实现与开发上手）。
 
 ---
 
 > 版本：草案 v1（完整落地方案）
 > 范围：独立页面；仅对中长期仓位开放推演；基线纳入做T归并/出借批次
 > 核心价值：以历史真实资金为硬约束，允许用户在时间线上自由修改买卖节点与仓位，动态重演并量化不同决策路径的优劣
-> 关联：`docs/position-ledger-spec.md`（基线数据源）、`docs/behavior-spec.md`（做T批次语义）、`docs/sandbox-replay-implementation.md`（实现与开发上手）
+> 关联：`../position-ledger/position-ledger-spec.md`（基线数据源）、`../../architecture/behavior-spec.md`（做T批次语义）、`sandbox-replay-implementation.md`（实现与开发上手）
 
 ---
 
@@ -874,7 +879,7 @@ getKline(fullCode, { startDate }) → Promise<KlineBundle> // { klines, adjustFa
 ## 16. 附录 —— 实现现状与设计增量（2026-08-21）
 
 > 本附录记录规格书**未覆盖或与初版不同**的已落盘实现，使文件不落后于代码。
-> 完整文件清单 / 行数 / 整体运行逻辑 / 开发上手见 `docs/sandbox-replay-implementation.md`。
+> 完整文件清单 / 行数 / 整体运行逻辑 / 开发上手见 `sandbox-replay-implementation.md`。
 
 ### 16.1 加入功能（规格书未写）
 
@@ -893,7 +898,7 @@ getKline(fullCode, { startDate }) → Promise<KlineBundle> // { klines, adjustFa
 - 基线**不做滑点**（`jitterFactor=0` 锚定真实成交价）；预设才抖动。
 - 生成器在 `simulatedCash` 口径上**以 `generatedAtCash` 作为数量基准**，预算（`simulatedCash`）变化只改预算不改仓位，重配需 `rescalePreset`。
 - K 线起点默认为「首笔真实操作日 − 90 自然日」，三级缓存 + 除权漂移检测（`DRIFT_THRESHOLD=0.005`）。
-- `db-schema.puml` 尚未包含 3 张沙盘表（待补充）。
+- `../../assets/db-schema.puml` 尚未包含 3 张沙盘表（待补充）。
 
 ### 16.3 已实现测试清单（比 §11.3 增加）
 > 新增：`sandboxDb.test.ts`（CRUD）、`sandboxStore.test.ts`（派生纯函数）、`sandboxPositionDiscrepancy.test.ts`（基线重演差异排查）、`sandboxE2E.test.ts`（Step5 端到端）、`sandboxPlayback.ui.test.tsx`（UI 层）、`helpers/sandboxFixture.ts`（夹具）。

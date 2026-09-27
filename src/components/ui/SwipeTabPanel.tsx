@@ -28,8 +28,17 @@ export interface SwipeTabPanelProps<T extends string> {
 /** 回弹/吸附动画曲线（WP 风格：快出慢入） */
 const TRANSITION = 'transform 200ms cubic-bezier(0.22, 0.61, 0.36, 1)';
 
-/** 容器默认类：overflow-x-hidden 让跟手位移在容器内裁剪（内容不溢出、文档不被撑宽出横向滚动条） */
-const BASE_CLASS = 'overflow-x-hidden';
+/**
+ * 容器默认类：
+ * - overflow-x-hidden：跟手位移在容器内裁剪（内容不溢出、文档不出横向滚动条）。
+ * - 移动端 min-h-[100dvh]：让手势容器至少撑满一屏，使内容区下方的空白也落在容器盒内、
+ *   可左右滑动切换 Tab（否则仅在内容区域内可滑，空白区滑不动会让用户误解）。
+ * - md:min-h-0：桌面端复位，避免强制留白影响布局（桌面无 touch 手势，本修改无副作用）。
+ * - -mx-4 md:-mx-6 + px-4 md:px-6：抵消 App 内容容器（p-4 md:p-6）的左右内边距，把命中区
+ *   横向延伸到屏幕边缘，使起始触点落在原 padding 盲区（最左/最右约 16/24px）也能触发滑动；
+ *   内边距同步加回，卡片视觉位置与改动前完全一致；桌面端镜像复刻外层 padding，布局零变化。
+ */
+const BASE_CLASS = 'overflow-x-hidden min-h-[100dvh] md:min-h-0 -mx-4 md:-mx-6 px-4 md:px-6';
 
 /**
  * 可左右滑动切换 Tab 的内容容器。

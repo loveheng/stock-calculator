@@ -1,3 +1,8 @@
+---
+status: active
+updated: 2026-09-01
+---
+
 # 批量导入工作台文档
 
 > **文件位置**: `src/views/BatchImport/` + `src/types/import.ts` + `src/utils/dedup.ts` + `src/utils/importMerger.ts` + `src/services/importAdapter.ts` + `src/services/ocrService.ts`  

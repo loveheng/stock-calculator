@@ -4,6 +4,7 @@
 # name: deploy-cloud-run
 # summary: 前端 PWA 一键部署到 Google Cloud Run（gcloud run deploy --source，构建逻辑与本地 Dockerfile 一致）
 # trigger: manual
+# params: GCP_PROJECT_ID,GCP_REGION,GCP_SERVICE_NAME
 # cat: deploy
 # alias: dcr
 # platform: unix
@@ -12,6 +13,12 @@
 # 前置条件（首次使用前手动执行一次）：
 #   gcloud auth login                  # 登录 Google 账号
 #   gcloud billing projects list       # 确认项目已启用结算（Cloud Run 必需）
+#
+# 部署目标（脚本内钉死默认值；经 toolbox run 时由头部 params: 声明从项目根
+#   .env / .env.local / .env.production 自动注入同名环境变量覆盖；也可运行前直接 export）：
+#   GCP_PROJECT_ID    必填（在 .env 配置或此处钉死）
+#   GCP_REGION        默认 us-central1
+#   GCP_SERVICE_NAME  默认 stock-calculator
 #
 # 说明：
 #   - gcloud run deploy --source . 会把源码交给 Cloud Build，
@@ -23,22 +30,24 @@
 # =====================================================================
 set -eu
 
+# ===== 部署目标（钉死）=====
+# 运行前可用同名环境变量覆盖（例如：GCP_PROJECT_ID=abc bash deploy-cloud-run.sh）
+GCP_PROJECT_ID="${GCP_PROJECT_ID:-}"            # TODO: 钉死你的 GCP 项目 ID
+GCP_REGION="${GCP_REGION:-us-central1}"
+GCP_SERVICE_NAME="${GCP_SERVICE_NAME:-stock-calculator}"
+
 usage() {
   cat <<'EOF'
 deploy-cloud-run —— 前端 PWA 部署到 Google Cloud Run
 
-用法: deploy-cloud-run [--help|--json|--dry-run|--self-test] <GCP项目ID> [区域] [服务名]
-
-参数:
-  <GCP项目ID>  必填
-  [区域]       默认 us-central1
-  [服务名]     默认 stock-calculator
+用法: deploy-cloud-run [--help|--json|--dry-run|--self-test]
+      （项目ID / 区域 / 服务名已钉死在脚本顶部变量，或用同名环境变量覆盖）
 
 模式区别（重要）:
-  裸跑（带项目ID）  执行真实部署——长任务，首次构建约 3-5 分钟
-  --json            快速预检结论（**不部署**）：校验 gcloud / Dockerfile / 参数
-  --dry-run         打印将执行的命令序列，不落真目标
-  --self-test       金丝雀自检
+  （裸跑）          执行真实部署——长任务，首次构建约 3-5 分钟
+  --json           快速预检结论（**不部署**）：校验 gcloud / Dockerfile / 项目ID
+  --dry-run        打印将执行的命令序列，不落真目标
+  --self-test      金丝雀自检
 EOF
 }
 
@@ -52,7 +61,7 @@ json_out() {
 
 preflight() { # preflight <项目ID> → 0 通过 / 1 未过（MISS 写原因）
   MISS=''
-  if [ -z "${1:-}" ]; then MISS='缺少 GCP 项目ID'; return 1; fi
+  if [ -z "${1:-}" ]; then MISS='缺少 GCP 项目ID（脚本顶部 GCP_PROJECT_ID 未钉死，或未用同名环境变量传入）'; return 1; fi
   if ! command -v gcloud >/dev/null 2>&1; then MISS='未找到 gcloud（需安装 Google Cloud SDK 并先 gcloud auth login）'; return 1; fi
   if [ ! -f Dockerfile ]; then MISS='仓库根缺 Dockerfile（--source 构建依赖）'; return 1; fi
   return 0
@@ -71,9 +80,9 @@ EOF
 
 self_test() {
   bash "$0" --help >/dev/null 2>&1 || { echo 'fail: --help 未按契约退出 0'; return 1; }
-  r=0; bash "$0" --json >/dev/null 2>&1 || r=$?
+  r=0; GCP_PROJECT_ID= bash "$0" --json >/dev/null 2>&1 || r=$?
   [ "$r" -eq 1 ] || { echo "fail: 无项目ID 时 --json 应 FAIL(1)，实际 $r"; return 1; }
-  bash "$0" --dry-run x >/dev/null 2>&1 || { echo 'fail: --dry-run 未按契约退出 0'; return 1; }
+  GCP_PROJECT_ID= bash "$0" --dry-run >/dev/null 2>&1 || { echo 'fail: --dry-run 未按契约退出 0'; return 1; }
   echo 'self-test: OK（--help / --json 预检 / --dry-run 均按契约）'
   return 0
 }
@@ -87,32 +96,28 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT"
 
 if [ "${1:-}" = '--json' ]; then
-  if preflight "${2:-}"; then
-    json_out OK info "预检通过：gcloud 就位、仓库根有 Dockerfile、项目ID=${2:-}（--json 仅预检，不部署；真实部署去掉 --json 裸跑）"
+  if preflight "$GCP_PROJECT_ID"; then
+    json_out OK info "预检通过：gcloud 就位、仓库根有 Dockerfile、项目ID=${GCP_PROJECT_ID}（--json 仅预检，不部署；真实部署去掉 --json 裸跑）"
     exit 0
   else
-    json_out FAIL error "预检未过：$MISS" "修正后重跑 toolbox run deploy-cloud-run --json <项目ID>"
+    json_out FAIL error "预检未过：$MISS" "修正后重跑 toolbox run deploy-cloud-run --json"
     exit 1
   fi
 fi
 
 if [ "${1:-}" = '--dry-run' ]; then
-  shift
-  dry_run "${1:-<项目ID>}" "${2:-us-central1}" "${3:-stock-calculator}"
+  dry_run "$GCP_PROJECT_ID" "$GCP_REGION" "$GCP_SERVICE_NAME"
   exit 0
 fi
 
-if [ -z "${1:-}" ]; then
-  echo "[remedy] 缺少 GCP 项目ID；用法: toolbox run deploy-cloud-run <项目ID> [区域] [服务名]（--help 看全部模式）"
+if [ -z "$GCP_PROJECT_ID" ]; then
+  echo "[remedy] 缺少 GCP 项目ID：请在脚本顶部钉死 GCP_PROJECT_ID，或用同名环境变量传入。"
+  echo "          用法: toolbox run deploy-cloud-run（--help 看全部模式）"
   exit 1
 fi
 
-PROJECT_ID="$1"
-REGION="${2:-us-central1}"
-SERVICE="${3:-stock-calculator}"
-
-echo "==> 项目: $PROJECT_ID  区域: $REGION  服务: $SERVICE"
-gcloud config set project "$PROJECT_ID"
+echo "==> 项目: $GCP_PROJECT_ID  区域: $GCP_REGION  服务: $GCP_SERVICE_NAME"
+gcloud config set project "$GCP_PROJECT_ID"
 
 echo "==> 启用所需 API（run / cloudbuild / artifactregistry）"
 gcloud services enable \
@@ -121,9 +126,9 @@ gcloud services enable \
   artifactregistry.googleapis.com
 
 echo "==> 构建并部署（首次构建约 3-5 分钟）"
-gcloud run deploy "$SERVICE" \
+gcloud run deploy "$GCP_SERVICE_NAME" \
   --source . \
-  --region "$REGION" \
+  --region "$GCP_REGION" \
   --allow-unauthenticated \
   --cpu 1 \
   --memory 512Mi \
@@ -132,6 +137,6 @@ gcloud run deploy "$SERVICE" \
   --timeout 120
 
 echo "==> 完成。服务地址："
-gcloud run services describe "$SERVICE" \
-  --region "$REGION" \
+gcloud run services describe "$GCP_SERVICE_NAME" \
+  --region "$GCP_REGION" \
   --format 'value(status.url)'

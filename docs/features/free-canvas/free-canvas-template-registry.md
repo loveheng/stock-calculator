@@ -5,7 +5,7 @@ updated: 2026-09-25
 
 # 自由画布 · 模板注册表与受限取数语法设计（CanvasTemplate Registry）
 
-> 关联文档：`docs/free-canvas-spec.md`（画布一期规格）、`docs/free-canvas-backend-integration.md`（后端对接契约，v3 代理定案）。
+> 关联文档：`free-canvas-spec.md`（画布一期规格）、`free-canvas-backend-integration.md`（后端对接契约，v3 代理定案）。
 > 本文档为画布模板注册表的**架构设计**（status: active，§五 六步迁移已实施；§六 DSL 动态模板已落地）。
 
 ## 一、背景与决策记录（2026-09-25 用户拍板）

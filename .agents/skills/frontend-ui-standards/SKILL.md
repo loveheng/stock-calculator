@@ -1,6 +1,6 @@
 ---
 name: frontend-ui-standards
-description: stock-calculator 前端 UI 视觉与交互规范：按钮形状统一 rounded-lg（胶囊 rounded-full 仅限 Tab/分段切换条）、移动端 44px 触摸热区（tap-target）、可折叠卡片展开面板响应式高度（移动端 60vh 上限滚动、宽屏固定 60vh 撑满）、头部操作组合容器与 stopPropagation、公共组件复用优先与重复抽取阈值（Rule of Three 分级）、页级子菜单 + 滑动切换（ModeTabs + SwipeTabPanel）、自由网格/画布响应式（窄屏单列堆叠、宽屏多列、展示态不回写布局）。新增或修改页面/组件、写操作按钮、做折叠面板、新增第二种同构 UI 或第二次复制同一段逻辑、把多段平级页面区块拆成可切换子菜单、做响应式自由网格/画布布局时使用。
+description: stock-calculator 前端 UI 视觉与交互规范：按钮形状统一 rounded-lg（胶囊 rounded-full 仅限 Tab/分段切换条）、移动端 44px 触摸热区（tap-target）、可折叠卡片展开面板响应式高度（移动端 60vh 上限滚动、宽屏固定 60vh 撑满）、头部操作组合容器与 stopPropagation、公共组件复用优先与重复抽取阈值（Rule of Three 分级）、页级子菜单 + 滑动切换（ModeTabs + SwipeTabPanel，滑动命中区需抵消外层 padding 铺满横向边缘与屏下空白）、自由网格/画布响应式（窄屏单列堆叠、宽屏多列、展示态不回写布局）。新增或修改页面/组件、写操作按钮、做折叠面板、新增第二种同构 UI 或第二次复制同一段逻辑、把多段平级页面区块拆成可切换子菜单、做响应式自由网格/画布布局时使用。
 ---
 
 # Frontend UI Standards
@@ -98,6 +98,12 @@ hand-written `<div className="flex ...">` button row:
 - `order` MUST equal the visual order of `ModeTabs` tabs; swipe direction follows that array.
 - Children that need their own horizontal scroll/drag (wide tables, canvas RGL blocks) must be
   tagged `data-swipe-ignore` so the gesture hands off to inner scrolling (see `SwipeTabPanel` doc).
+- **Swipe hit-area must reach the screen edges.** `SwipeTabPanel` already cancels the App content
+  wrapper's `p-4 md:p-6` in its `BASE_CLASS` (`-mx-4 md:-mx-6 px-4 md:px-6`) so the left/right ~16/24px
+  side-padding blind strip is swipeable; `min-h-[100dvh] md:min-h-0` makes blank space below short
+  content swipeable too. **Page authors must keep `<SwipeTabPanel>` a direct child of `page-container`**
+  (never wrap it in another horizontally-padded container, or a residual blind strip reappears and
+  content may shift). If the App wrapper padding ever changes, update `BASE_CLASS` in lockstep.
 - This supersedes the old pattern of nesting `ModeTabs variant="segmented"` inside a card:
   peer page sections belong at page level.
 

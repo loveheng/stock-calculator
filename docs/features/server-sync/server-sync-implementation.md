@@ -1,8 +1,13 @@
+---
+status: active
+updated: 2026-09-05
+---
+
 # 服务端密文同步（登录即备份）· 开发实施文档
 
 > 版本：定稿 v1.3（2026-09-05；v1.1 = 后端事实核对修正 E1-E9；v1.2 = §5.3 补 42901 重调度约束，与 spec v1.2 对应；v1.3 = 信封 v1 内嵌 deflate-raw 压缩，与 spec v1.3 对应）
 > 范围：后端领域包/表结构/CAS 写入/频控/校验实现要点、前端服务/状态/UI 落点与骨架、测试计划、里程碑与上线回滚
-> 关联：`docs/server-sync-spec.md`（设计决策 D1-D15）、`docs/e2ee-auth-spec.md`（MEK 体系）、`docs/copilot-implementation.md`（apiClient 底座与 Modulith 约定）、skill `cls-article-patterns`（后端编码模板）、skill `stock-calculator-frontend-dev`（分层护栏）
+> 关联：`server-sync-spec.md`（设计决策 D1-D15）、`../../architecture/e2ee-auth-spec.md`（MEK 体系）、`../copilot/copilot-implementation.md`（apiClient 底座与 Modulith 约定）、skill `cls-article-patterns`（后端编码模板）、skill `stock-calculator-frontend-dev`（分层护栏）
 > 状态：待开发启动
 
 ---

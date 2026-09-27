@@ -1,8 +1,13 @@
+---
+status: active
+updated: 2026-09-19
+---
+
 # 资讯搜索（News Search）· 需求文档
 
 > 版本：v1.5（2026-09-19；v1.1 = 补 A10 未知股票降级边界；v1.2 = 补公告语料覆盖边界说明，对齐 api 文档 v1.1 与 backend-implementation §0；v1.3 = F1 交互修订（筛选即查）+ 列表分页续拉适配；v1.4 = 结果卡移除订阅按钮（档案卡保留）+ 追问 AI 会话按卡片隔离；v1.5 = 日期预设（近7天/近30天）移除，改为单一日期筛选（dateRange 单日闭区间 start=end））
 > 范围：一级菜单「资讯」的搜索优先落地页——确定性意图分流、结构化结果卡片、预置提问模板、搜索→AI Copilot 联动四大功能。数据源为「巨潮公告摘要库」与「财联社早晚报库」（后者后端待建）。
-> 关联：后端仓 `docs/news-search-api.md`（接口契约 v1.1）、后端仓 `docs/news-search-backend-implementation.md`（后端技术实现）、`docs/news-search-implementation.md`（前端技术实现）、`docs/copilot-spec.md`（Copilot 区块上下文机制）、公告订阅接口（已上线：`POST/DELETE/GET /api/announcement/subscriptions`）
+> 关联：后端仓 `docs/news-search-api.md`（接口契约 v1.1）、后端仓 `docs/news-search-backend-implementation.md`（后端技术实现）、`news-search-implementation.md`（前端技术实现）、`../copilot/copilot-spec.md`（Copilot 区块上下文机制）、公告订阅接口（已上线：`POST/DELETE/GET /api/announcement/subscriptions`）
 > 状态：设计定稿，待排期（P0 前端骨架可先行，P1/P2 依赖后端检索接口）
 
 ---

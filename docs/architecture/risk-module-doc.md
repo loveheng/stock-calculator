@@ -1,3 +1,8 @@
+---
+status: active
+updated: 2026-08-23
+---
+
 # 全局风控模块文档
 
 > **文件位置**: `src/risk/`  

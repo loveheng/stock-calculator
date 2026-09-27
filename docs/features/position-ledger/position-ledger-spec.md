@@ -1,10 +1,15 @@
+---
+status: active
+updated: 2026-08-15
+---
+
 # 做T × 中长期底仓：目标态行为说明（参数桥 / positionLedger）
 
 > 版本：目标态 v1
 > 定位：本文档描述**重构后**的预期行为（新契约），**不引用**现有实现细节
 > （`borrowBatchId` / `mergeBatchId` / `settledAdjustmentIds` / `adjustmentBatchIds` / `transferAmount` /
 > `baseDeductedAmount` / `baseMergedAmount` / `rollbackTransferPosition` 等旧机制全部退出）。
-> 配套：`docs/behavior-spec.md` 是**重构前**行为基线；重构完成后的行为以本文档为准。
+> 配套：`../../architecture/behavior-spec.md` 是**重构前**行为基线；重构完成后的行为以本文档为准。
 
 ---
 
@@ -652,7 +657,7 @@ sequenceDiagram
 
 ## 10. 原来方案 vs 现在方案：方案对比
 
-> "原来方案" = 重构前现状基线（`docs/behavior-spec.md`，旧机制）；
+> "原来方案" = 重构前现状基线（`../../architecture/behavior-spec.md`，旧机制）；
 > "现在方案" = 本文档目标态（参数桥 + 中间表 + 物化快照）。
 
 | 维度 | 原来方案（现状基线） | 现在方案（目标态） |

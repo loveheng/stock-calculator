@@ -1,9 +1,14 @@
+---
+status: active
+updated: 2026-08-23
+---
+
 # 沙盘推演（事后复盘 / What-if）— 实现现状与开发上手文档
 
 > **版本**：实现盘点 v1（2026-08-21）
 > **定位**：本文档描述沙盘推演功能的**当前已落盘实现**（含文件清单、每个文件职责、整体运行逻辑、完成度），
->          供**开发人员快速上手**。设计层面的完整规格见 `docs/sandbox-replay-spec.md`。
-> **关联**：`docs/position-ledger-spec.md`（基线数据源）、`docs/behavior-spec.md`（做T批次语义）
+>          供**开发人员快速上手**。设计层面的完整规格见 `sandbox-replay-spec.md`。
+> **关联**：`../position-ledger/position-ledger-spec.md`（基线数据源）、`../../architecture/behavior-spec.md`（做T批次语义）
 > **路由**：`/sandbox`，主导航文案「沙盘复盘」
 
 ---
@@ -346,6 +351,6 @@ npm run build                            # 构建 + postbuild（SW）
 
 ## 8. 相关文档索引
 
-- `docs/sandbox-replay-spec.md` — 完整设计规格（含目标、数据模型、UI 设计、测试计划）。
-- `docs/position-ledger-spec.md` — 基线数据源（持仓批次语义）。
-- `docs/behavior-spec.md` — 做T批次行为基线。
+- `sandbox-replay-spec.md` — 完整设计规格（含目标、数据模型、UI 设计、测试计划）。
+- `../position-ledger/position-ledger-spec.md` — 基线数据源（持仓批次语义）。
+- `../../architecture/behavior-spec.md` — 做T批次行为基线。

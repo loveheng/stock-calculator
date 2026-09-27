@@ -1,8 +1,13 @@
+---
+status: active
+updated: 2026-09-07
+---
+
 # 自定义统计 · 服务端持久化契约（D17）
 
 > 版本：v1.0（2026-09-07）
 > 面向：后端实现者。前端已按本契约实现完毕（`services/customStatsSyncService.ts` + `customStatsSlice.syncCustomStatsFromServer`），后端就绪即可联调。
-> 关联：需求 D17（`docs/custom-stats-spec.md`）、实现 §8（`docs/custom-stats-implementation.md`）、后端仓 `docs/custom-stats-api.md`（AI 生成动作契约）。
+> 关联：需求 D17（`custom-stats-spec.md`）、实现 §8（`custom-stats-implementation.md`）、后端仓 `docs/custom-stats-api.md`（AI 生成动作契约）。
 
 ## 1. 定位与边界
 

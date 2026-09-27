@@ -5,7 +5,7 @@ updated: 2026-09-25
 
 # 自由画布 · 后端对接方案（Agent × Main × 前端）
 
-> 本文汇总自由画布前后端对接讨论结论：指标分层计算、计算即服务契约、本地计算代理（前端 MCP 形态）、降级链路与接口规范。配套设计规格见 `docs/free-canvas-spec.md`；本文档落地时归属 stock-calculator-service 仓库的正式 api 契约文档。
+> 本文汇总自由画布前后端对接讨论结论：指标分层计算、计算即服务契约、本地计算代理（前端 MCP 形态）、降级链路与接口规范。配套设计规格见 `free-canvas-spec.md`；本文档落地时归属 stock-calculator-service 仓库的正式 api 契约文档。
 
 ## 一、角色与职责划分
 
@@ -129,7 +129,7 @@ flowchart LR
 
 ### 2.8 对话通道的画布动作与 promptHints（copilot 线 · main 零新端点，2026-09-25 新增）
 
-画布的对话互操作**不走 broker 端点**，走 copilot 标准通道（`POST /api/copilot/threads/{scopeId}/messages`，契约权威见 `docs/copilot-spec.md` v1.5 D33）。main 侧需要改的只有两项：
+画布的对话互操作**不走 broker 端点**，走 copilot 标准通道（`POST /api/copilot/threads/{scopeId}/messages`，契约权威见 `../copilot/copilot-spec.md` v1.5 D33）。main 侧需要改的只有两项：
 
 | # | 改动 | 说明 |
 |---|---|---|

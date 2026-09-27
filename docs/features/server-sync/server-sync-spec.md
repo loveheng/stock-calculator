@@ -1,9 +1,14 @@
+---
+status: active
+updated: 2026-09-05
+---
+
 # 服务端密文同步（登录即备份）· 方案设计文档
 
 > 版本：定稿 v1.3（2026-09-05；v1.1 = 后端事实核对修正 E1-E9 见 §0.2；v1.2 = §8.3 补 E9 等待不持锁的重调度约束；v1.3 = 信封 v1 内嵌 deflate-raw 压缩定案——预发布期无存量数据、单格式无分支）
 > 范围：登录用户的零配置云端热同步通道——客户端加密快照 + 服务端哑存储 + 乐观版本号 CAS。含数据库表设计、API 契约、同步协议、触发管线、与 WebDAV 通道的关系划分。
-> 关联：`docs/e2ee-auth-spec.md`（MEK 密钥体系；本方案落实其 §1.2 预留的二期「云端密文同步」）、`docs/copilot-spec.md` / `docs/copilot-implementation.md`（恒 200 信封、apiClient 底座、后端 Modulith 约定）、`README.md`（/api 同源代理架构）
-> 状态：设计定稿，待开发启动（开发落点见 `docs/server-sync-implementation.md`）
+> 关联：`../../architecture/e2ee-auth-spec.md`（MEK 密钥体系；本方案落实其 §1.2 预留的二期「云端密文同步」）、`../copilot/copilot-spec.md` / `../copilot/copilot-implementation.md`（恒 200 信封、apiClient 底座、后端 Modulith 约定）、`README.md`（/api 同源代理架构）
+> 状态：设计定稿，待开发启动（开发落点见 `server-sync-implementation.md`）
 
 ---
 

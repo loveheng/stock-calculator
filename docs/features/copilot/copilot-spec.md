@@ -1,3 +1,8 @@
+---
+status: active
+updated: 2026-09-26
+---
+
 # Context-Aware Copilot · 伴随式 AI 助手 · 功能设计文档
 
 ---
@@ -7,7 +12,7 @@ updated: 2026-09-25
 
 > 版本：定稿 v1.6（2026-09-26，D33 修订：公共段改 canvas scope 内必带——v1.5 触发词条件携带下「把XX放上画布」类放置说法漏触发词，LLM 误用 fetch_kline 并幻觉成功；v1.5 = 2026-09-25 v1.4 基础上新增 D33：画布能力提示 promptHints 条件携带——公共段+模板专属段分层组装、触发词命中才上行，ephemeral + 后端 8KB 截断原样拼接；v1.4 曾纠正传输/存储混淆并新增 D28-D32）
 > 范围：全局悬浮对话窗 + 页面级上下文自动感知 + 两级作用域会话隔离 + 传输/存储分离（ephemeral contextSummary + 落库 contextOverview/timeAnchor）+ 级联生命周期（实体删除→同步清理 Copilot 会话）+ 多渠道 LLM 容灾路由
-> 关联：`docs/copilot-implementation.md`（开发实施文档）、`docs/e2ee-auth-spec.md`（鉴权与用户体系）
+> 关联：`copilot-implementation.md`（开发实施文档）、`../../architecture/e2ee-auth-spec.md`（鉴权与用户体系）
 > 状态：设计定稿，待 P0 开发启动
 
 ---

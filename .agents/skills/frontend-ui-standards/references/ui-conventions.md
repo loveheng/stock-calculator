@@ -215,6 +215,27 @@ export default function CostAveraging() {
   be tagged `data-swipe-ignore` so the gesture hands off to inner scrolling (see `SwipeTabPanel` doc).
 - Exact component paths resolve via the `stock-calculator-index` skill; do not hardcode volatile paths.
 
+### Swipe hit-area must reach the screen edges
+
+`SwipeTabPanel` already cancels the App content wrapper's `p-4 md:p-6` in its `BASE_CLASS`, so the whole
+row — including the original ~16/24px side-padding blind strip — is swipeable:
+
+```tsx
+const BASE_CLASS = 'overflow-x-hidden min-h-[100dvh] md:min-h-0 -mx-4 md:-mx-6 px-4 md:px-6';
+```
+
+- `-mx-4 md:-mx-6` pulls the panel out into the App wrapper's side padding, so a swipe starting at the
+  left/right screen edge (the former blind strip) still triggers tab switching.
+- `px-4 md:px-6` re-adds the same padding inside, so card content stays exactly where it was — no visual shift.
+- `min-h-[100dvh]` + `md:min-h-0`: the container fills at least one screen tall so blank space below short
+  content is also swipeable; desktop resets the min-height (no touch gestures there, zero side effect).
+
+Rules for page authors:
+- Keep `<SwipeTabPanel>` a **direct child of `page-container`** — do NOT wrap it in another horizontally-padded
+  container, or a residual blind strip reappears and content may shift.
+- If the App content wrapper padding (`p-4 md:p-6`, in `App.tsx`) ever changes, update the matching
+  `-mx-*` / `px-*` in `SwipeTabPanel.BASE_CLASS` in lockstep.
+
 ### EmptyState
 
 ```tsx

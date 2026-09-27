@@ -1,8 +1,13 @@
+---
+status: active
+updated: 2026-09-07
+---
+
 # 自定义统计 · 前端技术文档
 
 > 版本：v1.2（2026-09-07：v1.0 评审修订 Worker 消息协议/批量刷新/草稿覆盖规则；v1.2 新增 D17 服务端持久化，见 §8 与 custom-stats-server-sync.md）
 > 范围：契约定义 / 沙箱执行器 / Guard / 服务层 / 状态 / UI / 图表 / 缓存 / 服务端同步 / 测试
-> 关联：`docs/custom-stats-spec.md`（需求文档，D1~D17 决策编号沿用）；后端仓 `docs/custom-stats-api.md`、`docs/custom-stats-backend-support.md`
+> 关联：`custom-stats-spec.md`（需求文档，D1~D17 决策编号沿用）；后端仓 `docs/custom-stats-api.md`、`docs/custom-stats-backend-support.md`
 > 状态：设计定稿，待 P0 开发启动
 
 ---
@@ -321,7 +326,7 @@ case 'run_custom_stat': {
   - `services/customStatsSyncService.ts`：GET/PUT/DELETE `/api/custom-stats`（Bearer token，无需 MEK）+ 服务端定义防御性收窄（非法条目跳过）；
   - `syncCustomStatsFromServer`（customStatsSlice）：打开画廊对账（拉取 LWW 合并 + 推送较新 + 墓碑删除传播），保存/删除后即时补推；全程静默降级，未登录跳过；
   - `toCustomStatEntity` 保留调用方 `updatedAt`（LWW 排序键，不再被 now() 覆盖）；
-  - 契约与后端实现指引见 `docs/custom-stats-server-sync.md`；
+  - 契约与后端实现指引见 `custom-stats-server-sync.md`；
 - workbox `globPatterns` 补 `**/*.wasm` 条目**已不适用**：QuickJS 采用 RELEASE_SYNC 单文件变体（wasm base64 内嵌 JS，零外部资产），recharts 为 js chunk 由现有模式自动覆盖。
 
 ## 9. 测试计划（`src/__tests__/`，白名单豁免分层）

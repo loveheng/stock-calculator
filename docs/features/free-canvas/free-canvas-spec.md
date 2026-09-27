@@ -15,7 +15,7 @@ updated: 2026-09-24
 - 单画布（数据模型支持多画布，UI 一期只呈现当前画布）
 - 布局引擎引入 `react-grid-layout`（已确认决策）
 - K 线划线一期范围 = 关键水平线（createPriceLine，带标签）+ 两点趋势线段（已确认决策）
-- K 线数据源：**服务器代理 `GET /api/broker/klines`（画布域唯一通道，v3 定案：画布不直连、不上传、零数据管理；需登录，游客不可见）**；简单指标即时计算（MA/涨跌幅）；复杂指标走后端无状态计算通道（见 `docs/free-canvas-backend-integration.md`），分钟线数据源不可用
+- K 线数据源：**服务器代理 `GET /api/broker/klines`（画布域唯一通道，v3 定案：画布不直连、不上传、零数据管理；需登录，游客不可见）**；简单指标即时计算（MA/涨跌幅）；复杂指标走后端无状态计算通道（见 `free-canvas-backend-integration.md`），分钟线数据源不可用
 
 ## 二、页面结构
 
@@ -156,7 +156,7 @@ react-grid-layout 新增区块必须携带 w/h。addBlock 时不由调用方传�
 - 展示形态：标签 + 大字数值
 - 三种取值方式：手动输入固定值；绑定区块取值（sourceBlockId + 取值路径，如「最新收盘」「区间涨跌幅」）；简单表达式（一期仅支持常量四则运算，不做脚本执行——复杂计算归 customStats 域）
 - **表达式求值安全**：严禁 `eval()` / `new Function()`（后者仍可逃逸访问全局，不比 eval 安全）。一期不引数学库，用自写递归下降解析器（纯函数放 `utils/`，~80 行）：字符白名单 `[0-9+\-*/(). ]` → tokenize → AST → 求值；非法字符/不合法语法直接报「表达式无效」，可单测全覆盖
-- **复杂指标通道（agent）**：metric/chart 区块可选「agent 指标」数据源——前端将 K 线切片 POST 至 `/api/broker/indicators/compute`（无状态、算完即弃、后端不存原始行情），结果写入区块 data。契约与降级链路见 `docs/free-canvas-backend-integration.md` §2.1/§四
+- **复杂指标通道（agent）**：metric/chart 区块可选「agent 指标」数据源——前端将 K 线切片 POST 至 `/api/broker/indicators/compute`（无状态、算完即弃、后端不存原始行情），结果写入区块 data。契约与降级链路见 `free-canvas-backend-integration.md` §2.1/§四
 
 ### 4.8 空图片模板 / 4.9 空文本区域
 - 图片：占位态显示上传按钮；文本：占位态显示「点击编辑」

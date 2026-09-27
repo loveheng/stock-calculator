@@ -1,3 +1,8 @@
+---
+status: active
+updated: 2026-09-01
+---
+
 # 修复记录：el-upload 拖拽无响应
 
 ## 根因

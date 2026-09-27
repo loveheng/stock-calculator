@@ -1,3 +1,8 @@
+---
+status: active
+updated: 2026-09-17
+---
+
 # 沙盘预设策略生成器（strategyGenerators.ts）工程审查
 
 > 版本：审查稿 v1（只读，不含任何代码改动）

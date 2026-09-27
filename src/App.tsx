@@ -62,19 +62,24 @@ import StockCanvas from './views/StockCanvas';
  * @property {string} label - 菜单显示文案
  * @property {React.ElementType} icon - lucide 图标组件
  */
-// ---- 导航菜单项 ----
+// ---- 导航菜单项（逻辑分组：首页 / 交易工具 / 研究分析 / 数据管理 / 系统）----
 const NAV_ITEMS = [
+  // 首页
   { path: '/', label: '首页', icon: Home },
+  // 交易工具
   { path: '/change-rate', label: '涨跌幅计算器', icon: TrendingUp },
   { path: '/t-calculator', label: '短线交易', icon: RefreshCw },
   { path: '/cost-averaging', label: '中长期交易', icon: BarChart3 },
+  // 研究分析
   { path: '/news', label: '资讯', icon: Search },
-  { path: '/sandbox', label: '沙盘复盘', icon: FlaskConical },
-  { path: '/statistics', label: '数据统计', icon: PieChart },
-  { path: '/settings', label: '设置', icon: Settings },
-  { path: '/webdav', label: '云端同步', icon: Cloud },
-  { path: '/batch-import', label: '批量导入', icon: ClipboardList },
   { path: '/stock-canvas', label: 'AI 选股台', icon: LayoutDashboard },
+  { path: '/sandbox', label: '沙盘复盘', icon: FlaskConical },
+  // 数据管理
+  { path: '/statistics', label: '数据统计', icon: PieChart },
+  { path: '/batch-import', label: '批量导入', icon: ClipboardList },
+  // 系统
+  { path: '/webdav', label: '云端同步', icon: Cloud },
+  { path: '/settings', label: '设置', icon: Settings },
 ];
 
 /**

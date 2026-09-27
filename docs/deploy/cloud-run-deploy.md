@@ -1,3 +1,8 @@
+---
+status: active
+updated: 2026-09-25
+---
+
 # 部署到 Google Cloud Run
 
 PWA（静态产物 + 零依赖 Node 代理层）以容器方式跑在 Cloud Run 上，构建逻辑与
@@ -5,11 +10,12 @@ PWA（静态产物 + 零依赖 Node 代理层）以容器方式跑在 Cloud Run 
 
 ## 架构
 
-```
-用户 → Cloud Run (node server/index.mjs)
-         ├─ 静态资源 + SPA 回退（dist/）
-         ├─ /api/auth /api/import … → 上游 Spring Boot（默认 https://sc.oklhj.eu.org）
-         └─ /api/webdav → WebDAV 代理
+```mermaid
+flowchart TD
+    用户 --> CR["Cloud Run<br/>node server/index.mjs"]
+    CR --> S["静态资源 + SPA 回退（dist/）"]
+    CR --> A["/api/auth /api/import …<br/>→ 上游 Spring Boot（默认 sc.oklhj.eu.org）"]
+    CR --> W["/api/webdav → WebDAV 代理"]
 ```
 
 - Cloud Run 会注入 `PORT`（默认 8080），`server/index.mjs` 直接读该变量，无需额外配置。

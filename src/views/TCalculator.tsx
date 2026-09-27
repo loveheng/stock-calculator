@@ -22,10 +22,11 @@ import {
 import { showToast } from '../utils/toast';
 import { filterDisplayablePlans } from '../utils/planFilter';
 import { buildPlannedOrder } from '../utils/planOrder';
+import { resolveStockName } from '../utils/dedup';
 import { usePlanExecutor } from '../hooks/usePlanExecutor';
 import { usePlanReminder } from '../hooks/usePlanReminder';
 import { deriveMonitorInput } from '../utils/planReminder';
-import PlanReminderField from '../components/monitor/PlanReminderField';
+import PlanOrderForm, { type PlanOrderFormValues } from '../components/plan/PlanOrderForm';
 import { useStreamResults } from '../hooks/useStreamResults';
 import { ledgerService } from '../services/ledgerService';
 import { useArchivedRounds } from '../hooks/useArchivedRounds';
@@ -526,13 +527,15 @@ function CurrentProjectCard({
   const addToast = (msg: string) => showToast(msg);
 
   const baseHolding = basePosition?.currentAmount ?? 0;
+  // 展示名兜底：存量流水的 stockName 可能回退成代码（如 sh600745），优先用实时行情的真实名称
+  const displayName = resolveStockName(result.stockName, result.fullCode, quote);
 
   // ── Copilot 上下文注册（V2 推广：按标的 scope，随卡片挂载/结清自动注册/注销）──
   // fullCode/stockName 是 scope 身份（注册签名，非易变 UI 态）；getData 全部来自
   // getState() + 撮合管线重算，现价经 getMarketPrice 桥读取（父组件 useEffect 已同步 priceCache）。
   // 快照对象按 scope 身份记忆化：行情/流水变化不重建，不触发 usePageContext 签名重注册。
   const projectScopeId = `t_calculator:${result.fullCode}`;
-  const projectTitle = `短线项目 · ${result.stockName}`;
+  const projectTitle = `短线项目 · ${displayName}`;
   usePageContext(
     useMemo(
       () => ({
@@ -612,13 +615,43 @@ function CurrentProjectCard({
   return (
     <div className="card !p-0 !mb-0 overflow-hidden w-full max-w-4xl mx-auto">
       {/* === 紧凑头部（点击整行展开/收起详细面板） === */}
+      {/* 注意：不得用 tap-target（它是 inline-flex，会把行1与徽章块压成同一行）；
+          显式 flex flex-col 保证「名称行 / 徽章块」纵向堆叠且各自撑满宽度 */}
       <div
-        className="tap-target flex flex-wrap items-center gap-x-2 gap-y-1 p-3 cursor-pointer select-none"
+        className="flex flex-col w-full min-h-[44px] p-3 cursor-pointer select-none"
         onClick={onToggleExpand}
       >
-        <div className="flex items-center gap-2 min-w-0 flex-wrap flex-1">
-          <span className="font-semibold text-slate-200 truncate">{result.stockName}</span>
-          <span className="text-xs text-slate-500 shrink-0">{result.fullCode}</span>
+        {/* 第一行：股票名称 + 代码 ｜ 操作按钮 + 箭头（单行不换行，移动端不再错乱） */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-col min-w-0 gap-0.5">
+            <span className="font-semibold text-slate-200 truncate">{displayName}</span>
+            <span className="text-[10px] text-slate-500 font-mono">{result.fullCode}</span>
+          </div>
+          <div className="flex items-center shrink-0 gap-1">
+            {/* 操作组合：订阅公告 / 问 AI 收进同一组；阻止冒泡避免误触展开 */}
+            <div
+              className="flex items-center gap-1 rounded-lg bg-slate-900/60 p-1"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <AnnouncementSubscribeButton fullCode={result.fullCode} className="!w-8 !h-8 !min-w-0 !min-h-0" />
+              <BlockFocusButton
+                scopeId={projectScopeId}
+                blockId={`${projectScopeId}:project`}
+                className="!min-w-0 !min-h-0 !px-2 !py-1 text-[10px]"
+              />
+            </div>
+            {/* 箭头置于操作组之外：点击仍走头部的展开/收起 */}
+            <div className="tap-target flex items-center justify-center w-11 h-11">
+              <ChevronRight
+                className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+              />
+            </div>
+          </div>
+        </div>
+        {/* 第二行：概览徽章（轮次/模式/状态/现价/底仓）——折叠态常驻；
+            展开态由下方详情面板完整呈现，故展开时隐藏，避免与详情重复 */}
+        {!isExpanded && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5">
           <span className="text-xs bg-slate-700/80 text-slate-200 px-1.5 py-0.5 rounded font-bold shrink-0">
             {roundCode}
           </span>
@@ -642,26 +675,7 @@ function CurrentProjectCard({
             </span>
           ) : null}
         </div>
-        <div className="flex items-center shrink-0 ml-auto gap-1">
-          {/* 操作组合：订阅公告 / 问 AI 收进同一组；移动端由 tap-target 保证 44px 热区 */}
-          <div
-            className="flex items-center gap-1 rounded-lg bg-slate-900/60 p-1"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <AnnouncementSubscribeButton fullCode={result.fullCode} />
-            <BlockFocusButton
-              scopeId={projectScopeId}
-              blockId={`${projectScopeId}:project`}
-              className="tap-target"
-            />
-          </div>
-          {/* 箭头置于操作组之外：点击仍走头部的展开/收起 */}
-          <div className="tap-target flex items-center justify-center w-11 h-11">
-            <ChevronRight
-              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
-            />
-          </div>
-        </div>
+        )}
       </div>
 
       {/* === 展开态：详细面板（移动/宽屏同为单列，统一 60vh 上限 + 内部滚动；内容不足时按实际高度收缩，不留空白） === */}
@@ -947,20 +961,32 @@ function ArchiveRoundCard({
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
       {/* === 紧凑头部（点击整行展开/收起成交明细） === */}
+      {/* 不得用 tap-target（inline-flex 会压扁内部布局）；显式 flex flex-col 让
+          「名称行 / 徽章行」纵向堆叠且各自撑满宽度 */}
       <div
-        className="tap-target flex flex-wrap items-center gap-x-2 gap-y-1 p-3 cursor-pointer select-none"
+        className="flex flex-col w-full min-h-[44px] p-3 cursor-pointer select-none"
         onClick={onToggleExpand}
       >
-        <div className="flex items-center gap-2 min-w-0 flex-wrap flex-1">
-          <span className="font-semibold text-slate-200 truncate">{round.stockName}</span>
-          <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded font-bold shrink-0">
-            {round.roundCode}
-          </span>
-          <span className={`text-xs px-1.5 py-0.5 rounded font-bold shrink-0 ${round.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
-            {round.mode === 'short' ? '倒T' : '正T'}
-          </span>
+        {/* 第一行：股票名称 + 轮次 + 模式 ｜ 箭头（单行不换行） */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+            <span className="font-semibold text-slate-200 truncate">{round.stockName}</span>
+            <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded font-bold shrink-0">
+              {round.roundCode}
+            </span>
+            <span className={`text-xs px-1.5 py-0.5 rounded font-bold shrink-0 ${round.mode === 'short' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
+              {round.mode === 'short' ? '倒T' : '正T'}
+            </span>
+          </div>
+          <div className="tap-target flex items-center justify-center w-11 h-11 shrink-0">
+            <ChevronRight
+              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+            />
+          </div>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        {/* 第二行：战绩徽章（盈利/亏损/平仓/划转/归并）——折叠态常驻；展开态由详情面板呈现故隐藏 */}
+        {!isExpanded && (
+        <div className="flex items-center gap-2 flex-wrap mt-1.5">
           {round.settleType === 'transfer' && round.sellAmount === 0 ? (
             <>
               <span className="text-xs bg-slate-700/15 text-slate-200 px-1.5 py-0.5 rounded font-bold shrink-0">平仓</span>
@@ -984,11 +1010,7 @@ function ArchiveRoundCard({
             </span>
           )}
         </div>
-        <div className="tap-target flex items-center justify-center w-11 h-11 shrink-0">
-          <ChevronRight
-            className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
-          />
-        </div>
+        )}
       </div>
       <div className="px-3 pb-3 space-y-2">
       <div className="text-xs text-slate-500">
@@ -1166,22 +1188,29 @@ function MobileCollapse({ title, badge, defaultCollapsed, children }: { title: s
   const [collapsed, setCollapsed] = useState(defaultCollapsed ?? false);
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
   const effectiveCollapsed = isMobile ? collapsed : false;
+  const headerContent = (
+    <div className="flex items-center gap-2 min-w-0">
+      <h3 className="text-base font-semibold text-slate-200 shrink-0">{title}</h3>
+      {badge && (
+        <span className="text-xs text-slate-400 truncate">{badge}</span>
+      )}
+    </div>
+  );
   return (
     <>
       <button
         type="button"
         onClick={() => setCollapsed(!collapsed)}
-        className="tap-target md:hidden flex items-center justify-between w-full text-left"
+        className="tap-target md:hidden flex items-center justify-between w-full text-left gap-2"
       >
-        <h3 className="text-base font-semibold text-slate-200">{title}</h3>
-        {effectiveCollapsed && badge && (
-          <span className="text-xs text-slate-400 ml-2">{badge}</span>
-        )}
-        <span className="text-slate-400 text-lg transition-transform duration-200" style={{ transform: effectiveCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }}>
+        {headerContent}
+        <span className="text-slate-400 text-lg transition-transform duration-200 shrink-0" style={{ transform: effectiveCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }}>
           ▾
         </span>
       </button>
-      <h3 className="hidden md:block text-base font-semibold text-slate-200">{title}</h3>
+      <div className="hidden md:flex items-center justify-between">
+        {headerContent}
+      </div>
       {!effectiveCollapsed && children}
     </>
   );
@@ -1203,7 +1232,6 @@ export default function TCalculator() {
 
   // 仅展示进行中的短线项目（CLEARED = 池内流水已全部配对并自动归档为战报，不再属于当前项目）
   const activeResults = useMemo(() => results.filter((r) => r.status !== 'CLEARED'), [results]);
-
   // 项目卡片展开态：页面级统一管控（键 = 标的 fullCode），供「展开全部 / 收起全部」批量切换
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const toggleExpand = useCallback((id: string) => {
@@ -1240,6 +1268,14 @@ export default function TCalculator() {
   // 同步实时行情到风控价格缓存（R2 价格偏离校验用）
   useEffect(() => { setMarketPrices(quotes); }, [quotes]);
 
+  // 区块概览：折叠/展开均常驻显示进行中项目的股票名称（代码兜底名用行情真名解析），便于一眼看清是哪些票
+  const activeOverview = useMemo(() => {
+    if (activeResults.length === 0) return '暂无进行中项目';
+    const names = activeResults.map((r) => resolveStockName(r.stockName, r.fullCode, quotes[r.fullCode] ?? null));
+    const shown = names.slice(0, 2).join('、');
+    return names.length > 2 ? `${shown} 等 ${names.length} 个` : `${shown}（${names.length} 个）`;
+  }, [activeResults, quotes]);
+
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [price, setPrice] = useState('');
   const [amount, setAmount] = useState('');
@@ -1254,13 +1290,7 @@ export default function TCalculator() {
   const [toast, setToast] = useState<string | null>(null);
   // 计划单状态
   const [planFormOpen, setPlanFormOpen] = useState(false);
-  const [planStock, setPlanStock] = useState<StockSearchItem | null>(null);
-  const [planDirection, setPlanDirection] = useState<'buy' | 'sell'>('buy');
-  const [planPrice, setPlanPrice] = useState('');
-  const [planAmount, setPlanAmount] = useState('');
-  const [planValidity, setPlanValidity] = useState(3);
-  const [planReminderEnabled, setPlanReminderEnabled] = useState(false);
-  const [planReminderBand, setPlanReminderBand] = useState('');
+  const [editingOrder, setEditingOrder] = useState<PlannedOrder | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
@@ -1409,35 +1439,26 @@ export default function TCalculator() {
     showLocalToast(`✅ 计划单已执行 · ${order.stockName}`, 3000);
   }, [executePlan, showLocalToast]);
 
-  const handleCreatePlan = async () => {
-    if (!planStock?.fullCode) { showLocalToast('请选择股票', 3000); return; }
-    const p = parseFloat(planPrice);
-    const a = parseFloat(planAmount);
-    if (!p || p <= 0) { showLocalToast('请输入有效价格', 3000); return; }
-    if (!a || a <= 0) { showLocalToast('请输入有效数量', 3000); return; }
+  const handleCreatePlan = (values: PlanOrderFormValues): boolean => {
     const order = buildPlannedOrder({
-      fullCode: planStock.fullCode,
-      stockName: planStock.Name || planStock.ShortName || planStock.fullCode,
+      fullCode: values.stock.fullCode,
+      stockName: values.stock.Name || values.stock.ShortName || values.stock.fullCode,
       context: 'short-term',
-      direction: planDirection,
-      plannedPrice: p,
-      plannedAmount: a,
-      validityDays: planValidity,
+      direction: values.direction,
+      plannedPrice: values.plannedPrice,
+      plannedAmount: values.plannedAmount,
+      validityDays: values.validityDays,
+      ...(values.thresholdRange ? { thresholdRange: values.thresholdRange } : {}),
     });
     setPlannedOrder(order);
-    if (planReminderEnabled) {
-      const bandNum = planReminderBand === '' ? 0 : parseFloat(planReminderBand);
-      await reminder.start(order, deriveMonitorInput(order, bandNum));
+    if (values.reminderEnabled) {
+      const bandNum = values.reminderBand === '' ? 0 : parseFloat(values.reminderBand);
+      void reminder.start(order, deriveMonitorInput(order, bandNum));
     }
-    setPlanFormOpen(false);
-    setPlanStock(null);
-    setPlanPrice('');
-    setPlanAmount('');
-    setPlanDirection('buy');
-    setPlanValidity(3);
-    setPlanReminderEnabled(false);
-    setPlanReminderBand('');
     showLocalToast(`📋 计划单已创建 · ${order.stockName}`, 3000);
+    setPlanFormOpen(false);
+    setEditingOrder(null);
+    return true;
   };
 
   const planQuoteCodes = useMemo(() => shortTermPlans.map((p) => p.fullCode), [shortTermPlans]);
@@ -1863,7 +1884,7 @@ export default function TCalculator() {
 
       {/* 当前项目（移动端默认折叠） */}
       <div className="space-y-3">
-        <MobileCollapse title="当前短线项目" defaultCollapsed={true} badge={`${activeResults.length} 个项目`}>
+        <MobileCollapse title="当前短线项目" defaultCollapsed={true} badge={activeOverview}>
         <div className="flex items-center justify-between gap-2 flex-wrap px-1">
           <span className="text-xs text-slate-500">进行中项目（{activeResults.length}）</span>
           <div className="flex items-center gap-1">
@@ -1938,94 +1959,27 @@ export default function TCalculator() {
         ) : (
           <div className="bg-slate-900 rounded-lg border border-slate-700 p-3 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-300">新建计划单</span>
+              <span className="text-xs font-semibold text-slate-300">{editingOrder ? '编辑计划单' : '新建计划单'}</span>
               <button
-                onClick={() => { setPlanFormOpen(false); setPlanStock(null); }}
+                onClick={() => { setPlanFormOpen(false); setEditingOrder(null); }}
                 className="tap-target text-xs text-slate-500 hover:text-slate-300 rounded-lg px-2"
               >
                 ✕
               </button>
             </div>
-            <StockAutocomplete
-              value={planStock}
-              onChange={(s) => setPlanStock(s)}
-              placeholder="搜索股票代码/名称..."
+            <PlanOrderForm
+              context="short-term"
+              initialValues={editingOrder ? {
+                stock: { fullCode: editingOrder.fullCode, Name: editingOrder.stockName, ShortName: '', Code: editingOrder.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' },
+                direction: editingOrder.direction,
+                plannedPrice: editingOrder.plannedPrice,
+                plannedAmount: editingOrder.plannedAmount,
+                validityDays: editingOrder.validityDays,
+                thresholdRange: editingOrder.thresholdRange,
+              } : undefined}
+              onSubmit={handleCreatePlan}
+              submitLabel={editingOrder ? '保存' : '确认创建'}
             />
-            {/* 方向选择 */}
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setPlanDirection('buy')}
-                className={`tap-target text-xs rounded-lg py-2 font-medium transition-colors ${
-                  planDirection === 'buy' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                计划买入
-              </button>
-              <button
-                onClick={() => setPlanDirection('sell')}
-                className={`tap-target text-xs rounded-lg py-2 font-medium transition-colors ${
-                  planDirection === 'sell' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                计划卖出
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[10px] text-slate-500 mb-1">计划价格（元）</label>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={planPrice}
-                  onChange={(e) => setPlanPrice(e.target.value)}
-                  placeholder="0.00"
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] text-slate-500 mb-1">计划数量（股）</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={planAmount}
-                  onChange={(e) => setPlanAmount(e.target.value)}
-                  placeholder="100"
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-            </div>
-            {/* 有效期选择 */}
-            <div>
-              <label className="block text-[10px] text-slate-500 mb-1">有效期</label>
-              <div className="flex gap-1.5">
-                {[1, 3, 7, 14, 30].map((d) => (
-                  <button
-                    key={d}
-                    onClick={() => setPlanValidity(d)}
-                    className={`tap-target flex-1 text-xs py-1.5 rounded-lg transition-colors ${
-                      planValidity === d ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
-                  >
-                    {d}天
-                  </button>
-                ))}
-              </div>
-            </div>
-            <PlanReminderField
-              direction={planDirection}
-              threshold={parseFloat(planPrice)}
-              stock={planStock}
-              enabled={planReminderEnabled}
-              onEnabledChange={setPlanReminderEnabled}
-              band={planReminderBand}
-              onBandChange={setPlanReminderBand}
-            />
-            <button
-              onClick={handleCreatePlan}
-              className="tap-target w-full text-xs py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
-            >
-              确认创建
-            </button>
           </div>
         )}
 
@@ -2036,11 +1990,7 @@ export default function TCalculator() {
           emptyVariant="dashed"
           emptyTitle="暂无计划单，创建后可在执行前看到价格对比变化"
           onEdit={(order) => {
-            setPlanStock({ fullCode: order.fullCode, Name: order.stockName, ShortName: '', Code: order.fullCode.replace(/^sh|sz|bj/, ''), SecurityType: '', QuoteID: '', PinYin: '', SecurityTypeName: '', MktNum: '', MarketType: '', Classify: '', Type: '', UnifiedCode: '', InnerCode: '' });
-            setPlanDirection(order.direction);
-            setPlanPrice(String(order.plannedPrice));
-            setPlanAmount(String(order.plannedAmount));
-            setPlanValidity(order.validityDays);
+            setEditingOrder(order);
             setPlanFormOpen(true);
           }}
           onExecute={handlePlanExecute}
@@ -2121,7 +2071,7 @@ export default function TCalculator() {
             {/* 标题 + 关闭 */}
             <div className="flex items-start justify-between gap-2 mb-3">
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-slate-100 truncate">追加流水 · {apResult.stockName}</p>
+                <p className="text-sm font-semibold text-slate-100 truncate">追加流水 · {resolveStockName(apResult.stockName, apResult.fullCode, quotes[apResult.fullCode] ?? null)}</p>
                 <p className="text-[11px] text-slate-500">{sheetFullCode}</p>
               </div>
               <button

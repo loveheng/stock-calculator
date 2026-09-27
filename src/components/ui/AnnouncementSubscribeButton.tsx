@@ -21,10 +21,12 @@ import { showToast } from '../../utils/toast';
 interface AnnouncementSubscribeButtonProps {
   /** 标的 fullCode（如 sh600745 / 600745 / SZ000001），组件内归一化为 6 位码 */
   fullCode: string | undefined | null;
+  /** 透传额外类名（如卡片头部需缩小热区时覆盖默认 44px 尺寸） */
+  className?: string;
 }
 
 
-export default function AnnouncementSubscribeButton({ fullCode }: AnnouncementSubscribeButtonProps) {
+export default function AnnouncementSubscribeButton({ fullCode, className }: AnnouncementSubscribeButtonProps) {
   const subscribedStockIds = useAppStore((s) => s.subscribedStockIds);
   const loadSubs = useAppStore((s) => s.loadAnnouncementSubscriptions);
   const subscribeAction = useAppStore((s) => s.subscribeAnnouncement);
@@ -73,6 +75,7 @@ export default function AnnouncementSubscribeButton({ fullCode }: AnnouncementSu
       ? 'text-amber-400 bg-amber-500/10 hover:bg-amber-500/20'
       : 'text-slate-500 hover:text-slate-200 hover:bg-slate-800',
     pending ? 'opacity-50 cursor-not-allowed' : '',
+    className ?? '',
   ]
     .filter(Boolean)
     .join(' ');

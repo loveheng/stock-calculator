@@ -13,6 +13,7 @@ import type { PlannedOrder, Position } from '../../store/types';
 import { evaluateDynamicPyramid, type DynamicPyramidResult, type FeeConfig } from '../../utils/mathUtils';
 import type { StockQuoteSummary } from '../../types/stock';
 import { calcBatchExecution } from '../../store/utils';
+import { resolveStockName } from '../../utils/dedup';
 import {
   findLatestShortProject,
   computeShortTermTrial,
@@ -248,12 +249,14 @@ export default function PlanOrderCard({
         className="w-full text-left focus:outline-none"
       >
         <div className="flex items-center justify-between p-3 pb-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-sm font-semibold text-slate-200 truncate">{order.stockName}</span>
-            <span className="text-[10px] text-slate-500 font-mono shrink-0">{order.fullCode}</span>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${DIRECTION_STYLES[order.direction]}`}>
-              {DIRECTION_LABELS[order.direction]}
-            </span>
+          <div className="flex flex-col min-w-0 gap-0.5">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-sm font-semibold text-slate-200 truncate">{resolveStockName(order.stockName, order.fullCode, quote)}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${DIRECTION_STYLES[order.direction]}`}>
+                {DIRECTION_LABELS[order.direction]}
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-500 font-mono">{order.fullCode}</span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_STYLES[order.status]}`}>

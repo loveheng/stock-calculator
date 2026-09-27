@@ -15,6 +15,7 @@ import { Bell, AlertTriangle } from 'lucide-react';
 import type { StockSearchItem } from '../../types/stock';
 import { getKline } from '../../services/klineService';
 import { useAuthStore } from '../../store/useAuthStore';
+import { computeThresholdRange, type ThresholdUnit } from '../../utils/planOrder';
 import { MONITOR_MAX_RUNNING } from '../../services/monitorService';
 import {
   bandPctOfThreshold,
@@ -31,8 +32,6 @@ interface PlanReminderFieldProps {
   direction: 'buy' | 'sell';
   /** 计划目标价（元） */
   threshold: number;
-  /** 价格阈值带（可选），用于推导默认容差与边界提示 */
-  thresholdRange?: { low: number; high: number };
   /** 已选股票（用于 L2 取当前价）；未选时无 L2 提示 */
   stock: StockSearchItem | null;
   /** 是否开启（受控） */
@@ -43,7 +42,20 @@ interface PlanReminderFieldProps {
   band: string;
   /** 容差输入回调 */
   onBandChange: (v: string) => void;
+  /** 价格阈值范围单位（比例% / 绝对值元，受控）；仅开启提醒后可填 */
+  thresholdUnit: ThresholdUnit;
+  /** 单位切换回调 */
+  onThresholdUnitChange: (v: ThresholdUnit) => void;
+  /** 价格阈值范围输入值（受控，字符串）；仅开启提醒后可填 */
+  thresholdInput: string;
+  /** 价格阈值范围输入回调 */
+  onThresholdInputChange: (v: string) => void;
 }
+
+const UNIT_TABS: { id: ThresholdUnit; label: string; suffix: string; step: string }[] = [
+  { id: 'pct', label: '比例', suffix: '%', step: '0.1' },
+  { id: 'value', label: '值', suffix: '元', step: '0.01' },
+];
 
 /**
  * 计划单价格提醒字段。
@@ -53,12 +65,15 @@ interface PlanReminderFieldProps {
 export default function PlanReminderField({
   direction,
   threshold,
-  thresholdRange,
   stock,
   enabled,
   onEnabledChange,
   band,
   onBandChange,
+  thresholdUnit,
+  onThresholdUnitChange,
+  thresholdInput,
+  onThresholdInputChange,
 }: PlanReminderFieldProps) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const setAuthModalOpen = useAuthStore((s) => s.setAuthModalOpen);
@@ -178,6 +193,52 @@ export default function PlanReminderField({
               />
             </label>
           )}
+
+          {/* 价格阈值范围：并入提醒区块，仅开启后可填；可按比例(%)或绝对值(元)填写 */}
+          <div>
+            <span className="text-[10px] text-slate-400">价格阈值范围（可不填，围绕计划价对称）</span>
+            <div className="mt-1 flex items-center gap-2">
+              <span className="inline-flex overflow-hidden rounded-lg border border-slate-600">
+                {UNIT_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => onThresholdUnitChange(tab.id)}
+                    className={`px-2 py-1.5 text-[10px] transition-colors ${
+                      thresholdUnit === tab.id
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-900/60 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step={UNIT_TABS.find((t) => t.id === thresholdUnit)?.step ?? '0.1'}
+                value={thresholdInput}
+                onChange={(e) => onThresholdInputChange(e.target.value)}
+                placeholder={thresholdUnit === 'pct' ? '1' : '0.10'}
+                className="w-20 rounded-lg border border-slate-600 bg-slate-900/60 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-blue-500"
+              />
+              <span className="text-xs text-slate-500">
+                {UNIT_TABS.find((t) => t.id === thresholdUnit)?.suffix ?? '%'}
+              </span>
+              {(() => {
+                const amt = Number(thresholdInput);
+                if (!Number.isFinite(amt) || amt <= 0 || threshold <= 0) return null;
+                const r = computeThresholdRange(threshold, thresholdUnit, amt);
+                return (
+                  <span className="text-[10px] text-slate-500">
+                    约 ¥{r.low.toFixed(2)} ~ ¥{r.high.toFixed(2)}
+                  </span>
+                );
+              })()}
+            </div>
+          </div>
 
           {/* L1 触发边界 + L2 当前价与风险警示 */}
           <div className="space-y-1 rounded-lg bg-slate-900/50 p-2.5 text-[11px]">

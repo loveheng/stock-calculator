@@ -1,6 +1,6 @@
 ---
 name: frontend-ui-standards
-description: stock-calculator 前端 UI 视觉与交互规范：按钮形状统一 rounded-lg（胶囊 rounded-full 仅限 Tab/分段切换条）、移动端 44px 触摸热区（tap-target）、可折叠卡片展开面板响应式高度（移动端 60vh 上限滚动、宽屏固定 60vh 撑满）、头部操作组合容器与 stopPropagation、公共组件复用优先与重复抽取阈值（Rule of Three 分级）、页级子菜单 + 滑动切换（ModeTabs + SwipeTabPanel，滑动命中区需抵消外层 padding 铺满横向边缘与屏下空白）、自由网格/画布响应式（窄屏单列堆叠、宽屏多列、展示态不回写布局）。新增或修改页面/组件、写操作按钮、做折叠面板、新增第二种同构 UI 或第二次复制同一段逻辑、把多段平级页面区块拆成可切换子菜单、做响应式自由网格/画布布局时使用。
+description: stock-calculator 前端 UI 视觉与交互规范：按钮形状统一 rounded-lg（胶囊 rounded-full 仅限 Tab/分段切换条）、移动端 44px 触摸热区（tap-target，但 tap-target 是 inline-flex，绝不可作为多行可点击卡片头容器，否则内部行被压扁成竖排）、可折叠卡片展开面板响应式高度（移动端 60vh 上限滚动、宽屏固定 60vh 撑满）、头部操作组合容器与 stopPropagation、公共组件复用优先与重复抽取阈值（Rule of Three 分级）、页级子菜单 + 滑动切换（ModeTabs + SwipeTabPanel，滑动命中区需抵消外层 padding 铺满横向边缘与屏下空白）、自由网格/画布响应式（窄屏单列堆叠、宽屏多列、展示态不回写布局）。新增或修改页面/组件、写操作按钮、做折叠面板、新增第二种同构 UI 或第二次复制同一段逻辑、把多段平级页面区块拆成可切换子菜单、做响应式自由网格/画布布局时使用。新建或改造「新增计划单」表单（有效期 / 价格阈值范围 / 价格提醒区块）时使用。
 ---
 
 # Frontend UI Standards
@@ -29,6 +29,25 @@ Encodes the UI conventions established for the stock-calculator frontend (React 
 ### 2. Mobile tap targets — 44px hot zone
 - Add the `tap-target` class to any clickable control (button / link / icon) that must be touch-friendly on mobile. Global CSS enlarges `.tap-target` to a 44px hit area on small screens.
 - In a grouped action bar, every button should carry `tap-target`.
+
+### 2.1 `tap-target` is `inline-flex` — NEVER use it as a clickable card-header container
+The global `.tap-target` is `inline-flex items-center justify-center` (see `src/styles.css`), not a block.
+**If you put `tap-target` on the OUTER wrapper of a multi-row clickable card header, its direct
+children (the name row AND the badge/metric row) become same-row flex items** and get squished
+side-by-side — on mobile the badge block collapses into a narrow vertical column (错乱). This is a
+recurring footgun in both `TCalculator.tsx` (短线卡) and `CostAveraging.tsx` (中长期持仓卡).
+
+- **Card header (the clickable row that toggles expand) must be an explicit block**, never `tap-target`:
+  `flex flex-col w-full min-h-[44px] p-3 cursor-pointer select-none`. `min-h-[44px]` already satisfies
+  the 44px touch zone, so you lose nothing by dropping `tap-target` here.
+- The header's Inner rows (name row, badge/metric row) then stack vertically and each stretches to full
+  width via `flex flex-wrap` — no horizontal squish. See the pattern at `TCalculator.tsx:633` and
+  `CostAveraging.tsx:898`.
+- **Inner action buttons** inside the header: `tap-target` is still fine for a standard 44px hit area,
+  BUT when the card header is compact you may want smaller icons. To shrink an icon button below 44px,
+  either (a) omit `tap-target` and set an explicit size (`w-7 h-7 rounded-lg …`), or (b) keep `tap-target`
+  and override with `!min-w-0 !min-h-0 !w-7 !h-7`. Do NOT leave `tap-target` with only `w-10 h-10` —
+  its `min-w/min-h-[44px]` wins and the button renders at 44px.
 
 ### 3. Card expand/collapse & responsive height (critical)
 Position cards (e.g. 中长期交易持仓卡片) remain collapsible:
@@ -157,3 +176,32 @@ foldable open / tablet / desktop = free).
   is preserved; do not flatten to a fixed height.
 - Reference implementation: the AI 选股台 画布 (`CanvasBoardView`) — resolve its current path via the
   `stock-calculator-index` skill; do not hardcode it.
+
+### 8. 计划单创建表单 — 三处绑定同一模板（禁止各自手写）
+
+「新增计划单」存在三个落点：AI 选股台 计划单 Tab、短线交易页、中长期交易页。三者**必须绑定同一个
+模板组件 `PlanOrderForm`**，不得各自维护一套表单 JSX / 状态 / 校验（三套表单曾逐字复制并漂移，属 §5.2
+的「逐字复制」，已在第 2 处抽取为模板）。
+
+**绑定关系**（组件名稳定，具体文件路径经 `stock-calculator-index` 解析，勿在此硬编码）：
+
+| 角色 | 组件 / 函数 | 职责 |
+|---|---|---|
+| 表单模板（唯一新增入口） | `PlanOrderForm`（`components/plan/`） | 股票 / 方向 / 计划价 / 数量 / 有效期 / 提醒区块 + 字段校验 + 提交重置 |
+| 提醒区块（内嵌于模板） | `PlanReminderField`（`components/monitor/`） | 开启价格提醒开关 + 容差 + 价格阈值范围 + L1 触发边界 / L2 当前价提示 |
+| 阈值范围换算 | `computeThresholdRange(center, unit, amount)`（`utils/planOrder`） | `unit: 'pct'` 比例(%) / `'value'` 绝对值(元) 双口径 → 统一落库绝对价 `{ low, high }` |
+| 有效期选项 | `VALIDITY_PRESETS`（由 `PlanOrderForm` 导出） | 固定 `3 / 7 / 14 / 30` 天，分段按钮，**不允许用户自由输入天数** |
+| 展示侧 | `PlanOrderList` → `PlanOrderCard` | 已有 `thresholdRange` 时自动渲染「阈值范围 ¥low ~ ¥high」，表单侧无需额外改动 |
+
+**契约（改任一侧前先读模板签名，不要改调用方去将就）**：
+
+- 入参：`context`（固定上下文）/ `selectableContext`（仅 AI 选股台为 `true`，短线·中长期为 `false` 由 `context` 固定）/
+  `initialValues`（编辑回填）/ `onSubmit` / `onCancel` / `submitLabel`。
+- 出参：`PlanOrderFormValues`（含 `thresholdRange?` / `reminderEnabled` / `reminderBand`）；
+  `onSubmit` 返回 `false` 表示失败（如去重未通过）→ 表单**保持打开并保留已填内容**；其余视为成功并重置。
+- 价格阈值范围：仅在 `reminderEnabled === true` 且幅度 > 0 时写入 `thresholdRange`；**单位不落库**（存的是绝对价），
+  故编辑回填统一按**比例**反推展示。
+- 阈值范围的「比例 | 值」切换为就地分段按钮，**不引入新的切换组件**（§1 的 `ModeTabs` 三 variant 已是上限）。
+- 新增字段一律加到模板 + `PlanOrderFormValues` / `PlanOrderInitialValues`，三处同时生效；
+  **禁止在某一页单独加输入框或自行 `setState`**（页内私有状态如 `planThresholdPct` 是错误做法，已清除）。
+- 改完跑 §5.4 回归：`npx tsc --noEmit` + `npx vitest run` + `node scripts/check-layers.mjs`。

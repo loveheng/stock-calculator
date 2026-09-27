@@ -6,6 +6,8 @@
  * @author 开发团队
  */
 
+import type { StockQuoteSummary } from '../types/stock';
+
 export type DuplicateStatus = 'UNIQUE' | 'POTENTIAL' | 'EXACT_DUPLICATE';
 
 
@@ -142,5 +144,22 @@ export interface PreparedHistory {
   direction: 'buy' | 'sell';
   price: number;
   amount: number;
+}
+
+/**
+ * 展示名兜底：存量数据的 stockName 可能回退成了代码（如 sh600745），
+ * 此时优先取实时行情返回的真实股票名称，仍无则保留原名/代码。
+ * 共享纯函数（R2：放 utils 层）：短线项目卡与中长期持仓卡均复用，避免同名逻辑分叉。
+ */
+export function resolveStockName(
+  stockName: string | undefined,
+  fullCode: string,
+  quote?: StockQuoteSummary | null,
+): string {
+  const n = (stockName ?? '').trim();
+  if (n && !/^(sh|sz|bj)\d{6}$/i.test(n)) return n;
+  const quoteName = (quote?.stockName ?? '').trim();
+  if (quoteName) return quoteName;
+  return n || fullCode;
 }
 

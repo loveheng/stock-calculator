@@ -79,6 +79,30 @@ export function inferThresholdRange(center: number, ratioPct: number): { low: nu
   return { low: center * (1 - r), high: center * (1 + r) };
 }
 
+/** 价格阈值范围的输入单位：'pct' 为相对比例（%），'value' 为绝对价差（元） */
+export type ThresholdUnit = 'pct' | 'value';
+
+/**
+ * 按「比例」或「绝对值」推算价格阈值带：以 center 为中心向两侧对称展开。
+ *
+ * @description 两种口径等价换算：pct 口径偏差 = center × amount%；value 口径偏差 = amount 元。
+ *              落库统一为绝对价 { low, high }，不再保留填写单位。
+ * @example computeThresholdRange(100, 'pct', 1) => { low: 99, high: 101 }
+ * @example computeThresholdRange(100, 'value', 0.5) => { low: 99.5, high: 100.5 }
+ * @param {number} center - 中心价（通常为计划价）
+ * @param {ThresholdUnit} unit - 填写单位（比例 / 绝对值）
+ * @param {number} amount - 单边幅度（百分比数 或 元）
+ * @returns {{ low: number; high: number }} 下/上端点价
+ */
+export function computeThresholdRange(
+  center: number,
+  unit: ThresholdUnit,
+  amount: number,
+): { low: number; high: number } {
+  const dev = unit === 'pct' ? center * (Math.max(0, amount) / 100) : Math.max(0, amount);
+  return { low: center - dev, high: center + dev };
+}
+
 /**
  * 查找是否已有「未结束」的相同个股 + 相同方向的计划单（去重判断）。
  *

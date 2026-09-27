@@ -147,6 +147,9 @@ Names below are component names; resolve the exact file path with the index skil
 | Plan order cards | `PlanOrderList` (wraps `PlanOrderCard`) | own domain `components/plan/`; inject `quotes` if the page already polls |
 | Plan execution | hook `usePlanExecutor` | options: `silent` (page has its own toast) · `requirePosition` · `onExecuted` (page-specific side effects, e.g. 履约审计) |
 | Plan filter predicate | `filterDisplayablePlans` / `filterActivePlans` (`utils`) | single source of the 3-day display window; views and Copilot snapshots must share it |
+| Plan order create form | `PlanOrderForm` | 三处「新增计划单」（AI 选股台 / 短线 / 中长期）**唯一模板**；有效期固定 `VALIDITY_PRESETS` 3·7·14·30；阈值范围支持比例(%)/值(元)；见 SKILL §8 |
+| Plan reminder block | `PlanReminderField` | 内嵌于 `PlanOrderForm`：提醒开关 + 容差 + 价格阈值范围 + 触发边界/当前价提示；不单独在页面中手写 |
+| 阈值范围换算 | `computeThresholdRange` (`utils/planOrder`) | `unit`: `'pct'` 比例 / `'value'` 绝对值；两种口径等价，均换算为绝对价 `{ low, high }` 落库 |
 | Toast | `showToast` (`utils`) | never inline `window.dispatchEvent(new CustomEvent('app-toast', …))` |
 
 ### ModeTabs (the only `rounded-full` allowed)
